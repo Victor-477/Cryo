@@ -117,7 +117,9 @@ class Parser:
         tok = self._cur()
 
         if tok.type == TokenType.FN:      return self._fn()
+        if tok.type == TokenType.TOOL:    return self._tool()
         if tok.type == TokenType.STRUCT:  return self._struct()
+        if tok.type == TokenType.SCHEMA:  return self._struct()   # schema = struct
         if tok.type == TokenType.ENUM:    return self._enum()
         if tok.type == TokenType.SKILL:   return self._skill()
         if tok.type == TokenType.CONST:   return self._const()
@@ -175,7 +177,7 @@ class Parser:
     # ── struct ──────────────────────────────────────────────
 
     def _struct(self):
-        self._expect(TokenType.STRUCT)
+        self._expect(TokenType.STRUCT, TokenType.SCHEMA)   # 'schema' = struct
         name = self._expect(TokenType.IDENT).value
         self._expect(TokenType.LBRACE)
         fields = []
@@ -221,7 +223,11 @@ class Parser:
 
     # ── funcao ──────────────────────────────────────────────
 
-    def _fn(self):
+    def _tool(self):
+        self._expect(TokenType.TOOL)      # 'tool fn ...' — exposta a LLMs
+        return self._fn(is_tool=True)
+
+    def _fn(self, is_tool=False):
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
         self._expect(TokenType.LPAREN)
@@ -239,7 +245,7 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool)
 
     def _body(self):
         stmts = []

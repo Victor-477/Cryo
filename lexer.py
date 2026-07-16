@@ -41,6 +41,8 @@ class TokenType(Enum):
     SPAWN    = auto()
     AWAIT    = auto()
     FUTURE   = auto()
+    SCHEMA   = auto()
+    TOOL     = auto()
     # Tipos
     TYPE_INT    = auto()
     TYPE_NUMBER = auto()
@@ -148,6 +150,8 @@ KEYWORDS = {
     'spawn':    TokenType.SPAWN,
     'await':    TokenType.AWAIT,
     'future':   TokenType.FUTURE,
+    'schema':   TokenType.SCHEMA,
+    'tool':     TokenType.TOOL,
     'int':     TokenType.TYPE_INT,
     'number':  TokenType.TYPE_NUMBER,
     'string':  TokenType.TYPE_STRING,

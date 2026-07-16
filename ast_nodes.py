@@ -81,6 +81,7 @@ class FunctionDecl(Node):
     params:      List[Tuple[str, str]]
     return_type: Optional[str]
     body:        List[Node]
+    is_tool:     bool = False   # 'tool fn' — exposta a LLMs (Fase 3)
 
 # -- controle de fluxo -----------------------------------
 
