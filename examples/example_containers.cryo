@@ -1,0 +1,48 @@
+// ============================================================
+//  Exemplo — arrays, maps e structs na linguagem-alvo Pyro
+//  (bytecode próprio). Rodar:
+//    python burnout/cryoc.py cryo/examples/example_containers.cryo --backend pyro --run
+//  Ver o bytecode desmontado:
+//    python burnout/cryoc.py cryo/examples/example_containers.cryo --backend pyro --dis
+// ============================================================
+
+struct Ponto { int x; int y; }
+
+// ── Arrays ──────────────────────────────────────────────────
+int[] nums = [3, 1, 4, 1, 5, 9, 2, 6];
+nums.push(10);
+int total = 0;
+int maior = 0;
+for (int v in nums) {
+    total += v;
+    if (v > maior) { maior = v; }
+}
+nums[0] = 100;
+
+// ── Maps ────────────────────────────────────────────────────
+map<string, int> estoque = {"maca": 10, "pera": 5};
+estoque["uva"] = 20;
+int somaEstoque = 0;
+for (string k in keys(estoque)) {
+    somaEstoque += estoque[k];
+}
+
+// ── Structs (= map de campos) ───────────────────────────────
+Ponto p = new Ponto { x: 3, y: 4 };
+int dist2 = p.x * p.x + p.y * p.y;
+
+print("== containers na VM Pyro ==");
+print("array (nums):"); print(nums);
+print("tamanho:");      print(len(nums));
+print("soma:");         print(total);
+print("maior:");        print(maior);
+print("map (estoque):"); print(estoque);
+print("tem maca?:");    print(has(estoque, "maca"));
+print("tem kiwi?:");    print(has(estoque, "kiwi"));
+print("soma estoque:"); print(somaEstoque);
+print("ponto:");        print(p);
+print("p.x:");          print(p.x);
+print("dist^2:");       print(dist2);
+
+assert(len(nums) == 9, "tamanho do array incorreto");
+assert(dist2 == 25, "distancia incorreta");
