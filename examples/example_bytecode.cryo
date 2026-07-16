@@ -1,0 +1,64 @@
+// ============================================================
+//  Exemplo — .cryo compilado para a linguagem-alvo .pyro
+//  (bytecode PRÓPRIO do Pyro), executado pela VM Pyro (em Go).
+//
+//  Compilar + rodar:
+//    python burnout/cryoc.py cryo/examples/example_bytecode.cryo --backend pyro --run
+//
+//  O Burnout gera um arquivo .pyro binário (ISA própria, não
+//  Go/C/asm); a VM Pyro carrega e executa esse bytecode.
+// ============================================================
+
+fn fatorial(int n) -> int ={
+    if (n <= 1) { return 1; }
+    return n * fatorial(n - 1);
+}
+
+fn fib(int n) -> int ={
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn ehPrimo(int n) -> bool ={
+    if (n < 2) { return false; }
+    int i = 2;
+    while (i * i <= n) {
+        if (n % i == 0) { return false; }
+        i++;
+    }
+    return true;
+}
+
+// Soma dos quadrados 1..10
+int soma = 0;
+for (int i = 1; i <= 10; i++) {
+    soma += i * i;
+}
+
+// Contagem de primos até 50 (break/continue)
+int primos = 0;
+for (int k = 2; k <= 50; k++) {
+    if (!ehPrimo(k)) { continue; }
+    primos++;
+}
+
+// Aritmética mista int/float e bit a bit
+number media = (3.5 + 1.5) * 2.0;
+int mask = (0xF0 | 0x0F) & 0xFF;
+int shifted = 1 << 8;
+
+// Ternário e lógica
+bool grande = soma > 100 ? true : false;
+
+print("== .cryo -> .pyro (bytecode) -> VM Pyro ==");
+print("fatorial(10):"); print(fatorial(10));
+print("fib(20):");      print(fib(20));
+print("soma quadrados:"); print(soma);
+print("primos ate 50:"); print(primos);
+print("media:");        print(media);
+print("mask:");         print(mask);
+print("1<<8:");         print(shifted);
+print("soma > 100?:");  print(grande);
+
+assert(fatorial(5) == 120, "fatorial incorreto");
+assert(primos == 15, "contagem de primos incorreta");
