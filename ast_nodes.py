@@ -200,6 +200,16 @@ class UnwrapExpr(Node):
     operand: Node
 
 @dataclass
+class SpawnExpr(Node):
+    """Inicia uma tarefa concorrente e retorna um Future<T>: 'spawn expr'."""
+    expr: Node
+
+@dataclass
+class AwaitExpr(Node):
+    """Aguarda o resultado de um Future<T>: 'await f'."""
+    expr: Node
+
+@dataclass
 class MapLiteral(Node):
     pairs: List[Tuple[Node, Node]]
 

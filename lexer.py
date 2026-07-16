@@ -38,6 +38,9 @@ class TokenType(Enum):
     MAP      = auto()
     AS       = auto()
     SKILL    = auto()
+    SPAWN    = auto()
+    AWAIT    = auto()
+    FUTURE   = auto()
     # Tipos
     TYPE_INT    = auto()
     TYPE_NUMBER = auto()
@@ -142,6 +145,9 @@ KEYWORDS = {
     'map':      TokenType.MAP,
     'as':       TokenType.AS,
     'skill':    TokenType.SKILL,
+    'spawn':    TokenType.SPAWN,
+    'await':    TokenType.AWAIT,
+    'future':   TokenType.FUTURE,
     'int':     TokenType.TYPE_INT,
     'number':  TokenType.TYPE_NUMBER,
     'string':  TokenType.TYPE_STRING,

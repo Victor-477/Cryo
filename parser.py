@@ -14,7 +14,7 @@ from ast_nodes import (
     Import, Library, ForeignBlock,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, UnaryExpr,
-    CallExpr, MethodCallExpr,
+    SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
     Identifier, Literal,
 )
@@ -77,6 +77,13 @@ class Parser:
             v = self._parse_type()
             self._expect(TokenType.GT)
             base = f"map<{k},{v}>"
+        # future<T>
+        elif self._match(TokenType.FUTURE):
+            self._advance()
+            self._expect(TokenType.LT)
+            t = self._parse_type()
+            self._expect(TokenType.GT)
+            base = f"future<{t}>"
         else:
             valid = set(TYPE_TOKENS) | {TokenType.IDENT}
             tok = self._cur()
@@ -85,10 +92,11 @@ class Parser:
                     f"[Parser] Linha {tok.line}: Tipo esperado, obtido {tok.type.name} ({tok.value!r})"
                 )
             base = self._advance().value
-            if self._match(TokenType.LBRACKET):
-                self._advance()
-                self._expect(TokenType.RBRACKET)
-                base = base + '[]'
+        # sufixo de array [] (aplica-se a qualquer base: primitivo, map, future)
+        while self._match(TokenType.LBRACKET) and self._peek().type == TokenType.RBRACKET:
+            self._advance()
+            self._expect(TokenType.RBRACKET)
+            base = base + '[]'
         # opcional: T?
         if self._match(TokenType.QUESTION):
             self._advance()
@@ -130,8 +138,8 @@ class Parser:
             self._advance(); self._opt_semi(); return Continue()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
-        # tipo primitivo ou map -> var decl
-        if tok.type in TYPE_TOKENS or tok.type == TokenType.MAP:
+        # tipo primitivo, map ou future -> var decl
+        if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE):
             return self._var_decl()
 
         # identificador -> varias possibilidades
@@ -323,18 +331,19 @@ class Parser:
     # ── for  (clássico ou for-each) ─────────────────────────
 
     def _is_foreach(self) -> bool:
-        """Detecta 'for (TIPO nome in expr)' logo apos o '('."""
-        toks = self.tokens
-        i = self.pos
-        if toks[i].type in TYPE_TOKENS:
-            j = i + 1
-            if toks[j].type == TokenType.LBRACKET and toks[j + 1].type == TokenType.RBRACKET:
-                j += 2
-        elif toks[i].type == TokenType.IDENT:
-            j = i + 1
-        else:
-            return False
-        return toks[j].type == TokenType.IDENT and toks[j + 1].type == TokenType.IN
+        """Detecta 'for (TIPO nome in expr)' — tenta parsear um tipo + nome + 'in'
+        sem consumir (save/restore), cobrindo map<>, future<>, arrays e opcionais."""
+        save = self.pos
+        result = False
+        try:
+            self._parse_type()
+            if self._match(TokenType.IDENT):
+                self._advance()
+                result = self._match(TokenType.IN)
+        except ParseError:
+            result = False
+        self.pos = save
+        return result
 
     def _for(self):
         self._expect(TokenType.FOR)
@@ -583,6 +592,10 @@ class Parser:
     def _unary(self):
         if self._match(TokenType.MINUS, TokenType.NOT, TokenType.TILDE):
             return UnaryExpr(self._advance().value, self._unary())
+        if self._match(TokenType.SPAWN):
+            self._advance(); return SpawnExpr(self._unary())
+        if self._match(TokenType.AWAIT):
+            self._advance(); return AwaitExpr(self._unary())
         return self._postfix()
 
     def _postfix(self):

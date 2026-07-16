@@ -1,0 +1,39 @@
+// ============================================================
+//  Exemplo Fase 2 — concorrência (async) + HTTP (backend Go)
+//  spawn/await + Future<T> baixam para goroutines + canais.
+//  Rodar: python burnout/cryoc.py cryo/examples/example_async.cryo --backend go --run
+// ============================================================
+
+// Simula uma tarefa cara (ex.: uma chamada de LLM ou I/O)
+fn tarefa(int id) -> int ={
+    sleep(30);
+    return id * id;
+}
+
+// ── Duas tarefas concorrentes ───────────────────────────────
+future<int> a = spawn tarefa(6);
+future<int> b = spawn tarefa(7);
+int ra = await a;
+int rb = await b;
+print("duas tarefas (36 + 49):");
+print(ra + rb);
+
+// ── Fan-out: N tarefas em paralelo (padrão de chamadas de LLM) ──
+int[] ids = [1, 2, 3, 4, 5];
+future<int>[] pendentes = [];
+for (int id in ids) {
+    pendentes.push(spawn tarefa(id));    // dispara todas de uma vez
+}
+int soma = 0;
+for (future<int> f in pendentes) {
+    soma += await f;                     // coleta os resultados
+}
+print("fan-out (1+4+9+16+25):");
+print(soma);
+
+// ── HTTP (cliente) ──────────────────────────────────────────
+// Requisições HTTP para APIs (LLMs, serviços SaaS). Sem rede,
+// http_get retorna "" — mas o código compila e roda.
+string corpo = http_get("http://example.com");
+print("http_get retornou bytes:");
+print(len(corpo) >= 0);
