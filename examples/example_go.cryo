@@ -1,0 +1,104 @@
+// ============================================================
+//  Exemplo Cryo v0.5 — backend Go (nova base de compilacao)
+//  Compilar: python compiler.py example_go.cryo --run -v
+//  (backend go e o padrao; equivale a --backend go)
+// ============================================================
+
+enum Nivel { BAIXO, MEDIO, ALTO }
+
+struct Sensor {
+    int    id;
+    string nome;
+    number valor;
+    bool   ativo;
+}
+
+const number PI     = 3.14159265
+const string VERSAO = "0.6.0"
+
+// ── Funcoes tipadas ────────────────────────────────────────
+fn areaCirculo(number raio) -> number ={
+    return PI * raio * raio;
+}
+
+fn fatorial(int n) -> int ={
+    if (n <= 1) { return 1; }
+    return n * fatorial(n - 1);
+}
+
+fn ehPar(int n) -> bool ={
+    return (n & 1) == 0;
+}
+
+fn descNivel(Nivel nv) -> string ={
+    switch (nv) {
+        case Nivel_ALTO:  return "ALTO";
+        case Nivel_MEDIO: return "MEDIO";
+        default:          return "BAIXO";
+    }
+}
+
+// ── Programa principal ─────────────────────────────────────
+number area = areaCirculo(5.0);
+int    f10  = fatorial(10);
+bool   par  = ehPar(f10);
+
+// Struct
+Sensor s1 = new Sensor {
+    id:    1,
+    nome:  "Temperatura",
+    valor: 36.6,
+    ativo: true
+}
+string nomeSensor = s1.nome;
+
+// Array + soma com laco
+int[] valores = [10, 20, 30, 40, 50]
+int soma = 0;
+for (int i = 0; i < 5; i++) {
+    soma += valores[i];
+}
+
+// Bitwise / shift
+int empacotado = (0x12 << 8) | 0x34;
+
+// Null coalescing
+string leitura = null;
+string resultado = leitura ?? "sem leitura";
+
+// Enum
+string nivelTxt = descNivel(Nivel_ALTO);
+
+// assert de seguranca
+assert(f10 == 3628800, "fatorial(10) incorreto");
+assert(empacotado == 0x1234);
+
+// try / catch (mapeado para panic/recover em Go)
+string estado = "ok";
+try {
+    if (soma > 100) {
+        throw("soma grande demais");
+    }
+} catch (string err) {
+    estado = "capturado: " + err;
+}
+
+print("=== Cryo v" + VERSAO + " — backend Go ===");
+print("area circulo r=5:");
+print(area);
+print("10! =");
+print(f10);
+print("10! e par?");
+print(par);
+print("sensor:");
+print(nomeSensor);
+print("soma do array:");
+print(soma);
+print("empacotado (0x1234):");
+print(empacotado);
+print("resultado:");
+print(resultado);
+print("nivel:");
+print(nivelTxt);
+print("estado try/catch:");
+print(estado);

@@ -1,0 +1,40 @@
+// ============================================================
+//  Exemplo Pyro — skills nativas de LLM + acesso à máquina
+//  As skills são COMPILADAS no binário (sem arquivos .md),
+//  introspectáveis em runtime de forma compacta e otimizada.
+//  Rodar: python cryoc.py examples/example_pyro.cryo --run
+// ============================================================
+
+skill resumir {
+    desc:        "Resume um texto em bullets objetivos";
+    model:       "gpt-x";
+    temperature: 0.2;
+    max_tokens:  512;
+    tools:       ["contar_palavras"];
+}
+
+skill traduzir {
+    desc:  "Traduz texto entre idiomas";
+    model: "gpt-x-mini";
+    tools: [];
+}
+
+// ── Introspecção nativa (sem markdown) ──────────────────────
+string[] nomes = skills();
+Skill s = skill_get("resumir");
+bool temTrad = skill_has("traduzir");
+string catalogo = skills_json();
+
+// ── Acesso direto à máquina (camada Pyro) ───────────────────
+string saida = pyro_exec("echo ola-da-maquina");
+int agora = pyro_time();
+
+print("skills disponiveis:");
+for (string n in nomes) { print(n); }
+print("desc de resumir:");  print(s.desc);
+print("modelo:");           print(s.model);
+print("temperature:");      print(s.config["temperature"]);
+print("tem traduzir?:");    print(temTrad);
+print("catalogo JSON:");    print(catalogo);
+print("exec da maquina:");  print(saida);
+print("timestamp > 0?:");   print(agora > 0);

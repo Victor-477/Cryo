@@ -1,0 +1,118 @@
+// ============================================================
+//  Exemplo Cryo v0.3 — backend C nativo
+//  Compilar: python compiler.py example_v3.cryo --run -v
+// ============================================================
+
+// ── Enum e Struct ──────────────────────────────────────────
+
+enum Nivel {
+    BAIXO,
+    MEDIO,
+    ALTO
+}
+
+struct Sensor {
+    int    id;
+    string nome;
+    number valor;
+    bool   ativo;
+}
+
+// ── Constantes ─────────────────────────────────────────────
+
+const number PI        = 3.14159265
+const int    MAX_LEIT  = 5
+const string VERSAO    = "0.3.0"
+
+// ── Funcoes com retorno tipado ──────────────────────────────
+
+fn areaCirculo(number raio) -> number ={
+    return PI * raio * raio;
+}
+
+fn ehPrimo(int n) -> bool ={
+    if (n < 2) { return false; }
+    int i = 2;
+    while (i * i <= n) {
+        if (n % i == 0) { return false; }
+        i++;
+    }
+    return true;
+}
+
+fn fatorial(int n) -> int ={
+    if (n <= 1) { return 1; }
+    return n * fatorial(n - 1);
+}
+
+fn descNivel(Nivel nv) -> string ={
+    if (nv == Nivel_ALTO) {
+        return "ALTO";
+    } else if (nv == Nivel_MEDIO) {
+        return "MEDIO";
+    } else {
+        return "BAIXO";
+    }
+}
+
+// ── Programa principal ─────────────────────────────────────
+
+// Calculos matematicos
+number area  = areaCirculo(5.0);
+int    fat10 = fatorial(10);
+
+// Array de sensores (indices)
+int[] ids = [101, 102, 103, 104, 105]
+
+// Struct com new
+Sensor s1 = new Sensor {
+    id:    1,
+    nome:  "Temperatura",
+    valor: 36.6,
+    ativo: true
+}
+
+// Acesso a campos
+string nomeSensor = s1.nome;
+number valSensor  = s1.valor;
+
+// For loop - soma dos primeiros 100 inteiros
+number soma = 0;
+for (int i = 1; i <= 100; i++) {
+    soma += i;
+}
+
+// While - conta primos ate 50
+int qtdPrimos = 0;
+int k = 2;
+while (k <= 50) {
+    if (ehPrimo(k)) {
+        qtdPrimos++;
+    }
+    k++;
+}
+
+// Null coalescing
+string leitura = null;
+string resultado = leitura ?? "sem leitura";
+
+// Try / Catch
+bool ok = false;
+try {
+    number raiz = sqrt(area);
+    ok = true;
+} catch (string err) {
+    string msg = "Erro: " + err;
+}
+
+// Saida nativa via bloco C inline
+>C(
+    printf("=== Cryo v%s — Backend C Nativo ===\n", VERSAO);
+    printf("Area circulo r=5: %.4f\n", area);
+    printf("10! = %lld\n", (long long)fat10);
+    printf("Soma 1..100 = %.0f\n", soma);
+    printf("Primos ate 50: %lld\n", (long long)qtdPrimos);
+    printf("Sensor: %s = %.1f\n", nomeSensor, valSensor);
+    printf("Resultado: %s\n", resultado);
+    printf("Calculo OK: %s\n", ok ? "sim" : "nao");
+)

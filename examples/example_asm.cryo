@@ -1,0 +1,61 @@
+// ============================================================
+//  Exemplo Cryo v0.4 — backend x86-64 nativo (assembly)
+//  Compilar: python compiler.py example_asm.cryo --backend asm --run -v
+//  Subconjunto: inteiros, funcoes/recursao, controle de fluxo.
+// ============================================================
+
+fn fatorial(int n) -> int ={
+    if (n <= 1) { return 1; }
+    return n * fatorial(n - 1);
+}
+
+fn fib(int n) -> int ={
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn gcd(int a, int b) -> int ={
+    while (b != 0) {
+        int t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+fn ehPrimo(int n) -> bool ={
+    if (n < 2) { return false; }
+    int i = 2;
+    while (i * i <= n) {
+        if (n % i == 0) { return false; }
+        i++;
+    }
+    return true;
+}
+
+// ── Programa principal ─────────────────────────────────────
+int f10 = fatorial(10);
+int fib20 = fib(20);
+int g = gcd(48, 36);
+
+// operadores bit a bit em assembly
+int mask = 0xF0 | 0x0F;
+int shifted = 1 << 10;
+
+// contagem de primos com break/continue
+int primos = 0;
+for (int k = 2; k <= 50; k++) {
+    if (!ehPrimo(k)) { continue; }
+    primos++;
+}
+
+// assert nativo (chama runtime seguro)
+assert(f10 == 3628800, "fatorial(10) incorreto");
+
+print("== Cryo backend assembly ==");
+print(f10);
+print(fib20);
+print(g);
+print(mask);
+print(shifted);
+print(primos);

@@ -1,0 +1,73 @@
+// ============================================================
+//  Exemplo Cryo v0.4 — novos recursos + seguranca (backend C)
+//  Compilar: python compiler.py example_v4.cryo --run -v
+// ============================================================
+
+// ── Literais hex / binario / com underscore ────────────────
+const int MASK   = 0xFF
+const int FLAGS  = 0b1010
+const int MILHAO = 1_000_000
+
+// ── Operadores bit a bit ───────────────────────────────────
+fn empacota(int alto, int baixo) -> int ={
+    return (alto << 8) | (baixo & 0xFF);
+}
+
+fn ehPar(int n) -> bool ={
+    return (n & 1) == 0;
+}
+
+// ── switch / case / default ────────────────────────────────
+fn nomeDia(int d) -> string ={
+    switch (d) {
+        case 0:
+        case 6:
+            return "fim de semana";
+        case 1: return "segunda";
+        case 5: return "sexta";
+        default:
+            return "dia util";
+    }
+}
+
+// ── break / continue ───────────────────────────────────────
+fn primeiroDivisor(int n) -> int ={
+    for (int i = 2; i < n; i++) {
+        if (n % i != 0) { continue; }
+        return i;
+    }
+    return n;
+}
+
+// ── Programa principal ─────────────────────────────────────
+int valor = empacota(0x12, 0x34);
+bool par  = ehPar(valor);
+string dia = nomeDia(6);
+int div1   = primeiroDivisor(91);
+
+// assert de seguranca
+assert(valor == 0x1234, "empacotamento incorreto");
+assert(MILHAO == 1000000);
+
+// aritmetica com checagem de overflow (modo seguro, padrao)
+int soma = 0;
+int i = 1;
+while (i <= 10) {
+    soma += i * i;
+    i++;
+}
+
+// bloco unsafe: instrumentacao desligada localmente
+int rapido = 0;
+unsafe {
+    rapido = soma * 2;
+}
+
+>C(
+    printf("valor empacotado = 0x%llX\n", (long long)valor);
+    printf("par? %s\n", par ? "sim" : "nao");
+    printf("dia(6) = %s\n", dia);
+    printf("primeiro divisor de 91 = %lld\n", (long long)div1);
+    printf("soma dos quadrados 1..10 = %lld\n", (long long)soma);
+    printf("rapido (unsafe) = %lld\n", (long long)rapido);
+)

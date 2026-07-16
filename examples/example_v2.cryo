@@ -1,0 +1,156 @@
+// ============================================================
+//  Exemplo Cryo v0.2 — demonstra todos os recursos expandidos
+// ============================================================
+
+import >Python<
+library >math<
+
+// ── Enum ─────────────────────────────────────────────────────
+
+enum Status {
+    ATIVO,
+    INATIVO,
+    PENDENTE
+}
+
+// ── Struct ───────────────────────────────────────────────────
+
+struct Produto {
+    int    id;
+    string nome;
+    number preco;
+    bool   disponivel;
+    Status status;
+}
+
+struct Carrinho {
+    string    cliente;
+    number    total;
+}
+
+// ── Constantes ───────────────────────────────────────────────
+
+const number TAXA_IMPOSTO = 0.15
+const int    MAX_ITENS    = 100
+const string VERSAO       = "0.2.0"
+
+// ── Funções com retorno tipado ────────────────────────────────
+
+fn calcularTotal(number preco, number quantidade) -> number ={
+    number subtotal = preco * quantidade;
+    number imposto  = subtotal * TAXA_IMPOSTO;
+    return subtotal + imposto;
+}
+
+fn ehValido(number valor) -> bool ={
+    return valor > 0 && valor <= 999999;
+}
+
+fn descricaoProduto(Produto p) -> string ={
+    if (p.disponivel) {
+        return "Disponível: " + p.nome;
+    } else {
+        return "Indisponível: " + p.nome;
+    }
+}
+
+fn fatorial(int n) -> int ={
+    if (n <= 1) {
+        return 1;
+    }
+    return n * fatorial(n - 1);
+}
+
+fn potencia(number base, int exp) -> number ={
+    number resultado = 1;
+    for (int i = 0; i < exp; i++) {
+        resultado *= base;
+    }
+    return resultado;
+}
+
+// ── Lógica de negócio ────────────────────────────────────────
+
+// Arrays
+string[] categorias = ["Eletrônicos", "Roupas", "Alimentos", "Livros"]
+int[]    codigos    = [1001, 1002, 1003, 1004]
+
+// Acessar elementos
+string primeiraCat = categorias[0]
+int    qtdCats     = categorias.length
+
+// Adicionar ao array
+categorias.push("Esportes")
+
+// Struct com new
+Produto notebook = new Produto {
+    id:          1,
+    nome:        "Notebook Pro",
+    preco:       4999.99,
+    disponivel:  true,
+    status:      Status.ATIVO
+}
+
+// Acessar campos
+string nomeNot = notebook.nome
+number precoNot = notebook.preco
+bool   dispNot  = notebook.disponivel
+
+// Cálculos
+number totalComImposto = calcularTotal(notebook.preco, 2)
+bool   precoValido     = ehValido(notebook.preco)
+string desc            = descricaoProduto(notebook)
+
+// Condicional com &&, ||, !
+if (precoValido && notebook.disponivel) {
+    number desconto = totalComImposto * 0.05;
+    totalComImposto -= desconto;
+}
+
+// Null coalescing
+string nomeCliente = null;
+string clienteFinal = nomeCliente ?? "Cliente Anônimo"
+
+// While com operadores
+int  tentativas = 0;
+bool sucesso    = false;
+
+while (!sucesso && tentativas < 3) {
+    tentativas++;
+    if (tentativas == 2) {
+        sucesso = true;
+    }
+}
+
+// For com compound assignment
+number soma = 0;
+for (int i = 1; i <= 10; i++) {
+    soma += i;
+}
+
+// Try / Catch / Finally
+try {
+    number raiz = sqrt(totalComImposto);
+} catch (string erro) {
+    string msg = "Erro ao calcular raiz: " + erro;
+} finally {
+    bool finalizado = true;
+}
+
+// Chamadas encadeadas
+int fat5   = fatorial(5)
+number pot = potencia(2.0, 8)
+
+// Bloco Python inline
+>Python(
+print("=== Sistema Cryo v0.2 ===")
+print(f"Produto: {notebook.nome}")
+print(f"Preço com imposto: R$ {totalComImposto:.2f}")
+print(f"Categorias: {list(categorias)}")
+print(f"Soma 1..10: {soma}")
+print(f"5! = {fat5}")
+print(f"2^8 = {pot}")
+print(f"Cliente: {clienteFinal}")
+print(f"Tentativas: {tentativas}, Sucesso: {sucesso}")
+print(f"Versão: {VERSAO}")
+)
