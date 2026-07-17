@@ -1,0 +1,34 @@
+// ============================================================
+//  Exemplo — bloco Go usando net/http via `library`
+//
+//  Demonstra libraries do Go virando imports reais: net/http,
+//  fmt e time entram no import block do .go gerado, e o bloco
+//  >Go( ... ) faz uma requisição HTTP com a stdlib.
+//
+//  Rodar:
+//    python burnout/cryoc.py cryo/examples/example_go_http.cryo --backend go --run
+// ============================================================
+
+import >Go<
+
+library >go net/http<   // -> import "net/http"
+library >go fmt<        // -> import "fmt"
+library >go time<       // -> import "time"
+
+string url = "https://example.com";
+print("buscando (via bloco Go + net/http):");
+print(url);
+
+// Bloco Go: cliente HTTP com timeout, usando a library net/http.
+>Go(
+    client := &http.Client{Timeout: 4 * time.Second}
+    resp, err := client.Get("https://example.com")
+    if err != nil {
+        fmt.Println("[go] request falhou (offline?):", err)
+    } else {
+        fmt.Println("[go] status:", resp.Status)
+        resp.Body.Close()
+    }
+)
+
+print("fim");

@@ -1,0 +1,32 @@
+// ============================================================
+//  Exemplo Node — escrevendo e lendo arquivo via `library >node fs<`
+//
+//  A library `fs` do Node vira `const fs = require("fs")`, e o
+//  bloco >Node( ... ) a usa para gravar e reler um arquivo. Mostra
+//  uma library nativa do Node fazendo trabalho real.
+//
+//  Rodar:
+//    python burnout/cryoc.py cryo/examples/example_node_fs.cryo --backend node --run
+// ============================================================
+
+import >Node<
+library >node fs<     // -> const fs = require("fs");
+
+// Monta o conteúdo em Cryo (string) e passa para o bloco Node.
+string titulo = "Relatorio Cryo";
+string corpo  = titulo + "\n" + "gerado pelo backend Node\n";
+print("conteudo montado em Cryo:");
+print(corpo);
+
+// Bloco Node: grava e relê o arquivo com fs.
+>Node(
+    const caminho = "build/cryo_node_out.txt";
+    fs.mkdirSync("build", { recursive: true });
+    fs.writeFileSync(caminho, corpo);
+    const lido = fs.readFileSync(caminho, "utf8");
+    console.log("[node] arquivo escrito em", caminho);
+    console.log("[node] bytes lidos:", lido.length);
+    console.log("[node] primeira linha:", lido.split("\n")[0]);
+)
+
+print("fim");
