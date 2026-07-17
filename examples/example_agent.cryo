@@ -1,0 +1,34 @@
+// ============================================================
+//  Exemplo Fase 3 — laço de agente (tool-calling)
+//
+//  O agente conversa com o LLM em ciclo: o modelo pede uma tool,
+//  o runtime EXECUTA a função `tool` real, devolve o resultado, e
+//  repete até a resposta final. Contrato do endpoint:
+//    POST {model, messages, tools}
+//      -> {"tool_call": {"name": "...", "arguments": {...}}}   (pede tool)
+//      -> {"content": "resposta final"}                        (encerra)
+//
+//  Rodar com um LLM real (ou um gateway compatível):
+//    CRYO_LLM_URL=https://seu-gateway/chat CRYO_LLM_KEY=... \
+//      python burnout/cryoc.py cryo/examples/example_agent.cryo --backend go --run
+//  Sem CRYO_LLM_URL, o agente retorna vazio (compila e roda).
+// ============================================================
+
+// Tools que o agente pode chamar. O schema dos parâmetros é
+// derivado da assinatura automaticamente.
+tool fn buscar_preco(string sku) -> number ={
+    if (sku == "SKU-1") { return 19.90; }
+    if (sku == "SKU-2") { return 49.90; }
+    return 0.0;
+}
+
+tool fn aplicar_desconto(number preco, number pct) -> number ={
+    return preco - (preco * pct / 100.0);
+}
+
+// O laço de agente: o modelo decide quais tools chamar e quando parar.
+string resposta = agent("gpt-x",
+    "Qual o preco do SKU-1 com 10% de desconto?");
+
+print("== resposta do agente ==");
+print(resposta);
