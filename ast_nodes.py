@@ -169,6 +169,7 @@ class Import(Node):
 @dataclass
 class Library(Node):
     name: str
+    lang: str = ""   # linguagem estrangeira à qual a library pertence (ex.: "c", "go")
 
 @dataclass
 class ForeignBlock(Node):

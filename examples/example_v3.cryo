@@ -3,6 +3,9 @@
 //  Compilar: python compiler.py example_v3.cryo --run -v
 // ============================================================
 
+// Habilita blocos estrangeiros em C (exigido para usar >C( ... )).
+import >C<
+
 // ── Enum e Struct ──────────────────────────────────────────
 
 enum Nivel {

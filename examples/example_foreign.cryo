@@ -1,0 +1,39 @@
+// ============================================================
+//  Exemplo — blocos estrangeiros VERIFICADOS + libraries
+//
+//  Regra: um bloco `>Lang( ... )` só é aceito se a linguagem
+//  `Lang` tiver sido importada com `import >Lang<`. As libraries
+//  pertencem a uma linguagem importada e viram imports/includes
+//  no backend correspondente.
+//
+//  Rodar (cada backend emite só o bloco da sua linguagem):
+//    python burnout/cryoc.py cryo/examples/example_foreign.cryo --backend go --run
+//    python burnout/cryoc.py cryo/examples/example_foreign.cryo --backend c  --run
+//
+//  Sem o `import >Go<` abaixo, o bloco >Go( ... ) é REJEITADO
+//  pelo compilador ([Erro Estrangeiro]).
+// ============================================================
+
+// Habilita as linguagens estrangeiras usadas neste programa.
+import >Go<
+import >C<
+
+// Libraries pertencentes a cada linguagem:
+library >go fmt<     // backend Go: vira  import "fmt"
+library >c math<     // backend C:  vira  #include <math.h>
+
+number lado = 4.0;
+print("area do quadrado (Cryo):");
+print(lado * lado);
+
+// Bloco Go — emitido no backend go, omitido nos demais.
+>Go(
+    fmt.Println("[go] Ola da camada Go, com fmt importado via library!")
+)
+
+// Bloco C — emitido no backend c, omitido nos demais.
+>C(
+    printf("[c] sqrt(2) = %.5f (math via library)\n", sqrt(2.0));
+)
+
+print("fim");

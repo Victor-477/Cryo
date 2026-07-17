@@ -281,7 +281,17 @@ class Parser:
         self._expect(TokenType.LIBRARY)
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
-        return Library(tag.value)
+        # A library pode ser qualificada pela linguagem estrangeira:
+        #   library >c math<   |   library >go:fmt<   |   library >math<
+        raw = tag.value.strip()
+        if ':' in raw:
+            lang, _, name = raw.partition(':')
+        elif raw.split()[1:]:                 # há espaço -> "lang nome"
+            parts = raw.split()
+            lang, name = parts[0], ' '.join(parts[1:])
+        else:
+            lang, name = '', raw
+        return Library(name=name.strip(), lang=lang.strip())
 
     def _foreign(self):
         tok = self._expect(TokenType.LANG_BLOCK)
