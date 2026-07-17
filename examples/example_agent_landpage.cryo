@@ -1,0 +1,46 @@
+// ============================================================
+//  Exemplo Fase 3 — agente que CRIA uma landing page
+//
+//  Demonstra o `agent` configurável: subconjunto de tools e
+//  limite de passos. O agente monta o HTML e salva o arquivo.
+//    agent(modelo, prompt, [tools...], maxPassos)
+//
+//  Rodar (com LLM real via gateway, ou o mock de teste):
+//    CRYO_LLM_URL=http://127.0.0.1:8804 \
+//      python burnout/cryoc.py cryo/examples/example_agent_landpage.cryo --backend go --run
+//  -> gera build/landpage.html
+// ============================================================
+
+// Tool: monta o HTML da landing page a partir dos textos.
+tool fn montar_html(string titulo, string subtitulo, string cta) -> string ={
+    return "<!doctype html>\n<html lang=\"pt-BR\">\n<head>\n<meta charset=\"utf-8\">\n" +
+           "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
+           "<title>" + titulo + "</title>\n<style>\n" +
+           "*{box-sizing:border-box} body{margin:0;font-family:system-ui,sans-serif;" +
+           "background:radial-gradient(circle at 50% 0,#1b2550,#0b1020);color:#e6e9f0}\n" +
+           ".hero{max-width:760px;margin:0 auto;padding:120px 24px;text-align:center}\n" +
+           "h1{font-size:52px;line-height:1.1;margin:0 0 16px}\n" +
+           "p{font-size:20px;opacity:.82;margin:0 0 32px}\n" +
+           "a.btn{display:inline-block;padding:16px 32px;background:#5b8cff;color:#fff;" +
+           "border-radius:12px;text-decoration:none;font-weight:700;font-size:18px}\n" +
+           "</style>\n</head>\n<body>\n  <div class=\"hero\">\n" +
+           "    <h1>" + titulo + "</h1>\n" +
+           "    <p>" + subtitulo + "</p>\n" +
+           "    <a class=\"btn\" href=\"#\">" + cta + "</a>\n" +
+           "  </div>\n</body>\n</html>\n";
+}
+
+// Tool: salva o conteudo em um arquivo no disco.
+tool fn salvar_pagina(string html, string caminho) -> bool ={
+    return pyro_write_file(caminho, html);
+}
+
+// O agente decide montar e salvar; limitamos a 2 tools e 4 passos.
+string resultado = agent("gpt-x",
+    "Crie uma landing page para o produto 'Cryo Lang' com subtitulo " +
+    "'A linguagem que compila para Pyro' e botao 'Comecar agora'. " +
+    "Salve em build/landpage.html.",
+    ["montar_html", "salvar_pagina"], 4);
+
+print("== agente (tools limitadas: montar_html, salvar_pagina) ==");
+print(resultado);
