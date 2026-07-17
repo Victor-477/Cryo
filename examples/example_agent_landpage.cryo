@@ -35,12 +35,17 @@ tool fn salvar_pagina(string html, string caminho) -> bool ={
     return pyro_write_file(caminho, html);
 }
 
-// O agente decide montar e salvar; limitamos a 2 tools e 4 passos.
+// Tool: abre o arquivo no navegador padrao do sistema.
+tool fn abrir_pagina(string caminho) -> bool ={
+    return pyro_open(caminho);
+}
+
+// O agente monta, salva e abre no navegador; 3 tools e 5 passos.
 string resultado = agent("gpt-x",
     "Crie uma landing page para o produto 'Cryo Lang' com subtitulo " +
     "'A linguagem que compila para Pyro' e botao 'Comecar agora'. " +
-    "Salve em build/landpage.html.",
-    ["montar_html", "salvar_pagina"], 4);
+    "Salve em build/landpage.html e depois abra a pagina no navegador.",
+    ["montar_html", "salvar_pagina", "abrir_pagina"], 5);
 
-print("== agente (tools limitadas: montar_html, salvar_pagina) ==");
+print("== agente (tools: montar_html, salvar_pagina, abrir_pagina) ==");
 print(resultado);
