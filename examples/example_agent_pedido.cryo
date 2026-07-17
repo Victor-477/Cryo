@@ -1,0 +1,57 @@
+// ============================================================
+//  Exemplo Fase 3 — agente de e-commerce com VÁRIAS tools
+//
+//  Um fluxo agêntico realista: o modelo encadeia 6 tools para
+//  montar um pedido — buscar cliente, buscar produto (retorna
+//  um struct), verificar estoque, calcular frete, aplicar cupom
+//  e criar o pedido — e então resume o resultado.
+//
+//  Rodar (com um LLM real via gateway, ou o mock de teste):
+//    CRYO_LLM_URL=http://127.0.0.1:8801 \
+//      python burnout/cryoc.py cryo/examples/example_agent_pedido.cryo --backend go --run
+// ============================================================
+
+struct Produto { string nome; number preco; }
+
+// ── Tools expostas ao agente (schema derivado da assinatura) ──
+
+tool fn buscar_cliente(string email) -> string ={
+    if (email == "ana@loja.com") { return "Ana Silva"; }
+    return "Cliente Desconhecido";
+}
+
+tool fn buscar_produto(string sku) -> Produto ={
+    if (sku == "SKU-1") { return new Produto { nome: "Fone Bluetooth", preco: 129.90 }; }
+    if (sku == "SKU-2") { return new Produto { nome: "Teclado Mecanico", preco: 249.90 }; }
+    return new Produto { nome: "Desconhecido", preco: 0.0 };
+}
+
+tool fn verificar_estoque(string sku) -> int ={
+    if (sku == "SKU-1") { return 42; }
+    if (sku == "SKU-2") { return 7; }
+    return 0;
+}
+
+tool fn calcular_frete(string cep, int qtd) -> number ={
+    return 12.50 + qtd * 6.00;    // base + por item
+}
+
+tool fn aplicar_cupom(number total, string cupom) -> number ={
+    if (cupom == "PROMO10") { return total * 0.90; }   // 10% off
+    if (cupom == "FRETEGRATIS") { return total; }
+    return total;
+}
+
+tool fn criar_pedido(string cliente, number total) -> string ={
+    return "PED-1007";
+}
+
+// ── O agente decide quais tools chamar, em qual ordem ────────
+string resposta = agent("gpt-x",
+    "Faça um pedido para ana@loja.com: 2 unidades do SKU-1, " +
+    "cupom PROMO10, entrega no CEP 01000-000. Confirme o total e o estoque.");
+
+print("== Tools disponiveis para o agente ==");
+print(tools());
+print("== Resposta do agente ==");
+print(resposta);
