@@ -20,6 +20,31 @@ class Finding:
     message: str
 
 
+# ── operacoes sensiveis (callee -> nivel, regra, mensagem) ──
+_SENSITIVE = {
+    'pyro_exec': ('ALTO', 'command-exec',
+                  "pyro_exec() executa um comando de shell arbitrário — "
+                  "nunca passe entrada não confiável como comando."),
+    'pyro_write_file': ('MEDIO', 'file-write',
+                        "pyro_write_file() grava em caminho arbitrário no disco — "
+                        "valide o caminho (evite path traversal)."),
+    'pyro_open': ('MEDIO', 'shell-open',
+                  "pyro_open() abre um arquivo/URL no app padrão do SO — "
+                  "não abra alvos vindos de entrada não confiável."),
+    'pyro_exit': ('BAIXO', 'process-exit',
+                  "pyro_exit() encerra o processo."),
+    'http_get':  ('MEDIO', 'net-egress',
+                  "http_get() faz requisição de rede — risco de SSRF se a URL "
+                  "vier de entrada não confiável."),
+    'http_post': ('MEDIO', 'net-egress',
+                  "http_post() envia dados pela rede — confirme destino e conteúdo."),
+    'llm':   ('BAIXO', 'llm-egress',
+              "llm() envia o prompt a um endpoint externo (CRYO_LLM_URL)."),
+    'agent': ('BAIXO', 'llm-egress',
+              "agent() troca dados com um LLM externo e executa tools em ciclo."),
+}
+
+
 # ── walker generico sobre nós dataclass ─────────────────────
 
 def _walk(node: Any):
@@ -82,6 +107,11 @@ def audit_ast(program) -> List[Finding]:
         if isinstance(node, CallExpr) and node.callee in (
                 'input', 'input_int', 'input_num'):
             used_input = True
+
+        # Operacoes sensiveis (maquina / rede / LLM) — superficie de risco.
+        if isinstance(node, CallExpr) and node.callee in _SENSITIVE:
+            level, rule, msg = _SENSITIVE[node.callee]
+            findings.append(Finding(level, rule, msg))
 
     if used_input:
         findings.append(Finding(
