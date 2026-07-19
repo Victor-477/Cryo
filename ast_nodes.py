@@ -24,11 +24,13 @@ class StructField(Node):
 class StructDecl(Node):
     name:   str
     fields: List[StructField]
+    line:   int = 0
 
 @dataclass
 class EnumDecl(Node):
     name:    str
     members: List[str]
+    line:    int = 0
 
 @dataclass
 class SkillDecl(Node):

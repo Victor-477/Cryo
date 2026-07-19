@@ -72,8 +72,7 @@ class _Checker:
         self.loop_depth = 0
 
     def err(self, line: int, msg: str):
-        loc = f"Linha {line}: " if line else ""
-        self.errors.append(loc + msg)
+        self.errors.append((int(line or 0), msg))
 
     # ── coleta de declarações de topo ───────────────────────
     def collect(self):
@@ -101,7 +100,8 @@ class _Checker:
                 seen[name] = kind
 
     # ── varredura ───────────────────────────────────────────
-    def run(self):
+    def analyze(self):
+        """Percorre o programa e preenche self.errors com (linha, msg)."""
         self.collect()
         scope = _Scope()
         for n in self.program.statements:
@@ -109,11 +109,18 @@ class _Checker:
                 self.check_function(n)
             else:
                 self.check_stmt(n, scope)
+        return self.errors
+
+    def run(self):
+        self.analyze()
         if self.errors:
+            def fmt(e):
+                line, msg = e
+                return (f"Linha {line}: " if line else "") + msg
             raise SemanticError(
                 "análise semântica encontrou "
                 f"{len(self.errors)} problema(s):\n  - "
-                + "\n  - ".join(self.errors))
+                + "\n  - ".join(fmt(e) for e in self.errors))
 
     def check_function(self, fn: FunctionDecl):
         scope = _Scope()
@@ -275,3 +282,8 @@ class _Checker:
 def check(program: Program) -> None:
     """Roda a análise semântica; levanta SemanticError se houver problemas."""
     _Checker(program).run()
+
+
+def findings(program: Program):
+    """Devolve a lista de (linha, mensagem) sem levantar — usado pelo LSP."""
+    return _Checker(program).analyze()
