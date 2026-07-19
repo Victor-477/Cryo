@@ -156,6 +156,18 @@ def _reason(backend: str, tags: Set[str], foreign: Set[str]) -> str:
     return f"recursos cobertos pelo backend {backend}"
 
 
+def missing_capabilities(program, backend: str) -> Tuple[Set[str], Set[str]]:
+    """Recursos exigidos pelo programa que ``backend`` NÃO cobre.
+
+    Devolve (tags_de_recurso_faltando, linguagens_de_bloco_não_emitidas).
+    Vazio nos dois quando o backend dá conta de tudo.
+    """
+    tags, foreign = analyze(program)
+    missing_tags = tags - _SUPPORTS.get(backend, set())
+    missing_foreign = foreign - _LANG_OF.get(backend, set())
+    return missing_tags, missing_foreign
+
+
 def select_backend(program) -> Tuple[str, str]:
     """Escolhe o backend ideal para o programa. Devolve (backend, motivo)."""
     tags, foreign = analyze(program)
