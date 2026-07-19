@@ -29,6 +29,9 @@ _CALL_TAG = {
     'sqrt': 'mathfn', 'pow': 'mathfn', 'abs': 'mathfn', 'min': 'mathfn',
     'max': 'mathfn', 'floor': 'mathfn', 'ceil': 'mathfn', 'round': 'mathfn',
     'json_encode': 'json', 'json_decode': 'json',
+    'upper': 'strfn', 'lower': 'strfn', 'trim': 'strfn', 'contains': 'strfn',
+    'find': 'strfn', 'replace': 'strfn', 'substr': 'strfn', 'split': 'strfn',
+    'join': 'strfn',
     'http_get': 'http', 'http_post': 'http', 'sleep': 'http',
     'llm': 'llm', 'agent': 'llm', 'tools': 'llm', 'tools_json': 'llm',
     'tool_get': 'llm', 'schema_of': 'llm', 'skills': 'llm', 'skill_get': 'llm',
@@ -42,12 +45,13 @@ _CALL_TAG = {
 # backend -> conjunto de tags de capacidade suportadas
 _SUPPORTS = {
     'asm':  set(),
-    'pyro': {'float', 'string', 'array', 'map', 'struct'},
+    'pyro': {'float', 'string', 'array', 'map', 'struct', 'enum',
+             'convfn', 'mathfn', 'mapremove', 'strfn'},
     'c':    {'float', 'string', 'array', 'struct', 'enum', 'trycatch', 'mathfn'},
     'node': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
-             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove'},
+             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn'},
     'go':   {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
-             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove',
+             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
              'concurrency', 'llm', 'http', 'machine', 'input'},
 }
 
