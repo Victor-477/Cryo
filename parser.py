@@ -115,7 +115,17 @@ class Parser:
 
     def _stmt(self):
         tok = self._cur()
+        _line = tok.line
+        node = self._stmt_inner(tok)
+        # anota a linha de origem no nó (para a tabela de depuração)
+        try:
+            if getattr(node, 'line', 0) in (0, None):
+                node.line = _line
+        except Exception:
+            pass
+        return node
 
+    def _stmt_inner(self, tok):
         if tok.type == TokenType.FN:      return self._fn()
         if tok.type == TokenType.TOOL:    return self._tool()
         if tok.type == TokenType.STRUCT:  return self._struct()
