@@ -1,0 +1,39 @@
+// ============================================================
+//  Exemplo Fase 5 — JSON nativo na VM Pyro
+//
+//  json_encode / json_decode agora rodam também no bytecode Pyro
+//  (structs são maps na VM, então o acesso a campo funciona após
+//  o decode). Roda idêntico em pyro, go e node.
+//
+//    python burnout/cryoc.py cryo/examples/example_json.cryo --backend pyro --run
+// ============================================================
+
+struct Pedido {
+    string cliente;
+    number total;
+    bool   pago;
+}
+
+// ── serialização (struct -> JSON) ───────────────────────────
+Pedido p = new Pedido { cliente: "Ana Silva", total: 284.30, pago: false };
+string payload = json_encode(p);
+print("payload:");
+print(payload);
+
+// ── desserialização tipada (JSON -> struct) ─────────────────
+string entrada = "{\"cliente\": \"Bruno\", \"total\": 99.90, \"pago\": true}";
+Pedido q = json_decode(entrada) as Pedido;
+print("cliente decodificado: ${q.cliente}");
+print("total decodificado:   ${q.total}");
+print("pago?                 ${q.pago}");
+
+// ── arrays e maps também ────────────────────────────────────
+int[] ids = [10, 20, 30];
+print("array -> JSON: ${json_encode(ids)}");
+
+map<string, number> precos = { "cafe": 5.5, "cha": 4.0 };
+print("map -> JSON:   ${json_encode(precos)}");
+
+assert(q.cliente == "Bruno", "decode de string falhou");
+assert(contains(json_encode(p), "Ana Silva"), "encode falhou");
+print("json nativo ok nos tres backends");
