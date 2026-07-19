@@ -11,7 +11,7 @@ from ast_nodes import (
     CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, TryCatch,
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
-    Import, Library, ForeignBlock,
+    Import, ModuleImport, Library, ForeignBlock,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
@@ -273,6 +273,13 @@ class Parser:
 
     def _import(self):
         self._expect(TokenType.IMPORT)
+        tok = self._cur()
+        # import "arquivo.cryo"  -> módulo Cryo (resolvido pelo compilador)
+        if tok.type == TokenType.STR_LIT:
+            self._advance()
+            self._opt_semi()
+            return ModuleImport(tok.value)
+        # import >Lang<          -> habilita linguagem estrangeira
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
         return Import(tag.value)
@@ -297,6 +304,51 @@ class Parser:
         tok = self._expect(TokenType.LANG_BLOCK)
         lang, _, code = tok.value.partition(':')
         return ForeignBlock(lang, code)
+
+    # ── interpolação de strings: "total: ${x}" ──────────────
+
+    def _string_literal(self, s: str, line: int):
+        """Literal string; com `${expr}` vira concatenação com to_string(expr)."""
+        if '${' not in s:
+            return Literal('string', s)
+        from lexer import Lexer as _Lexer   # import local (sem ciclo)
+        parts = []
+        i = 0
+        while True:
+            j = s.find('${', i)
+            if j < 0:
+                if i < len(s):
+                    parts.append(Literal('string', s[i:]))
+                break
+            if j > i:
+                parts.append(Literal('string', s[i:j]))
+            # acha o '}' correspondente respeitando chaves aninhadas
+            depth, k = 1, j + 2
+            while k < len(s) and depth:
+                if s[k] == '{':
+                    depth += 1
+                elif s[k] == '}':
+                    depth -= 1
+                k += 1
+            if depth:
+                raise ParseError(
+                    f"[Parser] Linha {line}: interpolação '${{' sem '}}' de fechamento")
+            frag = s[j + 2:k - 1].strip()
+            if not frag:
+                raise ParseError(
+                    f"[Parser] Linha {line}: interpolação vazia '${{}}'")
+            expr = Parser(_Lexer(frag).tokenize())._expr()
+            parts.append(CallExpr('to_string', [expr]))
+            i = k
+        if not parts:
+            return Literal('string', '')
+        node = parts[0]
+        if not isinstance(node, Literal):
+            # garante contexto string desde o 1º termo ("" + to_string(x))
+            node = BinaryExpr('+', Literal('string', ''), node)
+        for p in parts[1:]:
+            node = BinaryExpr('+', node, p)
+        return node
 
     # ── return ──────────────────────────────────────────────
 
@@ -652,7 +704,7 @@ class Parser:
         if tok.type == TokenType.FLOAT_LIT:
             self._advance(); return Literal('float', float(tok.value))
         if tok.type == TokenType.STR_LIT:
-            self._advance(); return Literal('string', tok.value)
+            self._advance(); return self._string_literal(tok.value, tok.line)
         if tok.type == TokenType.BOOL_LIT:
             self._advance(); return Literal('bool', tok.value == 'true')
         if tok.type == TokenType.NULL:

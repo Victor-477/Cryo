@@ -167,6 +167,11 @@ class Import(Node):
     lang: str
 
 @dataclass
+class ModuleImport(Node):
+    """Import de outro arquivo Cryo: import "utils.cryo" (resolvido pelo compilador)."""
+    path: str
+
+@dataclass
 class Library(Node):
     name: str
     lang: str = ""   # linguagem estrangeira à qual a library pertence (ex.: "c", "go")
