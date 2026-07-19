@@ -82,6 +82,7 @@ class FunctionDecl(Node):
     return_type: Optional[str]
     body:        List[Node]
     is_tool:     bool = False   # 'tool fn' — exposta a LLMs (Fase 3)
+    line:        int = 0
 
 # -- controle de fluxo -----------------------------------
 
@@ -229,6 +230,7 @@ class UnaryExpr(Node):
 class CallExpr(Node):
     callee: str
     args:   List[Node]
+    line:   int = 0
 
 @dataclass
 class MethodCallExpr(Node):
@@ -258,6 +260,7 @@ class StructInit(Node):
 @dataclass
 class Identifier(Node):
     name: str
+    line: int = 0
 
 @dataclass
 class Literal(Node):

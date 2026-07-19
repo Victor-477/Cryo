@@ -228,6 +228,7 @@ class Parser:
         return self._fn(is_tool=True)
 
     def _fn(self, is_tool=False):
+        fn_line = self._cur().line
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
         self._expect(TokenType.LPAREN)
@@ -245,7 +246,7 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body, is_tool=is_tool)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line)
 
     def _body(self):
         stmts = []
@@ -753,6 +754,7 @@ class Parser:
 
         # identificador ou chamada de funcao
         if tok.type == TokenType.IDENT:
+            id_line = tok.line
             name = self._advance().value
             if self._match(TokenType.LPAREN):
                 self._advance()
@@ -762,8 +764,8 @@ class Parser:
                     if self._match(TokenType.COMMA):
                         self._advance()
                 self._expect(TokenType.RPAREN)
-                return CallExpr(name, args)
-            return Identifier(name)
+                return CallExpr(name, args, line=id_line)
+            return Identifier(name, line=id_line)
 
         if tok.type == TokenType.LPAREN:
             self._advance()

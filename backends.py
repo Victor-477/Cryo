@@ -46,7 +46,8 @@ _CALL_TAG = {
 _SUPPORTS = {
     'asm':  set(),
     'pyro': {'float', 'string', 'array', 'map', 'struct', 'enum',
-             'convfn', 'mathfn', 'mapremove', 'strfn'},
+             'convfn', 'mathfn', 'mapremove', 'strfn', 'trycatch',
+             'optional', 'cast', 'input'},
     'c':    {'float', 'string', 'array', 'struct', 'enum', 'trycatch', 'mathfn'},
     'node': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn'},
