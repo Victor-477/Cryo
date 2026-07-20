@@ -1,15 +1,22 @@
 # ============================================================
-#  Cryo Compiler - Auditoria de Seguranca Estatica  (v0.4)
+#  Cryo Compiler - Auditoria de Seguranca Estatica  (v0.5)
 #
 #  Percorre a AST e reporta padroes de risco antes da geracao
 #  de codigo. Nao substitui o modo --safe (instrumentacao em
 #  tempo de execucao); complementa-o com analise estatica.
+#
+#  v0.5: analise de taint (fonte nao confiavel -> sink perigoso:
+#  injecao de comando, path traversal, SSRF) e deteccao de
+#  segredos embutidos no codigo-fonte.
 # ============================================================
+import re
 from dataclasses import dataclass, fields, is_dataclass
-from typing import List, Any
+from typing import List, Any, Set
 from ast_nodes import (
     Node, ForeignBlock, SafetyBlock, Import, Library,
-    BinaryExpr, CallExpr, Literal, VarDecl, FunctionDecl,
+    BinaryExpr, CallExpr, Literal, VarDecl, ConstDecl,
+    Assignment, CompoundAssignment, ForEach, Identifier,
+    FunctionDecl,
 )
 
 
@@ -45,6 +52,84 @@ _SENSITIVE = {
 }
 
 
+# ── analise de taint (fluxo de dados nao confiaveis) ─────────
+#
+# Fontes: builtins que produzem dado nao confiavel (entrada do
+# usuario, rede, ambiente, saida de LLM). Sinks: builtins que, se
+# alimentados com dado nao confiavel, viram um risco concreto
+# (injecao de comando, path traversal, SSRF). A analise e
+# intraprocedural-aproximada (fixpoint sobre nomes de variaveis no
+# programa inteiro), conservadora e sem substituir revisao manual.
+_TAINT_SOURCES = {
+    'input', 'input_int', 'input_num', 'pyro_read',
+    'pyro_args', 'pyro_env',
+    'http_get', 'http_post',
+    'llm', 'agent',
+}
+
+# callee -> (indice_do_arg, nivel, regra, mensagem)
+_TAINT_SINKS = {
+    'pyro_exec':       (0, 'ALTO', 'tainted-exec',
+                        "comando de shell construído a partir de entrada não "
+                        "confiável — risco de injeção de comando (sanitize/escape "
+                        "ou use uma lista de comandos permitidos)."),
+    'pyro_write_file': (0, 'ALTO', 'tainted-path',
+                        "caminho de arquivo vindo de entrada não confiável — "
+                        "risco de path traversal / escrita arbitrária (valide e "
+                        "normalize o caminho; recuse '..')."),
+    'pyro_open':       (0, 'ALTO', 'tainted-open',
+                        "alvo aberto no SO vindo de entrada não confiável — "
+                        "não abra caminhos/URLs arbitrários."),
+    'http_get':        (0, 'ALTO', 'tainted-ssrf',
+                        "URL vinda de entrada não confiável — risco de SSRF "
+                        "(valide o host contra uma allowlist)."),
+    'http_post':       (0, 'ALTO', 'tainted-ssrf',
+                        "URL vinda de entrada não confiável — risco de SSRF "
+                        "(valide o host contra uma allowlist)."),
+}
+
+# ── segredos embutidos ───────────────────────────────────────
+# Por valor: formatos reconhecidos de chaves reais. Por nome:
+# string nao vazia atribuida a uma variavel com nome sensivel.
+_SECRET_VALUE = re.compile(r'(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})')
+_SECRET_NAME  = re.compile(
+    r'(api[_-]?key|secret|token|senha|password|passwd|access[_-]?key|'
+    r'private[_-]?key|client[_-]?secret)', re.I)
+
+
+def _expr_is_tainted(expr: Any, tainted: Set[str]) -> bool:
+    """True se a expressao contem (recursivamente) uma chamada a uma
+    fonte de taint ou referencia uma variavel ja marcada como tainted."""
+    for n in _walk(expr):
+        if isinstance(n, CallExpr) and n.callee in _TAINT_SOURCES:
+            return True
+        if isinstance(n, Identifier) and n.name in tainted:
+            return True
+    return False
+
+
+def _compute_taint(program) -> Set[str]:
+    """Conjunto de nomes de variaveis que podem receber dado nao
+    confiavel, por fixpoint monotonico sobre o programa inteiro."""
+    tainted: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for n in _walk(program):
+            if isinstance(n, (VarDecl, ConstDecl, Assignment, CompoundAssignment)):
+                val = getattr(n, 'value', None)
+                if val is not None and n.name not in tainted \
+                        and _expr_is_tainted(val, tainted):
+                    tainted.add(n.name)
+                    changed = True
+            elif isinstance(n, ForEach):
+                if n.var_name not in tainted \
+                        and _expr_is_tainted(n.iterable, tainted):
+                    tainted.add(n.var_name)
+                    changed = True
+    return tainted
+
+
 # ── walker generico sobre nós dataclass ─────────────────────
 
 def _walk(node: Any):
@@ -65,6 +150,9 @@ def audit_ast(program) -> List[Finding]:
     n_unsafe = 0
     n_foreign = 0
     used_input = False
+
+    # taint: nomes de variaveis que podem carregar dado nao confiavel
+    tainted = _compute_taint(program)
 
     for node in _walk(program):
         # Blocos de linguagem estrangeira: superficie de injecao,
@@ -112,6 +200,28 @@ def audit_ast(program) -> List[Finding]:
         if isinstance(node, CallExpr) and node.callee in _SENSITIVE:
             level, rule, msg = _SENSITIVE[node.callee]
             findings.append(Finding(level, rule, msg))
+
+        # Fluxo de taint: dado nao confiavel chegando a um sink perigoso.
+        if isinstance(node, CallExpr) and node.callee in _TAINT_SINKS:
+            argi, level, rule, msg = _TAINT_SINKS[node.callee]
+            if argi < len(node.args) and _expr_is_tainted(node.args[argi], tainted):
+                findings.append(Finding(level, rule, msg))
+
+        # Segredos embutidos no codigo-fonte.
+        if isinstance(node, (VarDecl, ConstDecl)):
+            val = getattr(node, 'value', None)
+            if isinstance(val, Literal) and val.kind == 'string':
+                sval = str(val.value)
+                if _SECRET_VALUE.search(sval):
+                    findings.append(Finding(
+                        'ALTO', 'hardcoded-secret',
+                        "Segredo embutido no código-fonte (formato de chave "
+                        "reconhecido) — mova para variável de ambiente/secret."))
+                elif sval and _SECRET_NAME.search(node.name):
+                    findings.append(Finding(
+                        'MEDIO', 'hardcoded-secret',
+                        f"Possível segredo embutido em '{node.name}' — evite "
+                        f"credenciais no código; use variável de ambiente."))
 
     if used_input:
         findings.append(Finding(
