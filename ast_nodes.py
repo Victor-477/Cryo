@@ -260,6 +260,13 @@ class StructInit(Node):
     fields:      List[Tuple[str, Node]]
 
 @dataclass
+class Lambda(Node):
+    params:      List[Tuple[str, str]]   # [(tipo, nome), ...]
+    return_type: Optional[str]           # None -> inferido pelo backend
+    body:        List[Node]              # `=> expr` vira [Return(expr)]
+    line:        int = 0
+
+@dataclass
 class Identifier(Node):
     name: str
     line: int = 0

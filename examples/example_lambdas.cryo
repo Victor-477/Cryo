@@ -1,0 +1,47 @@
+// ============================================================
+//  Fase 8.1 — funções de primeira classe, lambdas e closures
+//  Backends: go e node (o backend pyro ainda não suporta
+//  valores-função — planejado para a Fase 9).
+//    python burnout/cryoc.py cryo/examples/example_lambdas.cryo --backend go   --run
+//    python burnout/cryoc.py cryo/examples/example_lambdas.cryo --backend node --run
+// ============================================================
+
+// função nomeada usada como valor de primeira classe
+fn dobro(int n) -> int ={ return n * 2; }
+
+// recebe uma função como parâmetro (tipo fn(int)->int)
+fn aplicar(fn(int)->int f, int x) -> int ={
+    return f(x);
+}
+
+// retorna uma função (closure que captura `base`)
+fn somador(int base) -> fn(int)->int ={
+    return (int x) => x + base;
+}
+
+// map manual sobre um array, recebendo a transformação como função
+fn mapear(int[] xs, fn(int)->int f) -> int[] ={
+    int[] out = [];
+    for (int v in xs) {
+        out.push(f(v));
+    }
+    return out;
+}
+
+// 1) passar uma função nomeada como valor
+print(aplicar(dobro, 21));            // 42
+
+// 2) lambda atribuída a uma variável de tipo função
+fn(int)->int inc = (int x) => x + 1;
+print(inc(41));                        // 42
+
+// 3) closure: soma10 lembra de base = 10
+fn(int)->int soma10 = somador(10);
+print(soma10(5));                      // 15
+
+// 4) lambda passada direto como argumento + map
+int[] nums = [1, 2, 3, 4];
+int[] triplos = mapear(nums, (int x) => x * 3);
+for (int t in triplos) {
+    print(t);                          // 3, 6, 9, 12
+}

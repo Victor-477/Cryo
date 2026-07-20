@@ -24,7 +24,7 @@ from ast_nodes import (
     Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, SpawnExpr, AwaitExpr,
     MapLiteral, UnaryExpr, CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
-    ArrayLiteral, StructInit, Identifier, Literal,
+    ArrayLiteral, StructInit, Identifier, Literal, Lambda,
 )
 
 
@@ -230,7 +230,8 @@ class _Checker:
 
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
-                or name in self.enum_members or name in self.type_names)
+                or name in self.enum_members or name in self.type_names
+                or name in self.fn_arity)   # nome de função = valor de 1ª classe
 
     def check_expr(self, n: Node, scope: _Scope):
         if n is None:
@@ -239,16 +240,23 @@ class _Checker:
             if not self._known_var(n.name, scope):
                 self.err(n.line, f"variável não declarada '{n.name}'")
         elif isinstance(n, CallExpr):
-            if n.callee not in BUILTINS:
-                if n.callee not in self.fn_arity:
-                    self.err(n.line, f"função desconhecida '{n.callee}'")
-                elif len(n.args) != self.fn_arity[n.callee]:
-                    self.err(n.line,
-                             f"função '{n.callee}' espera "
-                             f"{self.fn_arity[n.callee]} argumento(s), "
-                             f"recebeu {len(n.args)}")
+            if n.callee in BUILTINS or scope.has(n.callee):
+                pass   # builtin ou chamada indireta por variável de tipo função
+            elif n.callee not in self.fn_arity:
+                self.err(n.line, f"função desconhecida '{n.callee}'")
+            elif len(n.args) != self.fn_arity[n.callee]:
+                self.err(n.line,
+                         f"função '{n.callee}' espera "
+                         f"{self.fn_arity[n.callee]} argumento(s), "
+                         f"recebeu {len(n.args)}")
             for a in n.args:
                 self.check_expr(a, scope)
+        elif isinstance(n, Lambda):
+            scope.push()
+            for _pt, pn in n.params:
+                scope.declare(pn)
+            self.check_block(n.body, scope)
+            scope.pop()
         elif isinstance(n, MethodCallExpr):
             self.check_expr(n.obj, scope)
             for a in n.args:

@@ -16,7 +16,7 @@ from ast_nodes import (
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
-    Identifier, Literal,
+    Identifier, Literal, Lambda,
 )
 
 COMPOUND_OPS = (
@@ -84,6 +84,21 @@ class Parser:
             t = self._parse_type()
             self._expect(TokenType.GT)
             base = f"future<{t}>"
+        # tipo função: fn(T1, T2, ...) -> R   (R opcional -> void)
+        elif self._match(TokenType.FN):
+            self._advance()
+            self._expect(TokenType.LPAREN)
+            ptypes = []
+            while not self._match(TokenType.RPAREN):
+                ptypes.append(self._parse_type())
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            self._expect(TokenType.RPAREN)
+            ret = 'void'
+            if self._match(TokenType.ARROW):
+                self._advance()
+                ret = self._parse_type()
+            base = f"fn({','.join(ptypes)})->{ret}"
         else:
             valid = set(TYPE_TOKENS) | {TokenType.IDENT}
             tok = self._cur()
@@ -126,7 +141,11 @@ class Parser:
         return node
 
     def _stmt_inner(self, tok):
-        if tok.type == TokenType.FN:      return self._fn()
+        if tok.type == TokenType.FN:
+            # `fn name(...)` = declaração; `fn(...)->R var` = var de tipo função
+            if self._peek().type == TokenType.LPAREN:
+                return self._var_decl()
+            return self._fn()
         if tok.type == TokenType.TOOL:    return self._tool()
         if tok.type == TokenType.STRUCT:  return self._struct()
         if tok.type == TokenType.SCHEMA:  return self._struct()   # schema = struct
@@ -778,6 +797,9 @@ class Parser:
             return Identifier(name, line=id_line)
 
         if tok.type == TokenType.LPAREN:
+            # lambda: ( params ) => corpo   (senão, agrupamento)
+            if self._lambda_ahead():
+                return self._lambda()
             self._advance()
             expr = self._expr()
             self._expect(TokenType.RPAREN)
@@ -787,3 +809,42 @@ class Parser:
             f"[Parser] Linha {tok.line}: Token inesperado em expressao: "
             f"{tok.type.name} ({tok.value!r})"
         )
+
+    def _lambda_ahead(self) -> bool:
+        """True se o '(' atual abre uma lista de parâmetros de lambda —
+        i.e. o ')' correspondente é seguido de '=>'."""
+        depth = 0
+        i = self.pos
+        n = len(self.tokens)
+        while i < n:
+            t = self.tokens[i].type
+            if t == TokenType.LPAREN:
+                depth += 1
+            elif t == TokenType.RPAREN:
+                depth -= 1
+                if depth == 0:
+                    nxt = self.tokens[i + 1].type if i + 1 < n else TokenType.EOF
+                    return nxt == TokenType.FAT_ARROW
+            elif t == TokenType.EOF:
+                break
+            i += 1
+        return False
+
+    def _lambda(self):
+        line = self._cur().line
+        self._expect(TokenType.LPAREN)
+        params = []
+        while not self._match(TokenType.RPAREN):
+            ptype = self._parse_type()
+            pname = self._expect(TokenType.IDENT).value
+            params.append((ptype, pname))
+            if self._match(TokenType.COMMA):
+                self._advance()
+        self._expect(TokenType.RPAREN)
+        self._expect(TokenType.FAT_ARROW)
+        # corpo: `=> { stmts }` (bloco) ou `=> expr` (retorno implícito)
+        if self._match(TokenType.LBRACE):
+            body = self._block()
+        else:
+            body = [Return(self._expr())]
+        return Lambda(params, None, body, line=line)

@@ -97,6 +97,7 @@ class TokenType(Enum):
     SHR   = auto()   # >>
     # Especiais
     ARROW     = auto()
+    FAT_ARROW = auto()   # => (lambda)
     NULL_COAL = auto()
     QUESTION  = auto()
     # Pontuacao
@@ -367,6 +368,8 @@ class Lexer:
                     self._advance(); tokens.append(Token(TokenType.EQ, '==', sl, sc))
                 elif self._peek() == '{':
                     self._advance(); tokens.append(Token(TokenType.BODY_ASSIGN, '={', sl, sc))
+                elif self._peek() == '>':
+                    self._advance(); tokens.append(Token(TokenType.FAT_ARROW, '=>', sl, sc))
                 else:
                     tokens.append(Token(TokenType.ASSIGN, '=', sl, sc))
             elif ch == '!':

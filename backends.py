@@ -18,7 +18,7 @@ from typing import Any, Tuple, Set
 from ast_nodes import (
     Node, FunctionDecl, StructDecl, EnumDecl, SkillDecl, VarDecl, ConstDecl,
     ForEach, TryCatch, ForeignBlock, MapLiteral, CastExpr, UnwrapExpr,
-    SpawnExpr, AwaitExpr, ArrayLiteral, StructInit, Literal, CallExpr,
+    SpawnExpr, AwaitExpr, ArrayLiteral, StructInit, Literal, CallExpr, Lambda,
 )
 
 
@@ -50,10 +50,11 @@ _SUPPORTS = {
              'optional', 'cast', 'input', 'json', 'http'},
     'c':    {'float', 'string', 'array', 'struct', 'enum', 'trycatch', 'mathfn'},
     'node': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
-             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn'},
+             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
+             'firstclassfn'},
     'go':   {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
-             'concurrency', 'llm', 'http', 'machine', 'input'},
+             'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
 }
 
 # linguagens estrangeiras que cada backend consegue emitir
@@ -92,6 +93,8 @@ def _type_tags(t: str) -> Set[str]:
         tags.add('float')
     if 'string' in t:
         tags.add('string')
+    if 'fn(' in t:
+        tags.add('firstclassfn')
     return tags
 
 
@@ -115,6 +118,8 @@ def analyze(program) -> Tuple[Set[str], Set[str]]:
             tags.add('optional')
         elif isinstance(n, (SpawnExpr, AwaitExpr)):
             tags.add('concurrency')
+        elif isinstance(n, Lambda):
+            tags.add('firstclassfn')
         elif isinstance(n, ForeignBlock):
             foreign.add(n.lang.strip().lower())
         elif isinstance(n, FunctionDecl):
@@ -145,7 +150,8 @@ def analyze(program) -> Tuple[Set[str], Set[str]]:
 
 
 _ADVANCED = {'concurrency', 'llm', 'http', 'machine', 'optional', 'json',
-             'cast', 'enum', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'input'}
+             'cast', 'enum', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'input',
+             'firstclassfn'}
 
 
 def _reason(backend: str, tags: Set[str], foreign: Set[str]) -> str:
