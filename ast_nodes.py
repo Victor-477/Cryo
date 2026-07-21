@@ -229,6 +229,13 @@ class UnwrapExpr(Node):
     operand: Node
 
 @dataclass
+class TryExpr(Node):
+    """Propagação de erro: 'expr?'. Se expr é Ok(v)/não-nulo, vale v;
+    se é Err(e)/nulo, a função retorna cedo com esse erro/nulo (Fase 8.3)."""
+    operand: Node
+    line:    int = 0
+
+@dataclass
 class SpawnExpr(Node):
     """Inicia uma tarefa concorrente e retorna um Future<T>: 'spawn expr'."""
     expr: Node

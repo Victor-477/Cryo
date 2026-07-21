@@ -1,0 +1,40 @@
+// ============================================================
+//  Fase 8.3 — Propagação de erro com '?'
+//
+//  'expr?' desempacota um Result: se for Ok(v), vale v; se for
+//  Err(e), a função retorna cedo com esse Err. Elimina o
+//  try/catch verboso e o encadeamento manual de erros.
+//
+//  Rode em qualquer um dos três backends:
+//    python burnout/cryoc.py cryo/examples/example_try.cryo --backend pyro --run
+//    python burnout/cryoc.py cryo/examples/example_try.cryo --backend go   --run
+//    python burnout/cryoc.py cryo/examples/example_try.cryo --backend node --run
+// ============================================================
+
+enum Result { Ok(int), Err(string) }
+
+// converte texto -> Result: Ok(n) quando reconhecido, senão Err
+fn parseNum(string s) -> Result ={
+    if (s == "10") { return Ok(10); }
+    if (s == "20") { return Ok(20); }
+    if (s == "3")  { return Ok(3); }
+    return Err("valor invalido: " + s);
+}
+
+// soma dois números vindos de texto; qualquer erro é propagado com '?'
+fn somar(string a, string b) -> Result ={
+    int x = parseNum(a)?;      // se Err, somar() retorna esse Err
+    int y = parseNum(b)?;
+    return Ok(x + y);
+}
+
+fn mostra(string titulo, Result r) -> void ={
+    match (r) {
+        Ok(v)  => { print(titulo + " = " + to_string(v)); }
+        Err(e) => { print(titulo + " falhou: " + e); }
+    }
+}
+
+mostra("10 + 20", somar("10", "20"));   // Ok(30)
+mostra("3 + ??", somar("3", "x"));      // Err propagado do segundo argumento
+mostra("?? + 10", somar("y", "10"));    // Err propagado do primeiro argumento

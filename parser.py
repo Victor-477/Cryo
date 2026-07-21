@@ -13,7 +13,7 @@ from ast_nodes import (
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     Import, ModuleImport, Library, ForeignBlock,
     Assignment, IndexAssignment,
-    BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, UnaryExpr,
+    BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
     Identifier, Literal, Lambda, MatchCase, MatchStatement,
@@ -765,9 +765,27 @@ class Parser:
                 # desempacotamento de opcional: x!
                 self._advance()
                 expr = UnwrapExpr(expr)
+            elif self._match(TokenType.QUESTION) and not self._starts_expr(self._peek(1)):
+                # propagação de erro: expr?  (só quando o '?' NÃO abre um
+                # ternário — i.e., o token seguinte não inicia uma expressão)
+                q = self._advance()
+                expr = TryExpr(expr, q.line)
             else:
                 break
         return expr
+
+    # tokens que podem iniciar uma expressão (ramo 'then' de um ternário).
+    # Se o token após '?' está aqui, o '?' é ternário, não propagação.
+    _EXPR_START = frozenset({
+        TokenType.INT_LIT, TokenType.FLOAT_LIT, TokenType.STR_LIT,
+        TokenType.BOOL_LIT, TokenType.NULL, TokenType.IDENT,
+        TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE,
+        TokenType.NEW, TokenType.MINUS, TokenType.NOT, TokenType.TILDE,
+        TokenType.SPAWN, TokenType.AWAIT,
+    })
+
+    def _starts_expr(self, tok) -> bool:
+        return tok.type in self._EXPR_START
 
     def _primary(self):
         tok = self._cur()

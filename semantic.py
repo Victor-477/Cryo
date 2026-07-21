@@ -22,7 +22,7 @@ from ast_nodes import (
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
     Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
-    BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, SpawnExpr, AwaitExpr,
+    BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr,
     MapLiteral, UnaryExpr, CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
     ArrayLiteral, StructInit, Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
@@ -347,7 +347,7 @@ class _Checker:
             self.check_expr(n.condition, scope)
             self.check_expr(n.then_value, scope)
             self.check_expr(n.else_value, scope)
-        elif isinstance(n, (CastExpr, UnwrapExpr, SpawnExpr, AwaitExpr)):
+        elif isinstance(n, (CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr)):
             self.check_expr(getattr(n, 'expr', None) or n.operand, scope)
         elif isinstance(n, FieldAccess):
             self.check_expr(n.obj, scope)   # não validamos o nome do campo
