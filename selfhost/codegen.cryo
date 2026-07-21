@@ -1,0 +1,229 @@
+// ============================================================
+//  Cryo self-hosting — Codegen escrito em Cryo (Fase 9.3, estágio 3)
+//
+//  Compilador single-pass (parseia os tokens e EMITE bytecode direto)
+//  para um subconjunto de inteiros, gerando um arquivo .pyro VÁLIDO e
+//  gravando-o com write_bytes (NATIVE 27). Roda na VM Pyro: é o
+//  compilador Cryo→Pyro escrito na própria linguagem, sem Python.
+//
+//  Subconjunto: statements de topo `int x = <expr>;`, `x = <expr>;`,
+//  `print(<expr>);`. Expressões: literais inteiros, variáveis, + - * / %
+//  (precedência), unário -, e parênteses. Semântica inteira.
+//
+//  Formato .pyro emitido (little-endian; flags=0: sem XOR, sem debug):
+//    "PYRO" 0x02 0x00 | u16 nconsts | consts | u16 nfuncs | funcs |
+//    u16 entryfn | u32 codelen | code
+//  O const 0 é sempre a string "main" (nome da função de entrada);
+//  os demais são inteiros. Uma única função 'main' (todo o topo).
+// ============================================================
+import "lexer.cryo"
+
+// ── acessores do fluxo de tokens (cursor = box int[]) ───────
+fn cpt(string[] tt, int[] pos) -> string ={
+    if (pos[0] < len(tt)) { return tt[pos[0]]; }
+    return "EOF";
+}
+fn cpt2(string[] tt, int[] pos) -> string ={
+    if (pos[0] + 1 < len(tt)) { return tt[pos[0] + 1]; }
+    return "EOF";
+}
+fn cpv(string[] tv, int[] pos) -> string ={
+    if (pos[0] < len(tv)) { return tv[pos[0]]; }
+    return "";
+}
+fn cadv(int[] pos) -> void ={
+    pos[0] = pos[0] + 1;
+}
+
+// ── emissão de bytes (little-endian) ────────────────────────
+fn emU16(int[] a, int v) -> void ={
+    a.push(v & 255);
+    a.push((v >> 8) & 255);
+}
+fn emU32(int[] a, int v) -> void ={
+    a.push(v & 255);
+    a.push((v >> 8) & 255);
+    a.push((v >> 16) & 255);
+    a.push((v >> 24) & 255);
+}
+fn emI64(int[] a, int v) -> void ={
+    int k = 0;
+    while (k < 8) {
+        a.push((v >> (8 * k)) & 255);
+        k = k + 1;
+    }
+}
+// opcodes (ver ISA em PYRO_BYTECODE.md)
+fn emConst(int[] code, int poolIdx) -> void ={
+    code.push(1);              // OP_CONST
+    emU16(code, poolIdx);
+}
+fn emLoad(int[] code, int slot) -> void ={
+    code.push(6);              // OP_LOAD
+    emU16(code, slot);
+}
+fn emStore(int[] code, int slot) -> void ={
+    code.push(7);              // OP_STORE
+    emU16(code, slot);
+}
+
+// ── pool de constantes (inteiros) e slots de variáveis ──────
+// cs guarda só inteiros (como texto decimal); o pool final é
+// ["main"] ++ cs, então a constante cs[i] tem índice de pool i+1.
+fn addInt(string[] cs, int v) -> int ={
+    cs.push(to_string(v));
+    return len(cs) - 1;
+}
+fn slotOf(string[] sl, string name) -> int ={
+    int i = 0;
+    while (i < len(sl)) {
+        if (sl[i] == name) { return i; }
+        i = i + 1;
+    }
+    sl.push(name);
+    return len(sl) - 1;
+}
+
+// ── codegen de expressões (deixa o valor na pilha da VM) ────
+fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    cgAdd(tt, tv, pos, code, cs, sl);
+}
+fn cgAdd(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    cgMul(tt, tv, pos, code, cs, sl);
+    while (cpt(tt, pos) == "PLUS" || cpt(tt, pos) == "MINUS") {
+        string op = cpt(tt, pos); cadv(pos);
+        cgMul(tt, tv, pos, code, cs, sl);
+        if (op == "PLUS") { code.push(16); } else { code.push(17); }   // ADD / SUB
+    }
+}
+fn cgMul(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    cgUnary(tt, tv, pos, code, cs, sl);
+    while (cpt(tt, pos) == "STAR" || cpt(tt, pos) == "SLASH" || cpt(tt, pos) == "PERCENT") {
+        string op = cpt(tt, pos); cadv(pos);
+        cgUnary(tt, tv, pos, code, cs, sl);
+        if (op == "STAR")       { code.push(18); }   // MUL
+        else if (op == "SLASH") { code.push(19); }   // DIV
+        else                    { code.push(20); }   // MOD
+    }
+}
+fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    if (cpt(tt, pos) == "MINUS") {
+        cadv(pos);
+        cgUnary(tt, tv, pos, code, cs, sl);
+        code.push(21);   // OP_NEG
+        return;
+    }
+    cgPrimary(tt, tv, pos, code, cs, sl);
+}
+fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    string t = cpt(tt, pos);
+    if (t == "INT_LIT") {
+        int v = to_int(cpv(tv, pos)); cadv(pos);
+        int ci = addInt(cs, v);
+        emConst(code, ci + 1);       // +1: pool[0] = "main"
+        return;
+    }
+    if (t == "IDENT") {
+        string name = cpv(tv, pos); cadv(pos);
+        emLoad(code, slotOf(sl, name));
+        return;
+    }
+    if (t == "LPAREN") {
+        cadv(pos);
+        cgAdd(tt, tv, pos, code, cs, sl);
+        if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+        return;
+    }
+    // desconhecido: ignora (subconjunto)
+}
+
+// ── codegen de statements ───────────────────────────────────
+fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    string t = cpt(tt, pos);
+    // int x = expr;   (subconjunto: apenas 'int')
+    if (t == "TYPE_INT") {
+        cadv(pos);                              // int
+        string name = cpv(tv, pos); cadv(pos);  // IDENT
+        if (cpt(tt, pos) == "ASSIGN") {
+            cadv(pos);
+            cgAdd(tt, tv, pos, code, cs, sl);
+        } else {
+            int ci = addInt(cs, 0);             // sem init -> 0
+            emConst(code, ci + 1);
+        }
+        emStore(code, slotOf(sl, name));
+        if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+        return;
+    }
+    if (t == "IDENT") {
+        string name = cpv(tv, pos);
+        // print(expr);
+        if (name == "print" && cpt2(tt, pos) == "LPAREN") {
+            cadv(pos); cadv(pos);               // print (
+            cgAdd(tt, tv, pos, code, cs, sl);
+            if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            code.push(80);                      // OP_PRINT
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+        // x = expr;
+        if (cpt2(tt, pos) == "ASSIGN") {
+            cadv(pos); cadv(pos);               // name =
+            cgAdd(tt, tv, pos, code, cs, sl);
+            emStore(code, slotOf(sl, name));
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+    }
+    // desconhecido: avança um token para não travar
+    cadv(pos);
+}
+
+// ── monta o cabeçalho + pool + funcs + code e grava o .pyro ─
+fn compile(string src, string outPath) -> bool ={
+    string[] tt = [];
+    string[] tv = [];
+    lex(src, tt, tv);
+
+    int[] code = [];
+    string[] cs = [];
+    string[] sl = [];
+    int[] pos = [0];
+    while (cpt(tt, pos) != "EOF") {
+        cgStmt(tt, tv, pos, code, cs, sl);
+    }
+    code.push(4);    // OP_NULL  (retorno implícito de main)
+    code.push(65);   // OP_RET
+
+    int[] out = [];
+    // magic "PYRO" + versão 2 + flags 0
+    out.push(80); out.push(89); out.push(82); out.push(79);
+    out.push(2); out.push(0);
+    // constantes: pool[0] = "main" (string), depois os inteiros
+    emU16(out, 1 + len(cs));
+    out.push(3);              // TAG_STR
+    emU16(out, 4);            // len("main")
+    out.push(109); out.push(97); out.push(105); out.push(110);  // m a i n
+    int ci = 0;
+    while (ci < len(cs)) {
+        out.push(1);          // TAG_INT
+        emI64(out, to_int(cs[ci]));
+        ci = ci + 1;
+    }
+    // funcs: 1 função 'main'
+    emU16(out, 1);
+    emU16(out, 0);            // nameidx = 0
+    emU32(out, 0);            // entry = 0
+    out.push(0);             // nparams = 0
+    emU16(out, len(sl));      // nlocals
+    // entryfn
+    emU16(out, 0);
+    // code
+    emU32(out, len(code));
+    int k = 0;
+    while (k < len(code)) {
+        out.push(code[k]);
+        k = k + 1;
+    }
+    return write_bytes(outPath, out);
+}
