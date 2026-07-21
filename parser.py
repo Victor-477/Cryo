@@ -142,7 +142,7 @@ class Parser:
 
     def _stmt_inner(self, tok):
         if tok.type == TokenType.FN:
-            # `fn name(...)` = declaração; `fn(...)->R var` = function type var
+            # `fn name(...)` = declaration; `fn(...)->R var` = function type var
             if self._peek().type == TokenType.LPAREN:
                 return self._var_decl()
             return self._fn()
@@ -177,7 +177,7 @@ class Parser:
         # identifier -> multiple possibilities
         if tok.type == TokenType.IDENT:
             nt = self._peek()
-            # CustomType varName  ou  CustomType[] varName  ou  CustomType? varName
+            # CustomType varName  or  CustomType[] varName  or  CustomType? varName
             if nt.type == TokenType.IDENT:
                 return self._var_decl()
             if nt.type == TokenType.LBRACKET and self._peek(2).type == TokenType.RBRACKET:

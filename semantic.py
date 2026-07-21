@@ -105,7 +105,7 @@ class _Checker:
                 if name in seen:
                     self.err(getattr(n, 'line', 0),
                              f"[Semantic Error] duplicate declaration '{name}' "
-                             f"({seen[name]} e {kind})")
+                             f"({seen[name]} and {kind})")
                 seen[name] = kind
 
     # ── scanning ───────────────────────────────────────────
@@ -235,7 +235,7 @@ class _Checker:
                 
                 # Check if it's a valid enum member
                 if case.pattern_name not in self.member_to_enum:
-                    self.err(case.line, f"pattern '{case.pattern_name}' não é um membro dand enum conhecido")
+                    self.err(case.line, f"pattern '{case.pattern_name}' is not a known enum member")
                     continue
                 
                 matched_variants.add(case.pattern_name)
@@ -304,7 +304,7 @@ class _Checker:
             self.check_block(n.body, scope)
         elif isinstance(n, (CallExpr, MethodCallExpr)):
             self.check_expr(n, scope)
-        # Import/Library/ForeignBlock/decls aninhadas: sem checagem aqui
+        # Import/Library/ForeignBlock/nested decls: no checking here
 
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
@@ -362,7 +362,7 @@ class _Checker:
         elif isinstance(n, StructInit):
             for _f, v in n.fields:
                 self.check_expr(v, scope)
-        # Literal e demais: nada a checar
+        # Literal and others: nothing to check
 
 
 def check(program: Program) -> None:

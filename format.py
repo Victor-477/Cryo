@@ -145,7 +145,7 @@ def _safe_format(text: str):
         return text, False
 
 
-# ── CLI: cryoc fmt <arquivos> [--write] [--check] ───────────
+# ── CLI: cryoc fmt <files> [--write] [--check] ───────────
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == 'fmt':
