@@ -1,29 +1,29 @@
-# CRYO — front-end da linguagem
+# CRYO — the language front-end
 
-O **CRYO** é o front-end: transforma código-fonte `.cryo` em uma **AST** e faz a
-análise estática. É a camada "fria" (ergonômica, tipada, segura) do sistema.
+**CRYO** is the front-end: it turns `.cryo` source code into an **AST** and does
+the static analysis. It is the "cold" (ergonomic, typed, safe) layer of the system.
 
-## Conteúdo
+## Contents
 
-| Arquivo | Papel |
+| File | Role |
 |---|---|
-| `lexer.py` | Tokenização do código-fonte (`.cryo`) |
-| `parser.py` | Análise sintática → AST (precedência de operadores) |
-| `ast_nodes.py` | Definição dos nós da AST |
-| `security.py` | Auditoria estática (`--audit`) |
-| `examples/` | Programas de exemplo em Cryo |
+| `lexer.py` | Tokenization of the source (`.cryo`) |
+| `parser.py` | Syntax analysis → AST (operator precedence) |
+| `ast_nodes.py` | AST node definitions |
+| `security.py` | Static audit (`--audit`) |
+| `examples/` | Example programs in Cryo |
 
-## Papel na arquitetura
+## Role in the architecture
 
 ```
-  .cryo ──►  CRYO (lexer → parser → AST + análise)  ──►  AST
+  .cryo ──►  CRYO (lexer → parser → AST + analysis)  ──►  AST
                                                           │
                                                           ▼
-                                            PYRO (backends) → nativo
+                                            PYRO (backends) → native
                                                           │
-                                            Burnout (motor/CLI) orquestra
+                                            Burnout (engine/CLI) orchestrates
 ```
 
-CRYO é **independente** (não depende de PYRO nem de Burnout). Os outros dois
-componentes dependem de `ast_nodes.py` daqui. Será distribuído como repositório
-próprio; PYRO e Burnout o consomem como dependência.
+CRYO is **independent** (it does not depend on PYRO or Burnout). The other two
+components depend on `ast_nodes.py` from here. It will be distributed as its own
+repository; PYRO and Burnout consume it as a dependency.
