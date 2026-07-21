@@ -1,0 +1,39 @@
+// ============================================================
+//  Exemplo — Calculadora Básica Interativa em Cryo
+// ============================================================
+
+print("=== Calculadora Cryo / Pyro VM ===");
+
+bool ativo = true;
+while (ativo) {
+    string op = input("Escolha uma operacao (+, -, *, /, ^) ou 'q' para sair: ");
+    if (op == "q") {
+        ativo = false;
+    } else {
+        string s_a = input("Primeiro numero: ");
+        string s_b = input("Segundo numero: ");
+        number a = to_number(s_a);
+        number b = to_number(s_b);
+
+        if (op == "+") {
+            print(a + b);
+        }
+        if (op == "-") {
+            print(a - b);
+        }
+        if (op == "*") {
+            print(a * b);
+        }
+        if (op == "/") {
+            if (b == 0.0) {
+                print("Erro: divisao por zero");
+            } else {
+                print(a / b);
+            }
+        }
+        if (op == "^") {
+            print(pow(a, b));
+        }
+    }
+}
+print("Saindo da calculadora.");

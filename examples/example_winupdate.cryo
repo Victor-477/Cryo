@@ -1,0 +1,17 @@
+// ============================================================
+//  Exemplo — Tela de Atualização Fake do Windows
+// ============================================================
+
+print("Preparando para configurar o Windows...");
+sleep(500);
+
+print("Trabalhando em atualizacoes.");
+print("Nao desligue o computador. Isso pode demorar um pouco.");
+
+int[] pct = [0, 12, 27, 45, 68, 89, 98, 100];
+for (int p in pct) {
+    print(to_string(p) + "% concluido");
+    sleep(400);
+}
+
+print("O seu computador sera reiniciado em breve.");
