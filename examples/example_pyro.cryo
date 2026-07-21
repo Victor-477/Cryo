@@ -1,8 +1,8 @@
 // ============================================================
-//  Exemplo Pyro — skills nativas de LLM + acesso à máquina
-//  As skills são COMPILADAS no binário (sem arquivos .md),
-//  introspectáveis em runtime de forma compacta e otimizada.
-//  Rodar: python cryoc.py examples/example_pyro.cryo --run
+//  Pyro example — native LLM skills + machine access
+//  Skills are COMPILED into the binary (no .md files),
+//  introspectable at runtime in a compact, optimized way.
+//  Run: python cryoc.py examples/example_pyro.cryo --run
 // ============================================================
 
 skill resumir {
@@ -19,13 +19,13 @@ skill traduzir {
     tools: [];
 }
 
-// ── Introspecção nativa (sem markdown) ──────────────────────
+// ── Native introspection (no markdown) ──────────────────────
 string[] nomes = skills();
 Skill s = skill_get("resumir");
 bool temTrad = skill_has("traduzir");
 string catalogo = skills_json();
 
-// ── Acesso direto à máquina (camada Pyro) ───────────────────
+// ── Direct machine access (Pyro layer) ───────────────────
 string saida = pyro_exec("echo ola-da-maquina");
 int agora = pyro_time();
 

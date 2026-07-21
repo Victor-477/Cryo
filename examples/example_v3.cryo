@@ -1,9 +1,9 @@
 // ============================================================
-//  Exemplo Cryo v0.3 — backend C nativo
-//  Compilar: python compiler.py example_v3.cryo --run -v
+//  Cryo v0.3 example — native C backend
+//  Compile: python compiler.py example_v3.cryo --run -v
 // ============================================================
 
-// Habilita blocos estrangeiros em C (exigido para usar >C( ... )).
+// Enables C foreign blocks (required to use >C( ... )).
 import >C<
 
 // ── Enum e Struct ──────────────────────────────────────────
@@ -21,13 +21,13 @@ struct Sensor {
     bool   ativo;
 }
 
-// ── Constantes ─────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────
 
 const number PI        = 3.14159265
 const int    MAX_LEIT  = 5
 const string VERSAO    = "0.3.0"
 
-// ── Funcoes com retorno tipado ──────────────────────────────
+// ── Functions with typed return ──────────────────────────────
 
 fn areaCirculo(number raio) -> number ={
     return PI * raio * raio;
@@ -58,16 +58,16 @@ fn descNivel(Nivel nv) -> string ={
     }
 }
 
-// ── Programa principal ─────────────────────────────────────
+// ── Main program ─────────────────────────────────────
 
-// Calculos matematicos
+// Math calculations
 number area  = areaCirculo(5.0);
 int    fat10 = fatorial(10);
 
-// Array de sensores (indices)
+// Array of sensors (indices)
 int[] ids = [101, 102, 103, 104, 105]
 
-// Struct com new
+// Struct with new
 Sensor s1 = new Sensor {
     id:    1,
     nome:  "Temperatura",
@@ -75,17 +75,17 @@ Sensor s1 = new Sensor {
     ativo: true
 }
 
-// Acesso a campos
+// Field access
 string nomeSensor = s1.nome;
 number valSensor  = s1.valor;
 
-// For loop - soma dos primeiros 100 inteiros
+// For loop - sum of the first 100 integers
 number soma = 0;
 for (int i = 1; i <= 100; i++) {
     soma += i;
 }
 
-// While - conta primos ate 50
+// While - count primes up to 50
 int qtdPrimos = 0;
 int k = 2;
 while (k <= 50) {
@@ -108,7 +108,7 @@ try {
     string msg = "Erro: " + err;
 }
 
-// Saida nativa via bloco C inline
+// Native output via inline C block
 >C(
     printf("=== Cryo v%s — Backend C Nativo ===\n", VERSAO);
     printf("Area circulo r=5: %.4f\n", area);

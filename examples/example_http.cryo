@@ -1,10 +1,10 @@
 // ============================================================
-//  Exemplo Fase 5 — HTTP nativo na VM Pyro
+//  Phase 5 example — native HTTP on the Pyro VM
 //
-//  http_get / http_post / sleep agora rodam também no bytecode
+//  http_get / http_post / sleep now also run in the bytecode
 //  Pyro (natives 24/25/26). Sem rede, http_get devolve "" — o
-//  programa compila e roda igual. Combina com o JSON nativo para
-//  consumir uma API inteira dentro da VM.
+//  the program compiles and runs the same. Combine with native JSON to
+//  consume an entire API inside the VM.
 //
 //    python burnout/cryoc.py cryo/examples/example_http.cryo --backend pyro --run
 // ============================================================
@@ -18,13 +18,13 @@ sleep(20);                       // pequeno atraso (ex.: backoff)
 string corpo = http_get(url);
 print("bytes recebidos > 0? ${len(corpo) > 0}");
 
-// pipeline típico: recebe JSON de uma API e desserializa
+// typical pipeline: receives JSON from an API and deserializes
 string payload = "{\"ok\": true, \"origem\": \"pyro-vm\"}";
 Resposta r = json_decode(payload) as Resposta;
 print("ok?    ${r.ok}");
 print("origem ${r.origem}");
 
-// domínio inválido -> corpo vazio (fail-soft, como no backend go)
+// invalid domain -> empty body (fail-soft, like on the go backend)
 string vazio = http_get("http://dominio-inexistente-xyz.invalid");
 assert(len(vazio) == 0, "esperado corpo vazio offline");
 print("http nativo ok na VM Pyro");

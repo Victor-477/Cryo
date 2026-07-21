@@ -1,16 +1,16 @@
 // ============================================================
-//  Exemplo Fase 2 — concorrência (async) + HTTP (backend Go)
-//  spawn/await + Future<T> baixam para goroutines + canais.
-//  Rodar: python burnout/cryoc.py cryo/examples/example_async.cryo --backend go --run
+//  Phase 2 example — concurrency (async) + HTTP (Go backend)
+//  spawn/await + Future<T> lower to goroutines + channels.
+//  Run: python burnout/cryoc.py cryo/examples/example_async.cryo --backend go --run
 // ============================================================
 
-// Simula uma tarefa cara (ex.: uma chamada de LLM ou I/O)
+// Simulates an expensive task (e.g. an LLM call or I/O)
 fn tarefa(int id) -> int ={
     sleep(30);
     return id * id;
 }
 
-// ── Duas tarefas concorrentes ───────────────────────────────
+// ── Two concurrent tasks ───────────────────────────────
 future<int> a = spawn tarefa(6);
 future<int> b = spawn tarefa(7);
 int ra = await a;
@@ -18,11 +18,11 @@ int rb = await b;
 print("duas tarefas (36 + 49):");
 print(ra + rb);
 
-// ── Fan-out: N tarefas em paralelo (padrão de chamadas de LLM) ──
+// ── Fan-out: N tasks in parallel (LLM call pattern) ──
 int[] ids = [1, 2, 3, 4, 5];
 future<int>[] pendentes = [];
 for (int id in ids) {
-    pendentes.push(spawn tarefa(id));    // dispara todas de uma vez
+    pendentes.push(spawn tarefa(id));    // fire them all at once
 }
 int soma = 0;
 for (future<int> f in pendentes) {
@@ -31,9 +31,9 @@ for (future<int> f in pendentes) {
 print("fan-out (1+4+9+16+25):");
 print(soma);
 
-// ── HTTP (cliente) ──────────────────────────────────────────
-// Requisições HTTP para APIs (LLMs, serviços SaaS). Sem rede,
-// http_get retorna "" — mas o código compila e roda.
+// ── HTTP (client) ──────────────────────────────────────────
+// HTTP requests to APIs (LLMs, SaaS services). With no network,
+// http_get returns "" — but the code compiles and runs.
 string corpo = http_get("http://example.com");
 print("http_get retornou bytes:");
 print(len(corpo) >= 0);

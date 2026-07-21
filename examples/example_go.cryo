@@ -1,7 +1,7 @@
 // ============================================================
-//  Exemplo Cryo v0.5 — backend Go (nova base de compilacao)
-//  Compilar: python compiler.py example_go.cryo --run -v
-//  (backend go e o padrao; equivale a --backend go)
+//  Cryo v0.5 example — Go backend (new compilation base)
+//  Compile: python compiler.py example_go.cryo --run -v
+//  (the go backend is the default; equivalent to --backend go)
 // ============================================================
 
 enum Nivel { BAIXO, MEDIO, ALTO }
@@ -16,7 +16,7 @@ struct Sensor {
 const number PI     = 3.14159265
 const string VERSAO = "0.6.0"
 
-// ── Funcoes tipadas ────────────────────────────────────────
+// ── Typed functions ────────────────────────────────────────
 fn areaCirculo(number raio) -> number ={
     return PI * raio * raio;
 }
@@ -38,7 +38,7 @@ fn descNivel(Nivel nv) -> string ={
     }
 }
 
-// ── Programa principal ─────────────────────────────────────
+// ── Main program ─────────────────────────────────────
 number area = areaCirculo(5.0);
 int    f10  = fatorial(10);
 bool   par  = ehPar(f10);
@@ -52,7 +52,7 @@ Sensor s1 = new Sensor {
 }
 string nomeSensor = s1.nome;
 
-// Array + soma com laco
+// Array + sum with a loop
 int[] valores = [10, 20, 30, 40, 50]
 int soma = 0;
 for (int i = 0; i < 5; i++) {
@@ -69,11 +69,11 @@ string resultado = leitura ?? "sem leitura";
 // Enum
 string nivelTxt = descNivel(Nivel_ALTO);
 
-// assert de seguranca
+// safety assert
 assert(f10 == 3628800, "fatorial(10) incorreto");
 assert(empacotado == 0x1234);
 
-// try / catch (mapeado para panic/recover em Go)
+// try / catch (mapped to panic/recover in Go)
 string estado = "ok";
 try {
     if (soma > 100) {

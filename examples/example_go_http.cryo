@@ -1,11 +1,11 @@
 // ============================================================
-//  Exemplo — bloco Go usando net/http via `library`
+//  Example — Go block using net/http via `library`
 //
-//  Demonstra libraries do Go virando imports reais: net/http,
-//  fmt e time entram no import block do .go gerado, e o bloco
-//  >Go( ... ) faz uma requisição HTTP com a stdlib.
+//  Shows Go libraries becoming real imports: net/http,
+//  fmt and time go into the generated .go import block, and the block
+//  >Go( ... ) makes an HTTP request with the stdlib.
 //
-//  Rodar:
+//  Run:
 //    python burnout/cryoc.py cryo/examples/example_go_http.cryo --backend go --run
 // ============================================================
 
@@ -19,7 +19,7 @@ string url = "https://example.com";
 print("buscando (via bloco Go + net/http):");
 print(url);
 
-// Bloco Go: cliente HTTP com timeout, usando a library net/http.
+// Go block: HTTP client with timeout, using the net/http library.
 >Go(
     client := &http.Client{Timeout: 4 * time.Second}
     resp, err := client.Get("https://example.com")

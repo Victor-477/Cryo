@@ -1,7 +1,7 @@
 // ============================================================
-//  Exemplo Cryo v0.7 — recursos para SaaS/LLM (backend Go)
-//  Demonstra: mapas, JSON nativo (struct<->json) e opcionais.
-//  Rodar: python cryoc.py examples/example_saas.cryo --run
+//  Cryo v0.7 example — SaaS/LLM features (Go backend)
+//  Shows: maps, native JSON (struct<->json) and optionals.
+//  Run: python cryoc.py examples/example_saas.cryo --run
 // ============================================================
 
 struct Produto {
@@ -17,7 +17,7 @@ struct RespostaAPI {
     int    total;
 }
 
-// ── Cache em memória com mapa ───────────────────────────────
+// ── In-memory cache with a map ───────────────────────────────
 fn buscarPreco(map<string, number> tabela, string sku) -> number? ={
     if (has(tabela, sku)) {
         return tabela[sku];
@@ -25,9 +25,9 @@ fn buscarPreco(map<string, number> tabela, string sku) -> number? ={
     return null;
 }
 
-// ── Programa principal ──────────────────────────────────────
+// ── Main program ──────────────────────────────────────
 
-// Tabela de preços (map) — típico de um serviço SaaS
+// Price table (map) — typical of a SaaS service
 map<string, number> precos = {
     "SKU-1": 19.90,
     "SKU-2": 49.90,
@@ -35,20 +35,20 @@ map<string, number> precos = {
 };
 precos["SKU-4"] = 99.90;
 
-// Lookup com opcional (null-safety): sem panics por chave ausente
+// Lookup with an optional (null-safety): no panics on missing key
 number? achado = buscarPreco(precos, "SKU-2");
 number precoFinal = achado ?? 0.0;
 
 number? ausente = buscarPreco(precos, "SKU-999");
 number fallback = ausente ?? -1.0;
 
-// Total do catálogo iterando o mapa
+// Catalog total by iterating the map
 number soma = 0.0;
 for (string k in keys(precos)) {
     soma += precos[k];
 }
 
-// Serialização JSON de um struct (payload de API/LLM)
+// JSON serialization of a struct (API/LLM payload)
 Produto p = new Produto {
     sku: "SKU-2",
     nome: "Plano Pro",
@@ -57,7 +57,7 @@ Produto p = new Produto {
 };
 string payload = json_encode(p);
 
-// Desserialização tipada (ex.: resposta de um LLM em JSON)
+// Typed deserialization (e.g. an LLM response in JSON)
 string entrada = "{\"ok\": true, \"mensagem\": \"criado\", \"total\": 4}";
 RespostaAPI r = json_decode(entrada) as RespostaAPI;
 

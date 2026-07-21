@@ -1,7 +1,7 @@
 // ============================================================
-//  Exemplo Cryo v0.4 — backend x86-64 nativo (assembly)
-//  Compilar: python compiler.py example_asm.cryo --backend asm --run -v
-//  Subconjunto: inteiros, funcoes/recursao, controle de fluxo.
+//  Cryo v0.4 example — native x86-64 backend (assembly)
+//  Compile: python compiler.py example_asm.cryo --backend asm --run -v
+//  Subset: integers, functions/recursion, control flow.
 // ============================================================
 
 fn fatorial(int n) -> int ={
@@ -33,23 +33,23 @@ fn ehPrimo(int n) -> bool ={
     return true;
 }
 
-// ── Programa principal ─────────────────────────────────────
+// ── Main program ─────────────────────────────────────
 int f10 = fatorial(10);
 int fib20 = fib(20);
 int g = gcd(48, 36);
 
-// operadores bit a bit em assembly
+// bitwise operators in assembly
 int mask = 0xF0 | 0x0F;
 int shifted = 1 << 10;
 
-// contagem de primos com break/continue
+// prime count with break/continue
 int primos = 0;
 for (int k = 2; k <= 50; k++) {
     if (!ehPrimo(k)) { continue; }
     primos++;
 }
 
-// assert nativo (chama runtime seguro)
+// native assert (calls the safe runtime)
 assert(f10 == 3628800, "fatorial(10) incorreto");
 
 print("== Cryo backend assembly ==");

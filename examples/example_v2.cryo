@@ -1,5 +1,5 @@
 // ============================================================
-//  Exemplo Cryo v0.2 — demonstra todos os recursos expandidos
+//  Cryo v0.2 example — demonstrates all the expanded features
 // ============================================================
 
 import >Python<
@@ -28,13 +28,13 @@ struct Carrinho {
     number    total;
 }
 
-// ── Constantes ───────────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────
 
 const number TAXA_IMPOSTO = 0.15
 const int    MAX_ITENS    = 100
 const string VERSAO       = "0.2.0"
 
-// ── Funções com retorno tipado ────────────────────────────────
+// ── Functions with typed return ────────────────────────────────
 
 fn calcularTotal(number preco, number quantidade) -> number ={
     number subtotal = preco * quantidade;
@@ -69,20 +69,20 @@ fn potencia(number base, int exp) -> number ={
     return resultado;
 }
 
-// ── Lógica de negócio ────────────────────────────────────────
+// ── Business logic ────────────────────────────────────────
 
 // Arrays
 string[] categorias = ["Eletrônicos", "Roupas", "Alimentos", "Livros"]
 int[]    codigos    = [1001, 1002, 1003, 1004]
 
-// Acessar elementos
+// Access elements
 string primeiraCat = categorias[0]
 int    qtdCats     = categorias.length
 
-// Adicionar ao array
+// Append to the array
 categorias.push("Esportes")
 
-// Struct com new
+// Struct with new
 Produto notebook = new Produto {
     id:          1,
     nome:        "Notebook Pro",
@@ -91,17 +91,17 @@ Produto notebook = new Produto {
     status:      Status.ATIVO
 }
 
-// Acessar campos
+// Access fields
 string nomeNot = notebook.nome
 number precoNot = notebook.preco
 bool   dispNot  = notebook.disponivel
 
-// Cálculos
+// Calculations
 number totalComImposto = calcularTotal(notebook.preco, 2)
 bool   precoValido     = ehValido(notebook.preco)
 string desc            = descricaoProduto(notebook)
 
-// Condicional com &&, ||, !
+// Conditional with &&, ||, !
 if (precoValido && notebook.disponivel) {
     number desconto = totalComImposto * 0.05;
     totalComImposto -= desconto;
@@ -111,7 +111,7 @@ if (precoValido && notebook.disponivel) {
 string nomeCliente = null;
 string clienteFinal = nomeCliente ?? "Cliente Anônimo"
 
-// While com operadores
+// While with operators
 int  tentativas = 0;
 bool sucesso    = false;
 
@@ -122,7 +122,7 @@ while (!sucesso && tentativas < 3) {
     }
 }
 
-// For com compound assignment
+// For with compound assignment
 number soma = 0;
 for (int i = 1; i <= 10; i++) {
     soma += i;
@@ -137,11 +137,11 @@ try {
     bool finalizado = true;
 }
 
-// Chamadas encadeadas
+// Chained calls
 int fat5   = fatorial(5)
 number pot = potencia(2.0, 8)
 
-// Bloco Python inline
+// Inline Python block
 >Python(
 print("=== Sistema Cryo v0.2 ===")
 print(f"Produto: {notebook.nome}")

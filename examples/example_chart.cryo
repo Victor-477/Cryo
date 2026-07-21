@@ -1,5 +1,5 @@
 // ============================================================
-//  Exemplo — Gráfico de Barras em Tempo Real
+//  Example — Real-Time Bar Chart
 // ============================================================
 
 fn criar_barra(int tamanho) -> string ={

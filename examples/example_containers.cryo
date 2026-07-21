@@ -1,8 +1,8 @@
 // ============================================================
-//  Exemplo — arrays, maps e structs na linguagem-alvo Pyro
-//  (bytecode próprio). Rodar:
+//  Example — arrays, maps and structs on the Pyro target language
+//  (custom bytecode). Run:
 //    python burnout/cryoc.py cryo/examples/example_containers.cryo --backend pyro --run
-//  Ver o bytecode desmontado:
+//  View the disassembled bytecode:
 //    python burnout/cryoc.py cryo/examples/example_containers.cryo --backend pyro --dis
 // ============================================================
 
@@ -27,7 +27,7 @@ for (string k in keys(estoque)) {
     somaEstoque += estoque[k];
 }
 
-// ── Structs (= map de campos) ───────────────────────────────
+// ── Structs (= map of fields) ───────────────────────────────
 Ponto p = new Ponto { x: 3, y: 4 };
 int dist2 = p.x * p.x + p.y * p.y;
 

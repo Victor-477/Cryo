@@ -1,15 +1,15 @@
 // ============================================================
-//  Exemplo Fase 3 — LLM nativo (backend Go)
+//  Phase 3 example — native LLM (Go backend)
 //  schema + llm(...) as T (structured output) + tool.
-//  Rodar: python burnout/cryoc.py cryo/examples/example_llm.cryo --backend go --run
+//  Run: python burnout/cryoc.py cryo/examples/example_llm.cryo --backend go --run
 //
-//  Para chamadas reais, aponte o endpoint (contrato: POST
-//  {model, prompt, schema?} -> corpo JSON da resposta):
-//    CRYO_LLM_URL=https://seu-gateway/chat  CRYO_LLM_KEY=...  <rodar>
-//  Sem endpoint, llm(...) retorna vazio (o programa compila e roda).
+//  For real calls, point the endpoint (contract: POST
+//  {model, prompt, schema?} -> JSON body of the response):
+//    CRYO_LLM_URL=https://your-gateway/chat  CRYO_LLM_KEY=...  <run>
+//  Without an endpoint, llm(...) returns empty (the program compiles and runs).
 // ============================================================
 
-// Um 'schema' é um struct cujo JSON Schema é gerado nativamente.
+// A 'schema' is a struct whose JSON Schema is generated natively.
 schema Fatura {
     string   cliente;
     number   total;
@@ -17,8 +17,8 @@ schema Fatura {
     bool     paga;
 }
 
-// Uma 'tool' é uma função exposta ao LLM; o schema dos parâmetros
-// é derivado da assinatura automaticamente.
+// A 'tool' is a function exposed to the LLM; the parameter schema
+// is derived from the signature automatically.
 tool fn buscar_preco(string sku) -> number ={
     return 19.90;
 }
@@ -27,24 +27,24 @@ tool fn registrar_pagamento(string cliente, number valor) -> bool ={
     return true;
 }
 
-// ── JSON Schema nativo (structured output) ──────────────────
+// ── native JSON Schema (structured output) ──────────────────
 print("== JSON Schema de Fatura ==");
 print(schema_of(Fatura));
 
-// ── Tools expostas ao modelo (schema da assinatura) ─────────
+// ── Tools exposed to the model (schema from the signature) ─────────
 print("== Tools disponiveis ==");
 print(tools());
 print("== Catalogo de tools (JSON) ==");
 print(tools_json());
 
-// ── Chamada estruturada: resposta do LLM tipada e validada ──
+// ── Structured call: typed and validated LLM response ──
 string texto = "Cliente Ana, total 149,90, itens: plano pro";
 Fatura f = llm("gpt-x", "Extraia a fatura: " + texto) as Fatura;
 print("== Fatura extraida (vazia sem CRYO_LLM_URL) ==");
 print("cliente:"); print(f.cliente);
 print("total:");   print(f.total);
 
-// Chamada crua (completion simples), sem schema
+// Raw call (simple completion), no schema
 string resposta = llm("gpt-x", "Resuma em uma frase: Cryo compila para Pyro");
 print("== Completion cru (len) ==");
 print(len(resposta) >= 0);

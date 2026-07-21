@@ -1,29 +1,29 @@
 // ============================================================
-//  Exemplo Cryo v0.4 — retorno de struct em registrador (asm)
+//  Cryo v0.4 example — struct return in registers (asm)
 //  SysV : python compiler.py example_struct.cryo --backend asm --abi sysv --run
-//  Win64: use apenas structs de 1 campo (Boxed); Point (2 campos)
-//         retorna em registrador so na ABI System V.
+//  Win64: use only 1-field structs (Boxed); Point (2 fields)
+//         returns in a register only on the System V ABI.
 //
-//  Classificacao de retorno:
+//  Return classification:
 //    - SysV : struct <= 8B em RAX; <= 16B em RAX:RDX
-//    - Win64: struct de 1/2/4/8 bytes em RAX (structs maiores -> --backend c)
+//    - Win64: struct of 1/2/4/8 bytes in RAX (larger structs -> --backend c)
 // ============================================================
 
 struct Point { int x; int y; }
 struct Boxed { int v; }
 
-// Retorna uma struct de 2 campos (RAX:RDX no System V)
+// Returns a 2-field struct (RAX:RDX on System V)
 fn make(int a, int b) -> Point ={
     return new Point { x: a, y: b };
 }
 
-// Retorna uma struct de 1 campo (RAX nas duas ABIs)
+// Returns a 1-field struct (RAX on both ABIs)
 fn quadrado(int n) -> Boxed ={
     Boxed r = new Boxed { v: n * n };
     return r;
 }
 
-// ── Programa principal ─────────────────────────────────────
+// ── Main program ─────────────────────────────────────
 Point p = make(3, 4);
 int soma = p.x + p.y;
 

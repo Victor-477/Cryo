@@ -1,5 +1,5 @@
 // ============================================================
-//  Exemplo — Tela de Atualização Fake do Windows
+//  Example — Fake Windows Update Screen
 // ============================================================
 
 print("Preparando para configurar o Windows...");

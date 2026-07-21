@@ -1,12 +1,12 @@
 // ============================================================
-//  Exemplo — .cryo compilado para a linguagem-alvo .pyro
-//  (bytecode PRÓPRIO do Pyro), executado pela VM Pyro (em Go).
+//  Example — .cryo compiled to the .pyro target language
+//  (Pyro's OWN bytecode), executed by the Pyro VM (in Go).
 //
-//  Compilar + rodar:
+//  Compile + run:
 //    python burnout/cryoc.py cryo/examples/example_bytecode.cryo --backend pyro --run
 //
-//  O Burnout gera um arquivo .pyro binário (ISA própria, não
-//  Go/C/asm); a VM Pyro carrega e executa esse bytecode.
+//  Burnout generates a binary .pyro file (custom ISA, not
+//  Go/C/asm); the Pyro VM loads and runs this bytecode.
 // ============================================================
 
 fn fatorial(int n) -> int ={
@@ -29,25 +29,25 @@ fn ehPrimo(int n) -> bool ={
     return true;
 }
 
-// Soma dos quadrados 1..10
+// Sum of squares 1..10
 int soma = 0;
 for (int i = 1; i <= 10; i++) {
     soma += i * i;
 }
 
-// Contagem de primos até 50 (break/continue)
+// Prime count up to 50 (break/continue)
 int primos = 0;
 for (int k = 2; k <= 50; k++) {
     if (!ehPrimo(k)) { continue; }
     primos++;
 }
 
-// Aritmética mista int/float e bit a bit
+// Mixed int/float and bitwise arithmetic
 number media = (3.5 + 1.5) * 2.0;
 int mask = (0xF0 | 0x0F) & 0xFF;
 int shifted = 1 << 8;
 
-// Ternário e lógica
+// Ternary and logic
 bool grande = soma > 100 ? true : false;
 
 print("== .cryo -> .pyro (bytecode) -> VM Pyro ==");

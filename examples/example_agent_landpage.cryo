@@ -1,17 +1,17 @@
 // ============================================================
-//  Exemplo Fase 3 — agente que CRIA uma landing page
+//  Phase 3 example — agent that CREATES a landing page
 //
-//  Demonstra o `agent` configurável: subconjunto de tools e
-//  limite de passos. O agente monta o HTML e salva o arquivo.
+//  Shows the configurable `agent`: subset of tools and
+//  a step limit. The agent builds the HTML and saves the file.
 //    agent(modelo, prompt, [tools...], maxPassos)
 //
-//  Rodar (com LLM real via gateway, ou o mock de teste):
+//  Run (with a real LLM via gateway, or the test mock):
 //    CRYO_LLM_URL=http://127.0.0.1:8804 \
 //      python burnout/cryoc.py cryo/examples/example_agent_landpage.cryo --backend go --run
-//  -> gera build/landpage.html
+//  -> generates build/landpage.html
 // ============================================================
 
-// Tool: monta o HTML da landing page a partir dos textos.
+// Tool: builds the landing page HTML from the texts.
 tool fn montar_html(string titulo, string subtitulo, string cta) -> string ={
     return "<!doctype html>\n<html lang=\"pt-BR\">\n<head>\n<meta charset=\"utf-8\">\n" +
            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
@@ -30,17 +30,17 @@ tool fn montar_html(string titulo, string subtitulo, string cta) -> string ={
            "  </div>\n</body>\n</html>\n";
 }
 
-// Tool: salva o conteudo em um arquivo no disco.
+// Tool: saves the content to a file on disk.
 tool fn salvar_pagina(string html, string caminho) -> bool ={
     return pyro_write_file(caminho, html);
 }
 
-// Tool: abre o arquivo no navegador padrao do sistema.
+// Tool: opens the file in the system default browser.
 tool fn abrir_pagina(string caminho) -> bool ={
     return pyro_open(caminho);
 }
 
-// O agente monta, salva e abre no navegador; 3 tools e 5 passos.
+// The agent builds, saves and opens it in the browser; 3 tools and 5 steps.
 string resultado = agent("gpt-x",
     "Crie uma landing page para o produto 'Cryo Lang' com subtitulo " +
     "'A linguagem que compila para Pyro' e botao 'Comecar agora'. " +

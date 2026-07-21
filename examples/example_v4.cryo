@@ -1,17 +1,17 @@
 // ============================================================
-//  Exemplo Cryo v0.4 — novos recursos + seguranca (backend C)
-//  Compilar: python compiler.py example_v4.cryo --run -v
+//  Cryo v0.4 example — new features + safety (C backend)
+//  Compile: python compiler.py example_v4.cryo --run -v
 // ============================================================
 
-// Habilita blocos estrangeiros em C (exigido para usar >C( ... )).
+// Enables C foreign blocks (required to use >C( ... )).
 import >C<
 
-// ── Literais hex / binario / com underscore ────────────────
+// ── hex / binary / underscore literals ────────────────
 const int MASK   = 0xFF
 const int FLAGS  = 0b1010
 const int MILHAO = 1_000_000
 
-// ── Operadores bit a bit ───────────────────────────────────
+// ── Bitwise operators ───────────────────────────────────
 fn empacota(int alto, int baixo) -> int ={
     return (alto << 8) | (baixo & 0xFF);
 }
@@ -42,17 +42,17 @@ fn primeiroDivisor(int n) -> int ={
     return n;
 }
 
-// ── Programa principal ─────────────────────────────────────
+// ── Main program ─────────────────────────────────────
 int valor = empacota(0x12, 0x34);
 bool par  = ehPar(valor);
 string dia = nomeDia(6);
 int div1   = primeiroDivisor(91);
 
-// assert de seguranca
+// safety assert
 assert(valor == 0x1234, "empacotamento incorreto");
 assert(MILHAO == 1000000);
 
-// aritmetica com checagem de overflow (modo seguro, padrao)
+// arithmetic with overflow checking (safe mode, default)
 int soma = 0;
 int i = 1;
 while (i <= 10) {
@@ -60,7 +60,7 @@ while (i <= 10) {
     i++;
 }
 
-// bloco unsafe: instrumentacao desligada localmente
+// unsafe block: instrumentation turned off locally
 int rapido = 0;
 unsafe {
     rapido = soma * 2;

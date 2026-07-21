@@ -1,19 +1,19 @@
 // ============================================================
-//  Exemplo Fase 3 — agente de e-commerce com VÁRIAS tools
+//  Phase 3 example — e-commerce agent with SEVERAL tools
 //
-//  Um fluxo agêntico realista: o modelo encadeia 6 tools para
-//  montar um pedido — buscar cliente, buscar produto (retorna
-//  um struct), verificar estoque, calcular frete, aplicar cupom
-//  e criar o pedido — e então resume o resultado.
+//  A realistic agentic flow: the model chains 6 tools to
+//  build an order — look up customer, look up product (returns
+//  a struct), check stock, compute shipping, apply a coupon
+//  and create the order — then summarize the result.
 //
-//  Rodar (com um LLM real via gateway, ou o mock de teste):
+//  Run (with a real LLM via gateway, or the test mock):
 //    CRYO_LLM_URL=http://127.0.0.1:8801 \
 //      python burnout/cryoc.py cryo/examples/example_agent_pedido.cryo --backend go --run
 // ============================================================
 
 struct Produto { string nome; number preco; }
 
-// ── Tools expostas ao agente (schema derivado da assinatura) ──
+// ── Tools exposed to the agent (schema derived from the signature) ──
 
 tool fn buscar_cliente(string email) -> string ={
     if (email == "ana@loja.com") { return "Ana Silva"; }

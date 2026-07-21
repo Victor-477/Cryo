@@ -1,13 +1,13 @@
 // ============================================================
-//  Exemplo — stdlib do Cryo no bytecode Pyro (VM)
+//  Example — Cryo stdlib on the Pyro bytecode (VM)
 //
-//  Demonstra o backend pyro reforçado: enum, matemática,
-//  conversões, funções de string e remove() — tudo executando
-//  na VM Pyro via a instrução NATIVE da ISA.
+//  Shows the strengthened pyro backend: enum, math,
+//  conversions, string functions and remove() — all running
+//  on the Pyro VM via the ISA's NATIVE instruction.
 //
-//  Rodar:
+//  Run:
 //    python burnout/cryoc.py cryo/examples/example_stdlib.cryo --backend pyro --run
-//  (o mesmo programa roda também com --backend go e --backend node)
+//  (the same program also runs with --backend go and --backend node)
 // ============================================================
 
 enum Estado { PENDENTE, ATIVO, ENCERRADO }
@@ -20,14 +20,14 @@ fn slug(string titulo) -> string ={
     return lower(replace(trim(titulo), " ", "-"));
 }
 
-// ── matemática ──────────────────────────────────────────────
+// ── math ──────────────────────────────────────────────
 print("hipotenusa(3,4):");   print(hipotenusa(3.0, 4.0));
 print("abs(-9) min(2,5) max(2,5):");
 print(abs(0 - 9)); print(min(2, 5)); print(max(2, 5));
 print("floor/ceil/round de 2.5:");
 print(floor(2.5)); print(ceil(2.5)); print(round(2.5));
 
-// ── conversões ──────────────────────────────────────────────
+// ── conversions ──────────────────────────────────────────────
 int    lidos = to_int("128");
 number taxa  = to_number("0.75");
 print("128 * 0.75 =");

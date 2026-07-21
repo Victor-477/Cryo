@@ -1,11 +1,11 @@
 // ============================================================
-//  Exemplo — backend Node.js / JavaScript
+//  Example — Node.js / JavaScript backend
 //
-//  O núcleo do Cryo compila para JavaScript (CommonJS) e roda com
+//  Cryo's core compiles to JavaScript (CommonJS) and runs with
 //  `node`. Structs viram objetos, maps viram objetos, arrays viram
-//  arrays, e `library >node os<` vira `const os = require("os")`.
+//  arrays, and `library >node os<` becomes `const os = require("os")`.
 //
-//  Rodar:
+//  Run:
 //    python burnout/cryoc.py cryo/examples/example_node.cryo --backend node --run
 // ============================================================
 
@@ -19,7 +19,7 @@ fn distanciaQuadrado(Ponto p) -> int ={
     return p.x * p.x + p.y * p.y;
 }
 
-// Núcleo: struct, função, array, map, laço
+// Core: struct, function, array, map, loop
 Ponto p = new Ponto { x: 3, y: 4 };
 print("dist^2 (3,4):");
 print(distanciaQuadrado(p));
@@ -41,7 +41,7 @@ Cor c = Cor_VERDE;
 print("cor == VERDE?");
 print(c == Cor_VERDE);
 
-// Bloco Node: usa a stdlib do Node via a library `os`.
+// Node block: uses Node's stdlib via the `os` library.
 >Node(
     console.log("[node] plataforma:", os.platform());
     console.log("[node] CPUs:", os.cpus().length);

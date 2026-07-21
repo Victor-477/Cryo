@@ -1,10 +1,10 @@
 // ============================================================
-//  Módulo Cryo — biblioteca de geometria
+//  Cryo module — geometry library
 //
 //  Importado com:  import "lib_geometria.cryo"
-//  Um módulo exporta declarações (const, struct, enum, fn, tool,
-//  schema, skill). Statements executáveis de topo só rodam quando
-//  o arquivo é compilado como programa de entrada.
+//  A module exports declarations (const, struct, enum, fn, tool,
+//  schema, skill). Top-level executable statements only run when
+//  the file is compiled as the entry program.
 // ============================================================
 
 const number GEO_PI = 3.14159265

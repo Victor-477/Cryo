@@ -1,14 +1,14 @@
 // ============================================================
-//  Exemplo Fase 4 — MÓDULOS + INTERPOLAÇÃO DE STRINGS
+//  Phase 4 example — MODULES + STRING INTERPOLATION
 //
-//  `import "arquivo.cryo"` incorpora as declarações de outro
-//  arquivo (funções, structs, enums, consts). O caminho é
-//  relativo ao arquivo que importa; imports aninhados, ciclos e
-//  nomes duplicados são tratados pelo compilador.
+//  `import "file.cryo"` embeds the declarations of another
+//  file (functions, structs, enums, consts). The path is
+//  relative to the importing file; nested imports, cycles and
+//  duplicate names are handled by the compiler.
 //
-//  Interpolação: "texto ${expr}" vira concatenação tipada.
+//  Interpolation: "text ${expr}" becomes typed concatenation.
 //
-//  Rodar (funciona em pyro, go e node):
+//  Run (works on pyro, go and node):
 //    python burnout/cryoc.py cryo/examples/example_modules.cryo --backend pyro --run
 // ============================================================
 
@@ -17,13 +17,13 @@ import "lib_geometria.cryo"
 number raio = 2.5;
 Circulo c = new Circulo { raio: raio };
 
-// Interpolação de strings: ${expr} dentro do literal
+// String interpolation: ${expr} inside the literal
 print("circulo de raio ${c.raio}:");
 print("  area      = ${areaCirculo(c.raio)}");
 print("  perimetro = ${perimetroCirculo(c.raio)}");
 print("forma: ${descreve(Forma_CIRCULO)} (PI do modulo = ${GEO_PI})");
 
-// Constante do módulo visível dentro de funções locais
+// Module constant visible inside local functions
 fn dobroDaArea(number r) -> number ={
     return 2.0 * GEO_PI * r * r;
 }

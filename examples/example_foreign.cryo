@@ -1,24 +1,24 @@
 // ============================================================
-//  Exemplo — blocos estrangeiros VERIFICADOS + libraries
+//  Example — VERIFIED foreign blocks + libraries
 //
-//  Regra: um bloco `>Lang( ... )` só é aceito se a linguagem
-//  `Lang` tiver sido importada com `import >Lang<`. As libraries
-//  pertencem a uma linguagem importada e viram imports/includes
-//  no backend correspondente.
+//  Rule: a `>Lang( ... )` block is only accepted if the language
+//  `Lang` was imported with `import >Lang<`. Libraries
+//  belong to an imported language and become imports/includes
+//  on the matching backend.
 //
-//  Rodar (cada backend emite só o bloco da sua linguagem):
+//  Run (each backend emits only its own language's block):
 //    python burnout/cryoc.py cryo/examples/example_foreign.cryo --backend go --run
 //    python burnout/cryoc.py cryo/examples/example_foreign.cryo --backend c  --run
 //
-//  Sem o `import >Go<` abaixo, o bloco >Go( ... ) é REJEITADO
-//  pelo compilador ([Erro Estrangeiro]).
+//  Without the `import >Go<` below, the >Go( ... ) block is REJECTED
+//  by the compiler ([Erro Estrangeiro]).
 // ============================================================
 
-// Habilita as linguagens estrangeiras usadas neste programa.
+// Enables the foreign languages used in this program.
 import >Go<
 import >C<
 
-// Libraries pertencentes a cada linguagem:
+// Libraries belonging to each language:
 library >go fmt<     // backend Go: vira  import "fmt"
 library >c math<     // backend C:  vira  #include <math.h>
 
@@ -26,12 +26,12 @@ number lado = 4.0;
 print("area do quadrado (Cryo):");
 print(lado * lado);
 
-// Bloco Go — emitido no backend go, omitido nos demais.
+// Go block — emitted on the go backend, omitted on the others.
 >Go(
     fmt.Println("[go] Ola da camada Go, com fmt importado via library!")
 )
 
-// Bloco C — emitido no backend c, omitido nos demais.
+// C block — emitted on the c backend, omitted on the others.
 >C(
     printf("[c] sqrt(2) = %.5f (math via library)\n", sqrt(2.0));
 )

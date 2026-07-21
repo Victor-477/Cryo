@@ -1,11 +1,11 @@
 // ============================================================
-//  Fase 8.3 — Propagação de erro com '?'
+//  Phase 8.3 — Error propagation with '?'
 //
-//  'expr?' desempacota um Result: se for Ok(v), vale v; se for
-//  Err(e), a função retorna cedo com esse Err. Elimina o
-//  try/catch verboso e o encadeamento manual de erros.
+//  'expr?' unwraps a Result: if Ok(v) it is v; if
+//  Err(e), the function returns early with that Err. Removes the
+//  verbose try/catch and manual error chaining.
 //
-//  Rode em qualquer um dos três backends:
+//  Run on any of the three backends:
 //    python burnout/cryoc.py cryo/examples/example_try.cryo --backend pyro --run
 //    python burnout/cryoc.py cryo/examples/example_try.cryo --backend go   --run
 //    python burnout/cryoc.py cryo/examples/example_try.cryo --backend node --run
@@ -13,7 +13,7 @@
 
 enum Result { Ok(int), Err(string) }
 
-// converte texto -> Result: Ok(n) quando reconhecido, senão Err
+// converts text -> Result: Ok(n) when recognized, else Err
 fn parseNum(string s) -> Result ={
     if (s == "10") { return Ok(10); }
     if (s == "20") { return Ok(20); }
@@ -21,9 +21,9 @@ fn parseNum(string s) -> Result ={
     return Err("valor invalido: " + s);
 }
 
-// soma dois números vindos de texto; qualquer erro é propagado com '?'
+// sums two numbers from text; any error is propagated with '?'
 fn somar(string a, string b) -> Result ={
-    int x = parseNum(a)?;      // se Err, somar() retorna esse Err
+    int x = parseNum(a)?;      // if Err, somar() returns that Err
     int y = parseNum(b)?;
     return Ok(x + y);
 }
@@ -36,5 +36,5 @@ fn mostra(string titulo, Result r) -> void ={
 }
 
 mostra("10 + 20", somar("10", "20"));   // Ok(30)
-mostra("3 + ??", somar("3", "x"));      // Err propagado do segundo argumento
-mostra("?? + 10", somar("y", "10"));    // Err propagado do primeiro argumento
+mostra("3 + ??", somar("3", "x"));      // Err propagated from the second argument
+mostra("?? + 10", somar("y", "10"));    // Err propagated from the first argument

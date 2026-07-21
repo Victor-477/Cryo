@@ -1,9 +1,9 @@
 // ============================================================
-//  Exemplo Fase 5 — JSON nativo na VM Pyro
+//  Phase 5 example — native JSON on the Pyro VM
 //
-//  json_encode / json_decode agora rodam também no bytecode Pyro
-//  (structs são maps na VM, então o acesso a campo funciona após
-//  o decode). Roda idêntico em pyro, go e node.
+//  json_encode / json_decode now also run in the Pyro bytecode
+//  (structs are maps on the VM, so field access works after
+//  the decode). Runs identically on pyro, go and node.
 //
 //    python burnout/cryoc.py cryo/examples/example_json.cryo --backend pyro --run
 // ============================================================
@@ -14,20 +14,20 @@ struct Pedido {
     bool   pago;
 }
 
-// ── serialização (struct -> JSON) ───────────────────────────
+// ── serialization (struct -> JSON) ───────────────────────────
 Pedido p = new Pedido { cliente: "Ana Silva", total: 284.30, pago: false };
 string payload = json_encode(p);
 print("payload:");
 print(payload);
 
-// ── desserialização tipada (JSON -> struct) ─────────────────
+// ── typed deserialization (JSON -> struct) ─────────────────
 string entrada = "{\"cliente\": \"Bruno\", \"total\": 99.90, \"pago\": true}";
 Pedido q = json_decode(entrada) as Pedido;
 print("cliente decodificado: ${q.cliente}");
 print("total decodificado:   ${q.total}");
 print("pago?                 ${q.pago}");
 
-// ── arrays e maps também ────────────────────────────────────
+// ── arrays and maps too ────────────────────────────────────
 int[] ids = [10, 20, 30];
 print("array -> JSON: ${json_encode(ids)}");
 

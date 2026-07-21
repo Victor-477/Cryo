@@ -1,5 +1,5 @@
 // ============================================================
-//  Exemplo — Calculadora Básica Interativa em Cryo
+//  Example — Basic Interactive Calculator in Cryo
 // ============================================================
 
 print("=== Calculadora Cryo / Pyro VM ===");
