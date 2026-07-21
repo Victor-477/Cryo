@@ -1,26 +1,26 @@
 // ============================================================
-//  Cryo self-hosting — Codegen escrito em Cryo (Fase 9.3, estágio 3)
+//  Cryo self-hosting — Codegen written in Cryo (Phase 9.3, stage 3)
 //
-//  Compilador single-pass (parseia os tokens e EMITE bytecode direto)
-//  gerando um .pyro VÁLIDO e gravando-o com write_bytes (NATIVE 27).
-//  Roda na VM Pyro: é o compilador Cryo→Pyro escrito na própria
-//  linguagem, sem Python.
+//  Single-pass compiler (parses the tokens and EMITS bytecode directly)
+//  producing a VALID .pyro and writing it with write_bytes (NATIVE 27).
+//  Runs on the Pyro VM: the Cryo→Pyro compiler written in the language
+//  itself, without Python.
 //
-//  Subconjunto: FUNÇÕES de usuário (`fn nome(params) -> T ={ ... }`),
-//  chamadas `nome(args)` (inclusive recursão), `return`; statements
-//  `int x = expr;`, atribuição, `print(expr);`; expressões com inteiros,
-//  variáveis, + - * / %, comparações (== != < > <= >=), unário -,
-//  parênteses; e controle de fluxo `if/else/else if` e `while` com
-//  saltos (JMP/JMPF i32 + backpatching).
+//  Subset: user FUNCTIONS (`fn name(params) -> T ={ ... }`), calls
+//  `name(args)` (including recursion), `return`; statements
+//  `int x = expr;`, assignment, `print(expr);`; expressions with
+//  integers, variables, + - * / %, comparisons (== != < > <= >=),
+//  unary -, parentheses; and control flow `if/else/else if` and `while`
+//  with jumps (JMP/JMPF i32 + backpatching).
 //
-//  Formato .pyro emitido (LE; flags=0): "PYRO" 0x02 0x00 | u16 nconsts |
+//  Emitted .pyro format (LE; flags=0): "PYRO" 0x02 0x00 | u16 nconsts |
 //  consts | u16 nfuncs | funcs | u16 entryfn | u32 codelen | code.
-//  As funções de usuário vêm primeiro no code; 'main' (statements de
-//  topo) por último, e é a função de entrada.
+//  User functions come first in the code; 'main' (top-level statements)
+//  comes last and is the entry function.
 // ============================================================
 import "lexer.cryo"
 
-// ── acessores do fluxo de tokens (cursor = box int[]) ───────
+// ── token-stream accessors (cursor = int[] box) ───────
 fn cpt(string[] tt, int[] pos) -> string ={
     if (pos[0] < len(tt)) { return tt[pos[0]]; }
     return "EOF";
@@ -37,15 +37,15 @@ fn cadv(int[] pos) -> void ={
     pos[0] = pos[0] + 1;
 }
 
-// ── código do caractere ASCII (32..126), via NATIVE find ────
+// ── ASCII character code (32..126), via NATIVE find ────
 fn charCode(string c) -> int ={
     string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
     int idx = find(tbl, c);
-    if (idx < 0) { return 63; }   // '?' para caractere fora da tabela
+    if (idx < 0) { return 63; }   // '?' for a character outside the table
     return 32 + idx;
 }
 
-// ── emissão de bytes (little-endian) ────────────────────────
+// ── byte emission (little-endian) ────────────────────────
 fn emU16(int[] a, int v) -> void ={
     a.push(v & 255);
     a.push((v >> 8) & 255);
@@ -75,7 +75,7 @@ fn emStore(int[] code, int slot) -> void ={
     code.push(7);              // OP_STORE
     emU16(code, slot);
 }
-// grava uma string const no buffer de saída: TAG_STR + u16 len + bytes
+// writes a string const to the output buffer: TAG_STR + u16 len + bytes
 fn emStrConst(int[] out, string s) -> void ={
     out.push(3);
     emU16(out, len(s));
@@ -86,7 +86,7 @@ fn emStrConst(int[] out, string s) -> void ={
     }
 }
 
-// ── saltos (i32) com backpatching ───────────────────────────
+// ── jumps (i32) with backpatching ───────────────────────────
 fn emJmp(int[] code, int op) -> int ={
     code.push(op);
     int at = len(code);
@@ -100,7 +100,7 @@ fn patchI32(int[] code, int at, int rel) -> void ={
     code[at + 3] = (rel >> 24) & 255;
 }
 
-// ── pool de constantes (tagged: "s"+string | "i"+inteiro) ───
+// ── constant pool (tagged: "s"+string | "i"+integer) ───
 fn addStr(string[] cpool, string s) -> int ={
     cpool.push("s" + s);
     return len(cpool) - 1;
@@ -109,7 +109,7 @@ fn addInt(string[] cpool, int v) -> int ={
     cpool.push("i" + to_string(v));
     return len(cpool) - 1;
 }
-// slot da variável 'name' na função atual (aloca em ordem de 1ª aparição)
+// slot of variable 'name' in the current function (allocated in first-seen order)
 fn slotOf(string[] sl, string name) -> int ={
     int i = 0;
     while (i < len(sl)) {
@@ -119,7 +119,7 @@ fn slotOf(string[] sl, string name) -> int ={
     sl.push(name);
     return len(sl) - 1;
 }
-// índice global de uma função pelo nome (funcNames: user fns.. + 'main')
+// global index of a function by name (funcNames: user fns.. + 'main')
 fn funcIndexOf(string[] fns, string name) -> int ={
     int i = 0;
     while (i < len(fns)) {
@@ -129,8 +129,8 @@ fn funcIndexOf(string[] fns, string name) -> int ={
     return -1;
 }
 
-// ── codegen de expressões (deixa o valor na pilha da VM) ────
-//  precedência: ==,!= < <,>,<=,>= < +,- < *,/,% < unário < primário
+// ── expression codegen (leaves the value on the VM stack) ────
+//  precedence: ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
 fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     cgEq(tt, tv, pos, code, cp, sl, fns);
 }
@@ -191,7 +191,7 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
     if (t == "IDENT") {
         string name = cpv(tv, pos); cadv(pos);
         if (cpt(tt, pos) == "LPAREN") {
-            // chamada de função: empilha args e emite CALL
+            // function call: push args and emit CALL
             cadv(pos);
             int argc = 0;
             while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
@@ -205,7 +205,7 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
             code.push(argc & 255);
             return;
         }
-        emLoad(code, slotOf(sl, name));    // variável
+        emLoad(code, slotOf(sl, name));    // variable
         return;
     }
     if (t == "LPAREN") {
@@ -214,10 +214,10 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
         return;
     }
-    // desconhecido: ignora (subconjunto)
+    // unknown: skip (subset)
 }
 
-// bloco '{ ... }' -> statements (consome '{' e '}')
+// block '{ ... }' -> statements (consumes '{' and '}')
 fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
@@ -226,7 +226,7 @@ fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[
     if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
 }
 
-// ── codegen de statements (dentro de funções e do main) ─────
+// ── statement codegen (inside functions and main) ─────
 fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     string t = cpt(tt, pos);
     // return [expr] ;
@@ -279,7 +279,7 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
-    // int x = expr;   (subconjunto: apenas 'int')
+    // int x = expr;   (subset: only 'int')
     if (t == "TYPE_INT") {
         cadv(pos);
         string name = cpv(tv, pos); cadv(pos);
@@ -312,7 +312,7 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
-        // chamada de função como statement: nome(args);  (descarta retorno)
+        // function call as a statement: name(args);  (discards the return)
         if (cpt2(tt, pos) == "LPAREN") {
             cgExpr(tt, tv, pos, code, cp, sl, fns);
             code.push(5);                  // OP_POP
@@ -320,11 +320,11 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             return;
         }
     }
-    // desconhecido: avança um token para não travar
+    // unknown: advance one token to avoid getting stuck
     cadv(pos);
 }
 
-// compila uma declaração de função para dentro de fcode e registra metadados
+// compiles a function declaration into fcode and records metadata
 fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp,
                    string[] fns, int[] fEntry, int[] fNParams, int[] fNLocals, int[] fNameIdx) -> void ={
     cadv(pos);                              // FN
@@ -334,33 +334,33 @@ fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp
     if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
     int np = 0;
     while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
-        cadv(pos);                          // tipo do parâmetro (tratado como int)
+        cadv(pos);                          // parameter type (treated as int)
         string pname = cpv(tv, pos); cadv(pos);
         slotOf(sl, pname);                  // param -> slots 0,1,...
         np = np + 1;
         if (cpt(tt, pos) == "COMMA") { cadv(pos); }
     }
     if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-    if (cpt(tt, pos) == "ARROW") { cadv(pos); cadv(pos); }   // -> tipo
+    if (cpt(tt, pos) == "ARROW") { cadv(pos); cadv(pos); }   // -> type
     if (cpt(tt, pos) == "BODY_ASSIGN") { cadv(pos); }
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
         cgStmt(tt, tv, pos, fcode, cp, sl, fns);
     }
     if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
-    fcode.push(4); fcode.push(65);          // NULL; RET (retorno implícito)
+    fcode.push(4); fcode.push(65);          // NULL; RET (implicit return)
     fEntry.push(entry);
     fNParams.push(np);
     fNLocals.push(len(sl));
     fNameIdx.push(addStr(cp, name));
 }
 
-// ── entrada: compila `src` e grava o .pyro em outPath ───────
+// ── entry: compile `src` and write the .pyro to outPath ───────
 fn compile(string src, string outPath) -> bool ={
     string[] tt = [];
     string[] tv = [];
     lex(src, tt, tv);
 
-    // pré-varredura: nomes de função (ordem de origem) + 'main' por último
+    // pre-scan: function names (source order) + 'main' last
     string[] fns = [];
     int i = 0;
     while (i < len(tt)) {
@@ -371,9 +371,9 @@ fn compile(string src, string outPath) -> bool ={
     }
     fns.push("main");
 
-    string[] cp = [];          // pool de constantes (tagged)
-    int[] fcode = [];          // código das funções de usuário
-    int[] mcode = [];          // código do main (statements de topo)
+    string[] cp = [];          // constant pool (tagged)
+    int[] fcode = [];          // code of the user functions
+    int[] mcode = [];          // main code (top-level statements)
     int[] fEntry = [];
     int[] fNParams = [];
     int[] fNLocals = [];
@@ -388,16 +388,16 @@ fn compile(string src, string outPath) -> bool ={
             cgStmt(tt, tv, pos, mcode, cp, mainSl, fns);
         }
     }
-    mcode.push(4); mcode.push(65);          // NULL; RET (fim do main)
-    int mainEntry = len(fcode);             // main vem após as funções de usuário
+    mcode.push(4); mcode.push(65);          // NULL; RET (end of main)
+    int mainEntry = len(fcode);             // main comes after the user functions
     int mainName = addStr(cp, "main");
-    int nf = len(fns);                       // funções de usuário + main
+    int nf = len(fns);                       // user functions + main
 
-    // ── montagem do .pyro ──
+    // ── .pyro assembly ──
     int[] out = [];
     out.push(80); out.push(89); out.push(82); out.push(79);   // "PYRO"
-    out.push(2); out.push(0);               // versão 2, flags 0
-    // constantes
+    out.push(2); out.push(0);               // version 2, flags 0
+    // constants
     emU16(out, len(cp));
     int c = 0;
     while (c < len(cp)) {
@@ -407,7 +407,7 @@ fn compile(string src, string outPath) -> bool ={
         else { out.push(1); emI64(out, to_int(rest)); }
         c = c + 1;
     }
-    // tabela de funções (índice 0..nf-1: user fns.., depois main)
+    // function table (index 0..nf-1: user fns.., then main)
     emU16(out, nf);
     int fi = 0;
     while (fi < nf) {
@@ -424,7 +424,7 @@ fn compile(string src, string outPath) -> bool ={
         }
         fi = fi + 1;
     }
-    // função de entrada = main (último índice)
+    // entry function = main (last index)
     emU16(out, nf - 1);
     // code = fcode ++ mcode
     emU32(out, len(fcode) + len(mcode));

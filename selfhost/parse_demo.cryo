@@ -1,4 +1,4 @@
-// Demonstração do parser auto-hospedado rodando na VM Pyro.
+// Demonstration of the self-hosted parser running on the Pyro VM.
 //   python burnout/cryoc.py cryo/selfhost/parse_demo.cryo --backend pyro --run
 import "parser.cryo"
 

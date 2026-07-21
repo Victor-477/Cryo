@@ -1,20 +1,20 @@
 // ============================================================
-//  Cryo self-hosting — Parser escrito em Cryo (Fase 9.3, estágio 2)
+//  Cryo self-hosting — Parser written in Cryo (Phase 9.3, stage 2)
 //
-//  Recursivo-descendente: tokens (do lexer.cryo) -> AST serializada
-//  como S-expression. Replica a MESMA precedência e as mesmas formas
-//  do parser de referência (cryo/parser.py), para um subconjunto:
-//  declarações de função, var decl, atribuição, return, if/else,
-//  while, expressão-statement; expressões com a cadeia de precedência
-//  || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unário -,! ; primários
-//  int/float/string/bool/ident/chamada/parênteses.
+//  Recursive-descent: tokens (from lexer.cryo) -> AST serialized as an
+//  S-expression. Replicates the SAME precedence and the same shapes as
+//  the reference parser (cryo/parser.py), for a subset: function
+//  declarations, var decl, assignment, return, if/else, while,
+//  expression-statement; expressions with the precedence chain
+//  || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary -,! ; primaries
+//  int/float/string/bool/ident/call/parentheses.
 //
-//  O cursor é um "box" int[] pos (arrays são por-referência), então
-//  as funções compartilham a posição sem variáveis globais mutáveis.
+//  The cursor is an int[] pos "box" (arrays are by-reference), so the
+//  functions share the position without mutable global variables.
 // ============================================================
 import "lexer.cryo"
 
-// ── acessores do fluxo de tokens ────────────────────────────
+// ── token-stream accessors ────────────────────────────
 fn pt(string[] tt, int[] pos) -> string ={
     if (pos[0] < len(tt)) { return tt[pos[0]]; }
     return "EOF";
@@ -35,7 +35,7 @@ fn isTypeTok(string t) -> bool ={
         || t == "TYPE_BOOL" || t == "TYPE_VOID";
 }
 
-// ── expressões (precedência crescente) ──────────────────────
+// ── expressions (increasing precedence) ──────────────────────
 fn pExpr(string[] tt, string[] tv, int[] pos) -> string ={
     return pOr(tt, tv, pos);
 }
@@ -134,7 +134,7 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
     return "(err " + t + ")";
 }
 
-// ── tipos (subconjunto: primitivo ou ident, sem []/? ) ──────
+// ── types (subset: primitive or ident, no []/? ) ──────
 fn pType(string[] tt, string[] tv, int[] pos) -> string ={
     string v = pv(tv, pos); adv(pos);
     return v;
@@ -157,7 +157,7 @@ fn pStmt(string[] tt, string[] tv, int[] pos) -> string ={
     return pExprStmt(tt, tv, pos);
 }
 
-// coleta statements até '}' (consumindo o '}'); prefixa cada um com espaço
+// collects statements until '}' (consuming it); prefixes each with a space
 fn pStmtsUntilBrace(string[] tt, string[] tv, int[] pos) -> string ={
     string out = "";
     while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
@@ -167,7 +167,7 @@ fn pStmtsUntilBrace(string[] tt, string[] tv, int[] pos) -> string ={
     if (pt(tt, pos) == "RBRACE") { adv(pos); }
     return out;
 }
-// bloco '{ ... }' -> statements (consome '{' e '}')
+// block '{ ... }' -> statements (consumes '{' and '}')
 fn pBlock(string[] tt, string[] tv, int[] pos) -> string ={
     if (pt(tt, pos) == "LBRACE") { adv(pos); }
     return pStmtsUntilBrace(tt, tv, pos);
@@ -240,17 +240,17 @@ fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
     string ret = "void";
     if (pt(tt, pos) == "ARROW") { adv(pos); ret = pType(tt, tv, pos); }
     if (pt(tt, pos) == "BODY_ASSIGN") { adv(pos); }
-    string body = pStmtsUntilBrace(tt, tv, pos);   // '={' já consumido
+    string body = pStmtsUntilBrace(tt, tv, pos);   // '={' already consumed
     return "(fn " + name + " (params" + params + ") " + ret + " (body" + body + "))";
 }
 fn pExprStmt(string[] tt, string[] tv, int[] pos) -> string ={
-    // o parser de referência devolve a expressão crua como statement
+    // the reference parser returns the raw expression as a statement
     string e = pExpr(tt, tv, pos);
     if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
     return e;
 }
 
-// ── entrada: lexa e imprime uma S-expression por statement de topo ──
+// ── entry: lex and print one S-expression per top-level statement ──
 fn parse(string src) -> void ={
     string[] tt = [];
     string[] tv = [];

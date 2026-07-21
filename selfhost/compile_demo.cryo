@@ -1,8 +1,8 @@
-// Demonstração do compilador auto-hospedado (estágio 3) rodando na VM Pyro:
-// gera build/selfhost_out.pyro a partir de um programa de inteiros.
+// Demonstration of the self-hosted compiler (stage 3) running on the Pyro VM:
+// generates build/selfhost_out.pyro from an integer program.
 //   python burnout/cryoc.py cryo/selfhost/compile_demo.cryo --backend pyro --run
-//   python burnout/cryoc.py <qualquer.cryo> --backend pyro --dis   (para inspecionar)
-//   (depois execute a VM sobre build/selfhost_out.pyro)
+//   python burnout/cryoc.py <any.cryo> --backend pyro --dis   (to inspect)
+//   (then run the VM on build/selfhost_out.pyro)
 import "codegen.cryo"
 
 bool ok = compile(

@@ -1,4 +1,4 @@
-// Demonstração do lexer auto-hospedado rodando na VM Pyro.
+// Demonstration of the self-hosted lexer running on the Pyro VM.
 //   python burnout/cryoc.py cryo/selfhost/lex_demo.cryo --backend pyro --run
 import "lexer.cryo"
 

@@ -1,19 +1,19 @@
 // ============================================================
-//  Cryo self-hosting — Lexer escrito em Cryo (Fase 9.3, estágio 1)
+//  Cryo self-hosting — Lexer written in Cryo (Phase 9.3, stage 1)
 //
-//  Tokeniza um subconjunto de Cryo e imprime um token por linha no
-//  formato "TIPO valor", espelhando os nomes de TokenType do lexer
-//  de referência (cryo/lexer.py). Compila para .pyro (via burnout)
-//  e roda na VM Pyro — o primeiro estágio do compilador Cryo→Pyro
-//  escrito na própria linguagem.
+//  Tokenizes a subset of Cryo and prints one token per line in the
+//  "TYPE value" format, mirroring the TokenType names of the
+//  reference lexer (cryo/lexer.py). Compiles to .pyro (via burnout)
+//  and runs on the Pyro VM — the first stage of the Cryo→Pyro
+//  compiler written in the language itself.
 //
-//  Subconjunto coberto: espaços, comentários // e /* */, palavras-
-//  chave e tipos, identificadores, inteiros e floats decimais,
-//  strings ("..."), e os operadores/pontuação mais comuns.
+//  Covered subset: whitespace, // and /* */ comments, keywords and
+//  types, identifiers, decimal integers and floats, strings ("..."),
+//  and the most common operators/punctuation.
 // ============================================================
 
-// classificação de caracteres (via NATIVE contains, sem depender de
-// comparação relacional de strings)
+// character classification (via NATIVE contains, without relying on
+// relational string comparison)
 fn isDigit(string c) -> bool ={
     if (c == "") { return false; }
     return contains("0123456789", c);
@@ -32,7 +32,7 @@ fn isSpace(string c) -> bool ={
     return c == " " || c == "\t" || c == "\n";
 }
 
-// palavra -> nome do TokenType (ou "IDENT")
+// word -> TokenType name (or "IDENT")
 fn kw(string s) -> string ={
     if (s == "fn")       { return "FN"; }
     if (s == "return")   { return "RETURN"; }
@@ -79,13 +79,13 @@ fn kw(string s) -> string ={
     return "IDENT";
 }
 
-// acrescenta um token (tipo + valor) aos arrays de saída
+// appends a token (type + value) to the output arrays
 fn pushTok(string[] tt, string[] tv, string typ, string val) -> void ={
     tt.push(typ);
     tv.push(val);
 }
 
-// estágio 1: imprime "TIPO valor" por linha (usa lex internamente)
+// stage 1: prints "TYPE value" per line (uses lex internally)
 fn tokenize(string src) -> void ={
     string[] tt = [];
     string[] tv = [];
@@ -97,27 +97,27 @@ fn tokenize(string src) -> void ={
     }
 }
 
-// tokeniza src preenchendo tt (tipos) e tv (valores); termina com "EOF"
+// tokenizes src filling tt (types) and tv (values); ends with "EOF"
 fn lex(string src, string[] tt, string[] tv) -> void ={
     int n = len(src);
     int i = 0;
     while (i < n) {
         string c = src[i];
 
-        // espaços em branco
+        // whitespace
         if (isSpace(c)) { i = i + 1; continue; }
 
-        // caractere seguinte (lookahead)
+        // next character (lookahead)
         string d = "";
         if (i + 1 < n) { d = src[i + 1]; }
 
-        // comentário de linha
+        // line comment
         if (c == "/" && d == "/") {
             i = i + 2;
             while (i < n && src[i] != "\n") { i = i + 1; }
             continue;
         }
-        // comentário de bloco
+        // block comment
         if (c == "/" && d == "*") {
             i = i + 2;
             while (i + 1 < n && !(src[i] == "*" && src[i + 1] == "/")) { i = i + 1; }
@@ -143,12 +143,12 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
                     i = i + 1;
                 }
             }
-            i = i + 1;   // aspa final
+            i = i + 1;   // closing quote
             pushTok(tt, tv, "STR_LIT", s);
             continue;
         }
 
-        // número (int ou float decimal)
+        // number (decimal int or float)
         if (isDigit(c)) {
             int start = i;
             while (i < n && isDigit(src[i])) { i = i + 1; }
@@ -166,7 +166,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
             continue;
         }
 
-        // identificador / palavra-chave
+        // identifier / keyword
         if (isAlpha(c)) {
             int start = i;
             while (i < n && isAlnum(src[i])) { i = i + 1; }
@@ -175,7 +175,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
             continue;
         }
 
-        // operadores de dois caracteres
+        // two-character operators
         if (c == "=" && d == "{") { pushTok(tt, tv, "BODY_ASSIGN", "={"); i = i + 2; continue; }
         if (c == "-" && d == ">") { pushTok(tt, tv, "ARROW", "->");       i = i + 2; continue; }
         if (c == "=" && d == "=") { pushTok(tt, tv, "EQ", "==");          i = i + 2; continue; }
@@ -187,7 +187,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "+" && d == "+") { pushTok(tt, tv, "PLUS_PLUS", "++");   i = i + 2; continue; }
         if (c == "-" && d == "-") { pushTok(tt, tv, "MINUS_MINUS", "--"); i = i + 2; continue; }
 
-        // operadores/pontuação de um caractere
+        // single-character operators/punctuation
         if (c == "+") { pushTok(tt, tv, "PLUS", "+");       i = i + 1; continue; }
         if (c == "-") { pushTok(tt, tv, "MINUS", "-");      i = i + 1; continue; }
         if (c == "*") { pushTok(tt, tv, "STAR", "*");       i = i + 1; continue; }
@@ -208,7 +208,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == ":") { pushTok(tt, tv, "COLON", ":");      i = i + 1; continue; }
         if (c == ".") { pushTok(tt, tv, "DOT", ".");        i = i + 1; continue; }
 
-        // desconhecido: ignora
+        // unknown: skip
         i = i + 1;
     }
     pushTok(tt, tv, "EOF", "");
