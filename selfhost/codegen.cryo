@@ -85,8 +85,29 @@ fn slotOf(string[] sl, string name) -> int ={
 }
 
 // ── codegen de expressões (deixa o valor na pilha da VM) ────
+//  precedência: ==,!= < <,>,<=,>= < +,- < *,/,% < unário < primário
 fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    cgEq(tt, tv, pos, code, cs, sl);
+}
+fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    cgCmp(tt, tv, pos, code, cs, sl);
+    while (cpt(tt, pos) == "EQ" || cpt(tt, pos) == "NEQ") {
+        string op = cpt(tt, pos); cadv(pos);
+        cgCmp(tt, tv, pos, code, cs, sl);
+        if (op == "EQ") { code.push(32); } else { code.push(33); }   // EQ / NE
+    }
+}
+fn cgCmp(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
     cgAdd(tt, tv, pos, code, cs, sl);
+    while (cpt(tt, pos) == "LT" || cpt(tt, pos) == "GT"
+        || cpt(tt, pos) == "LEQ" || cpt(tt, pos) == "GEQ") {
+        string op = cpt(tt, pos); cadv(pos);
+        cgAdd(tt, tv, pos, code, cs, sl);
+        if (op == "LT")       { code.push(34); }   // LT
+        else if (op == "GT")  { code.push(35); }   // GT
+        else if (op == "LEQ") { code.push(36); }   // LE
+        else                  { code.push(37); }   // GE
+    }
 }
 fn cgAdd(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
     cgMul(tt, tv, pos, code, cs, sl);
@@ -130,16 +151,79 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, strin
     }
     if (t == "LPAREN") {
         cadv(pos);
-        cgAdd(tt, tv, pos, code, cs, sl);
+        cgExpr(tt, tv, pos, code, cs, sl);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
         return;
     }
     // desconhecido: ignora (subconjunto)
 }
 
+// ── saltos (i32) com backpatching ───────────────────────────
+//  emite `op` + 4 bytes de placeholder; devolve a posição do operando.
+fn emJmp(int[] code, int op) -> int ={
+    code.push(op);
+    int at = len(code);
+    code.push(0); code.push(0); code.push(0); code.push(0);
+    return at;
+}
+//  grava, na posição `at`, o rel i32 (LE) de um salto já emitido.
+//  rel = alvo - (at + 4)  (alvo relativo ao fim da instrução de salto).
+fn patchI32(int[] code, int at, int rel) -> void ={
+    code[at]     = rel & 255;
+    code[at + 1] = (rel >> 8) & 255;
+    code[at + 2] = (rel >> 16) & 255;
+    code[at + 3] = (rel >> 24) & 255;
+}
+
+// bloco '{ ... }' -> compila os statements (consome '{' e '}')
+fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+    if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
+    while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+        cgStmt(tt, tv, pos, code, cs, sl);
+    }
+    if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+}
+
 // ── codegen de statements ───────────────────────────────────
 fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
     string t = cpt(tt, pos);
+    // if (cond) { ... } [else { ... } | else if ...]
+    if (t == "IF") {
+        cadv(pos);                              // if
+        if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
+        cgExpr(tt, tv, pos, code, cs, sl);      // condição
+        if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+        int jElse = emJmp(code, 49);            // JMPF (0x31): pula se falso
+        cgBlock(tt, tv, pos, code, cs, sl);     // then
+        if (cpt(tt, pos) == "ELSE") {
+            cadv(pos);
+            int jEnd = emJmp(code, 48);         // JMP (0x30): pula o else
+            patchI32(code, jElse, len(code) - (jElse + 4));
+            if (cpt(tt, pos) == "IF") {
+                cgStmt(tt, tv, pos, code, cs, sl);   // else if ...
+            } else {
+                cgBlock(tt, tv, pos, code, cs, sl);  // else { ... }
+            }
+            patchI32(code, jEnd, len(code) - (jEnd + 4));
+        } else {
+            patchI32(code, jElse, len(code) - (jElse + 4));
+        }
+        return;
+    }
+    // while (cond) { ... }
+    if (t == "WHILE") {
+        cadv(pos);                              // while
+        int loopStart = len(code);
+        if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
+        cgExpr(tt, tv, pos, code, cs, sl);      // condição
+        if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+        int jExit = emJmp(code, 49);            // JMPF: sai se falso
+        cgBlock(tt, tv, pos, code, cs, sl);     // corpo
+        int jBack = emJmp(code, 48);            // JMP: volta ao topo
+        patchI32(code, jBack, loopStart - (jBack + 4));
+        patchI32(code, jExit, len(code) - (jExit + 4));
+        return;
+    }
     // int x = expr;   (subconjunto: apenas 'int')
     if (t == "TYPE_INT") {
         cadv(pos);                              // int

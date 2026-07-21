@@ -1,2 +1,12 @@
+# Reconhecimento de linguagem no GitHub (Linguist).
+#
+# Cryo é uma linguagem própria; o Linguist não a conhece nativamente. Mapeamos
+# a extensão .cryo para uma linguagem de sintaxe próxima (Rust: fn / -> /
+# struct / enum / match / const) apenas para fins de REALCE e CONTAGEM no
+# GitHub. A gramática oficial (TextMate) da linguagem vive nas extensões do
+# VS Code (cryo-vscode).
 *.cryo linguist-language=Rust
+*.cryo linguist-detectable=true
+
+# .pyro é o bytecode binário do Pyro — não é texto/código.
 *.pyro binary
