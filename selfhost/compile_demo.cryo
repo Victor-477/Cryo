@@ -6,6 +6,6 @@
 import "codegen.cryo"
 
 bool ok = compile(
-    "int i = 0; int sum = 0; while (i < 5) { sum = sum + i; i = i + 1; } print(sum); int x = 7; if (x > 5) { print(1); } else { print(0); } if (x == 5) { print(100); } else if (x > 6) { print(2); } else { print(3); }",
+    "fn fib(int n) -> int ={ if (n < 2) { return n; } return fib(n - 1) + fib(n - 2); } fn dobro(int x) -> int ={ return x * 2; } print(fib(10)); print(dobro(21)); int s = fib(7) + dobro(5); print(s);",
     "build/selfhost_out.pyro");
 print(ok);

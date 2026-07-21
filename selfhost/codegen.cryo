@@ -2,19 +2,21 @@
 //  Cryo self-hosting — Codegen escrito em Cryo (Fase 9.3, estágio 3)
 //
 //  Compilador single-pass (parseia os tokens e EMITE bytecode direto)
-//  para um subconjunto de inteiros, gerando um arquivo .pyro VÁLIDO e
-//  gravando-o com write_bytes (NATIVE 27). Roda na VM Pyro: é o
-//  compilador Cryo→Pyro escrito na própria linguagem, sem Python.
+//  gerando um .pyro VÁLIDO e gravando-o com write_bytes (NATIVE 27).
+//  Roda na VM Pyro: é o compilador Cryo→Pyro escrito na própria
+//  linguagem, sem Python.
 //
-//  Subconjunto: statements de topo `int x = <expr>;`, `x = <expr>;`,
-//  `print(<expr>);`. Expressões: literais inteiros, variáveis, + - * / %
-//  (precedência), unário -, e parênteses. Semântica inteira.
+//  Subconjunto: FUNÇÕES de usuário (`fn nome(params) -> T ={ ... }`),
+//  chamadas `nome(args)` (inclusive recursão), `return`; statements
+//  `int x = expr;`, atribuição, `print(expr);`; expressões com inteiros,
+//  variáveis, + - * / %, comparações (== != < > <= >=), unário -,
+//  parênteses; e controle de fluxo `if/else/else if` e `while` com
+//  saltos (JMP/JMPF i32 + backpatching).
 //
-//  Formato .pyro emitido (little-endian; flags=0: sem XOR, sem debug):
-//    "PYRO" 0x02 0x00 | u16 nconsts | consts | u16 nfuncs | funcs |
-//    u16 entryfn | u32 codelen | code
-//  O const 0 é sempre a string "main" (nome da função de entrada);
-//  os demais são inteiros. Uma única função 'main' (todo o topo).
+//  Formato .pyro emitido (LE; flags=0): "PYRO" 0x02 0x00 | u16 nconsts |
+//  consts | u16 nfuncs | funcs | u16 entryfn | u32 codelen | code.
+//  As funções de usuário vêm primeiro no code; 'main' (statements de
+//  topo) por último, e é a função de entrada.
 // ============================================================
 import "lexer.cryo"
 
@@ -35,6 +37,14 @@ fn cadv(int[] pos) -> void ={
     pos[0] = pos[0] + 1;
 }
 
+// ── código do caractere ASCII (32..126), via NATIVE find ────
+fn charCode(string c) -> int ={
+    string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    int idx = find(tbl, c);
+    if (idx < 0) { return 63; }   // '?' para caractere fora da tabela
+    return 32 + idx;
+}
+
 // ── emissão de bytes (little-endian) ────────────────────────
 fn emU16(int[] a, int v) -> void ={
     a.push(v & 255);
@@ -53,7 +63,6 @@ fn emI64(int[] a, int v) -> void ={
         k = k + 1;
     }
 }
-// opcodes (ver ISA em PYRO_BYTECODE.md)
 fn emConst(int[] code, int poolIdx) -> void ={
     code.push(1);              // OP_CONST
     emU16(code, poolIdx);
@@ -66,14 +75,41 @@ fn emStore(int[] code, int slot) -> void ={
     code.push(7);              // OP_STORE
     emU16(code, slot);
 }
-
-// ── pool de constantes (inteiros) e slots de variáveis ──────
-// cs guarda só inteiros (como texto decimal); o pool final é
-// ["main"] ++ cs, então a constante cs[i] tem índice de pool i+1.
-fn addInt(string[] cs, int v) -> int ={
-    cs.push(to_string(v));
-    return len(cs) - 1;
+// grava uma string const no buffer de saída: TAG_STR + u16 len + bytes
+fn emStrConst(int[] out, string s) -> void ={
+    out.push(3);
+    emU16(out, len(s));
+    int i = 0;
+    while (i < len(s)) {
+        out.push(charCode(s[i]));
+        i = i + 1;
+    }
 }
+
+// ── saltos (i32) com backpatching ───────────────────────────
+fn emJmp(int[] code, int op) -> int ={
+    code.push(op);
+    int at = len(code);
+    code.push(0); code.push(0); code.push(0); code.push(0);
+    return at;
+}
+fn patchI32(int[] code, int at, int rel) -> void ={
+    code[at]     = rel & 255;
+    code[at + 1] = (rel >> 8) & 255;
+    code[at + 2] = (rel >> 16) & 255;
+    code[at + 3] = (rel >> 24) & 255;
+}
+
+// ── pool de constantes (tagged: "s"+string | "i"+inteiro) ───
+fn addStr(string[] cpool, string s) -> int ={
+    cpool.push("s" + s);
+    return len(cpool) - 1;
+}
+fn addInt(string[] cpool, int v) -> int ={
+    cpool.push("i" + to_string(v));
+    return len(cpool) - 1;
+}
+// slot da variável 'name' na função atual (aloca em ordem de 1ª aparição)
 fn slotOf(string[] sl, string name) -> int ={
     int i = 0;
     while (i < len(sl)) {
@@ -83,126 +119,145 @@ fn slotOf(string[] sl, string name) -> int ={
     sl.push(name);
     return len(sl) - 1;
 }
+// índice global de uma função pelo nome (funcNames: user fns.. + 'main')
+fn funcIndexOf(string[] fns, string name) -> int ={
+    int i = 0;
+    while (i < len(fns)) {
+        if (fns[i] == name) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
 
 // ── codegen de expressões (deixa o valor na pilha da VM) ────
 //  precedência: ==,!= < <,>,<=,>= < +,- < *,/,% < unário < primário
-fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
-    cgEq(tt, tv, pos, code, cs, sl);
+fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgEq(tt, tv, pos, code, cp, sl, fns);
 }
-fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
-    cgCmp(tt, tv, pos, code, cs, sl);
+fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgCmp(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "EQ" || cpt(tt, pos) == "NEQ") {
         string op = cpt(tt, pos); cadv(pos);
-        cgCmp(tt, tv, pos, code, cs, sl);
-        if (op == "EQ") { code.push(32); } else { code.push(33); }   // EQ / NE
+        cgCmp(tt, tv, pos, code, cp, sl, fns);
+        if (op == "EQ") { code.push(32); } else { code.push(33); }
     }
 }
-fn cgCmp(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
-    cgAdd(tt, tv, pos, code, cs, sl);
+fn cgCmp(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgAdd(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "LT" || cpt(tt, pos) == "GT"
         || cpt(tt, pos) == "LEQ" || cpt(tt, pos) == "GEQ") {
         string op = cpt(tt, pos); cadv(pos);
-        cgAdd(tt, tv, pos, code, cs, sl);
-        if (op == "LT")       { code.push(34); }   // LT
-        else if (op == "GT")  { code.push(35); }   // GT
-        else if (op == "LEQ") { code.push(36); }   // LE
-        else                  { code.push(37); }   // GE
+        cgAdd(tt, tv, pos, code, cp, sl, fns);
+        if (op == "LT")       { code.push(34); }
+        else if (op == "GT")  { code.push(35); }
+        else if (op == "LEQ") { code.push(36); }
+        else                  { code.push(37); }
     }
 }
-fn cgAdd(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
-    cgMul(tt, tv, pos, code, cs, sl);
+fn cgAdd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgMul(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "PLUS" || cpt(tt, pos) == "MINUS") {
         string op = cpt(tt, pos); cadv(pos);
-        cgMul(tt, tv, pos, code, cs, sl);
-        if (op == "PLUS") { code.push(16); } else { code.push(17); }   // ADD / SUB
+        cgMul(tt, tv, pos, code, cp, sl, fns);
+        if (op == "PLUS") { code.push(16); } else { code.push(17); }
     }
 }
-fn cgMul(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
-    cgUnary(tt, tv, pos, code, cs, sl);
+fn cgMul(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgUnary(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "STAR" || cpt(tt, pos) == "SLASH" || cpt(tt, pos) == "PERCENT") {
         string op = cpt(tt, pos); cadv(pos);
-        cgUnary(tt, tv, pos, code, cs, sl);
-        if (op == "STAR")       { code.push(18); }   // MUL
-        else if (op == "SLASH") { code.push(19); }   // DIV
-        else                    { code.push(20); }   // MOD
+        cgUnary(tt, tv, pos, code, cp, sl, fns);
+        if (op == "STAR")       { code.push(18); }
+        else if (op == "SLASH") { code.push(19); }
+        else                    { code.push(20); }
     }
 }
-fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     if (cpt(tt, pos) == "MINUS") {
         cadv(pos);
-        cgUnary(tt, tv, pos, code, cs, sl);
+        cgUnary(tt, tv, pos, code, cp, sl, fns);
         code.push(21);   // OP_NEG
         return;
     }
-    cgPrimary(tt, tv, pos, code, cs, sl);
+    cgPrimary(tt, tv, pos, code, cp, sl, fns);
 }
-fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     string t = cpt(tt, pos);
     if (t == "INT_LIT") {
         int v = to_int(cpv(tv, pos)); cadv(pos);
-        int ci = addInt(cs, v);
-        emConst(code, ci + 1);       // +1: pool[0] = "main"
+        emConst(code, addInt(cp, v));
         return;
     }
     if (t == "IDENT") {
         string name = cpv(tv, pos); cadv(pos);
-        emLoad(code, slotOf(sl, name));
+        if (cpt(tt, pos) == "LPAREN") {
+            // chamada de função: empilha args e emite CALL
+            cadv(pos);
+            int argc = 0;
+            while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
+                cgExpr(tt, tv, pos, code, cp, sl, fns);
+                argc = argc + 1;
+                if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+            }
+            if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            code.push(64);                 // OP_CALL
+            emU16(code, funcIndexOf(fns, name));
+            code.push(argc & 255);
+            return;
+        }
+        emLoad(code, slotOf(sl, name));    // variável
         return;
     }
     if (t == "LPAREN") {
         cadv(pos);
-        cgExpr(tt, tv, pos, code, cs, sl);
+        cgExpr(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
         return;
     }
     // desconhecido: ignora (subconjunto)
 }
 
-// ── saltos (i32) com backpatching ───────────────────────────
-//  emite `op` + 4 bytes de placeholder; devolve a posição do operando.
-fn emJmp(int[] code, int op) -> int ={
-    code.push(op);
-    int at = len(code);
-    code.push(0); code.push(0); code.push(0); code.push(0);
-    return at;
-}
-//  grava, na posição `at`, o rel i32 (LE) de um salto já emitido.
-//  rel = alvo - (at + 4)  (alvo relativo ao fim da instrução de salto).
-fn patchI32(int[] code, int at, int rel) -> void ={
-    code[at]     = rel & 255;
-    code[at + 1] = (rel >> 8) & 255;
-    code[at + 2] = (rel >> 16) & 255;
-    code[at + 3] = (rel >> 24) & 255;
-}
-
-// bloco '{ ... }' -> compila os statements (consome '{' e '}')
-fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+// bloco '{ ... }' -> statements (consome '{' e '}')
+fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
-        cgStmt(tt, tv, pos, code, cs, sl);
+        cgStmt(tt, tv, pos, code, cp, sl, fns);
     }
     if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
 }
 
-// ── codegen de statements ───────────────────────────────────
-fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[] sl) -> void ={
+// ── codegen de statements (dentro de funções e do main) ─────
+fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     string t = cpt(tt, pos);
+    // return [expr] ;
+    if (t == "RETURN") {
+        cadv(pos);
+        if (cpt(tt, pos) == "SEMICOLON" || cpt(tt, pos) == "RBRACE") {
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            code.push(4); code.push(65);   // NULL; RET
+        } else {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
+            code.push(65);                 // RET
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+        }
+        return;
+    }
     // if (cond) { ... } [else { ... } | else if ...]
     if (t == "IF") {
-        cadv(pos);                              // if
+        cadv(pos);
         if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
-        cgExpr(tt, tv, pos, code, cs, sl);      // condição
+        cgExpr(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-        int jElse = emJmp(code, 49);            // JMPF (0x31): pula se falso
-        cgBlock(tt, tv, pos, code, cs, sl);     // then
+        int jElse = emJmp(code, 49);       // JMPF
+        cgBlock(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "ELSE") {
             cadv(pos);
-            int jEnd = emJmp(code, 48);         // JMP (0x30): pula o else
+            int jEnd = emJmp(code, 48);     // JMP
             patchI32(code, jElse, len(code) - (jElse + 4));
             if (cpt(tt, pos) == "IF") {
-                cgStmt(tt, tv, pos, code, cs, sl);   // else if ...
+                cgStmt(tt, tv, pos, code, cp, sl, fns);
             } else {
-                cgBlock(tt, tv, pos, code, cs, sl);  // else { ... }
+                cgBlock(tt, tv, pos, code, cp, sl, fns);
             }
             patchI32(code, jEnd, len(code) - (jEnd + 4));
         } else {
@@ -212,28 +267,27 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[]
     }
     // while (cond) { ... }
     if (t == "WHILE") {
-        cadv(pos);                              // while
+        cadv(pos);
         int loopStart = len(code);
         if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
-        cgExpr(tt, tv, pos, code, cs, sl);      // condição
+        cgExpr(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-        int jExit = emJmp(code, 49);            // JMPF: sai se falso
-        cgBlock(tt, tv, pos, code, cs, sl);     // corpo
-        int jBack = emJmp(code, 48);            // JMP: volta ao topo
+        int jExit = emJmp(code, 49);       // JMPF
+        cgBlock(tt, tv, pos, code, cp, sl, fns);
+        int jBack = emJmp(code, 48);       // JMP
         patchI32(code, jBack, loopStart - (jBack + 4));
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
     // int x = expr;   (subconjunto: apenas 'int')
     if (t == "TYPE_INT") {
-        cadv(pos);                              // int
-        string name = cpv(tv, pos); cadv(pos);  // IDENT
+        cadv(pos);
+        string name = cpv(tv, pos); cadv(pos);
         if (cpt(tt, pos) == "ASSIGN") {
             cadv(pos);
-            cgAdd(tt, tv, pos, code, cs, sl);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
         } else {
-            int ci = addInt(cs, 0);             // sem init -> 0
-            emConst(code, ci + 1);
+            emConst(code, addInt(cp, 0));
         }
         emStore(code, slotOf(sl, name));
         if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
@@ -243,18 +297,25 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[]
         string name = cpv(tv, pos);
         // print(expr);
         if (name == "print" && cpt2(tt, pos) == "LPAREN") {
-            cadv(pos); cadv(pos);               // print (
-            cgAdd(tt, tv, pos, code, cs, sl);
+            cadv(pos); cadv(pos);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
             if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-            code.push(80);                      // OP_PRINT
+            code.push(80);                 // OP_PRINT
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
         // x = expr;
         if (cpt2(tt, pos) == "ASSIGN") {
-            cadv(pos); cadv(pos);               // name =
-            cgAdd(tt, tv, pos, code, cs, sl);
+            cadv(pos); cadv(pos);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
             emStore(code, slotOf(sl, name));
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+        // chamada de função como statement: nome(args);  (descarta retorno)
+        if (cpt2(tt, pos) == "LPAREN") {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
+            code.push(5);                  // OP_POP
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
@@ -263,51 +324,114 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cs, string[]
     cadv(pos);
 }
 
-// ── monta o cabeçalho + pool + funcs + code e grava o .pyro ─
+// compila uma declaração de função para dentro de fcode e registra metadados
+fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp,
+                   string[] fns, int[] fEntry, int[] fNParams, int[] fNLocals, int[] fNameIdx) -> void ={
+    cadv(pos);                              // FN
+    string name = cpv(tv, pos); cadv(pos);  // IDENT
+    int entry = len(fcode);
+    string[] sl = [];
+    if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
+    int np = 0;
+    while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
+        cadv(pos);                          // tipo do parâmetro (tratado como int)
+        string pname = cpv(tv, pos); cadv(pos);
+        slotOf(sl, pname);                  // param -> slots 0,1,...
+        np = np + 1;
+        if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+    }
+    if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+    if (cpt(tt, pos) == "ARROW") { cadv(pos); cadv(pos); }   // -> tipo
+    if (cpt(tt, pos) == "BODY_ASSIGN") { cadv(pos); }
+    while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+        cgStmt(tt, tv, pos, fcode, cp, sl, fns);
+    }
+    if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+    fcode.push(4); fcode.push(65);          // NULL; RET (retorno implícito)
+    fEntry.push(entry);
+    fNParams.push(np);
+    fNLocals.push(len(sl));
+    fNameIdx.push(addStr(cp, name));
+}
+
+// ── entrada: compila `src` e grava o .pyro em outPath ───────
 fn compile(string src, string outPath) -> bool ={
     string[] tt = [];
     string[] tv = [];
     lex(src, tt, tv);
 
-    int[] code = [];
-    string[] cs = [];
-    string[] sl = [];
+    // pré-varredura: nomes de função (ordem de origem) + 'main' por último
+    string[] fns = [];
+    int i = 0;
+    while (i < len(tt)) {
+        if (tt[i] == "FN" && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
+            fns.push(tv[i + 1]);
+        }
+        i = i + 1;
+    }
+    fns.push("main");
+
+    string[] cp = [];          // pool de constantes (tagged)
+    int[] fcode = [];          // código das funções de usuário
+    int[] mcode = [];          // código do main (statements de topo)
+    int[] fEntry = [];
+    int[] fNParams = [];
+    int[] fNLocals = [];
+    int[] fNameIdx = [];
+    string[] mainSl = [];
+
     int[] pos = [0];
     while (cpt(tt, pos) != "EOF") {
-        cgStmt(tt, tv, pos, code, cs, sl);
+        if (cpt(tt, pos) == "FN") {
+            compileFunction(tt, tv, pos, fcode, cp, fns, fEntry, fNParams, fNLocals, fNameIdx);
+        } else {
+            cgStmt(tt, tv, pos, mcode, cp, mainSl, fns);
+        }
     }
-    code.push(4);    // OP_NULL  (retorno implícito de main)
-    code.push(65);   // OP_RET
+    mcode.push(4); mcode.push(65);          // NULL; RET (fim do main)
+    int mainEntry = len(fcode);             // main vem após as funções de usuário
+    int mainName = addStr(cp, "main");
+    int nf = len(fns);                       // funções de usuário + main
 
+    // ── montagem do .pyro ──
     int[] out = [];
-    // magic "PYRO" + versão 2 + flags 0
-    out.push(80); out.push(89); out.push(82); out.push(79);
-    out.push(2); out.push(0);
-    // constantes: pool[0] = "main" (string), depois os inteiros
-    emU16(out, 1 + len(cs));
-    out.push(3);              // TAG_STR
-    emU16(out, 4);            // len("main")
-    out.push(109); out.push(97); out.push(105); out.push(110);  // m a i n
-    int ci = 0;
-    while (ci < len(cs)) {
-        out.push(1);          // TAG_INT
-        emI64(out, to_int(cs[ci]));
-        ci = ci + 1;
+    out.push(80); out.push(89); out.push(82); out.push(79);   // "PYRO"
+    out.push(2); out.push(0);               // versão 2, flags 0
+    // constantes
+    emU16(out, len(cp));
+    int c = 0;
+    while (c < len(cp)) {
+        string e = cp[c];
+        string rest = substr(e, 1, len(e) - 1);
+        if (e[0] == "s") { emStrConst(out, rest); }
+        else { out.push(1); emI64(out, to_int(rest)); }
+        c = c + 1;
     }
-    // funcs: 1 função 'main'
-    emU16(out, 1);
-    emU16(out, 0);            // nameidx = 0
-    emU32(out, 0);            // entry = 0
-    out.push(0);             // nparams = 0
-    emU16(out, len(sl));      // nlocals
-    // entryfn
-    emU16(out, 0);
-    // code
-    emU32(out, len(code));
+    // tabela de funções (índice 0..nf-1: user fns.., depois main)
+    emU16(out, nf);
+    int fi = 0;
+    while (fi < nf) {
+        if (fi < len(fEntry)) {
+            emU16(out, fNameIdx[fi]);
+            emU32(out, fEntry[fi]);
+            out.push(fNParams[fi] & 255);
+            emU16(out, fNLocals[fi]);
+        } else {
+            emU16(out, mainName);
+            emU32(out, mainEntry);
+            out.push(0);
+            emU16(out, len(mainSl));
+        }
+        fi = fi + 1;
+    }
+    // função de entrada = main (último índice)
+    emU16(out, nf - 1);
+    // code = fcode ++ mcode
+    emU32(out, len(fcode) + len(mcode));
     int k = 0;
-    while (k < len(code)) {
-        out.push(code[k]);
-        k = k + 1;
-    }
+    while (k < len(fcode)) { out.push(fcode[k]); k = k + 1; }
+    k = 0;
+    while (k < len(mcode)) { out.push(mcode[k]); k = k + 1; }
+
     return write_bytes(outPath, out);
 }
