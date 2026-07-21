@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 from lexer import Token, TokenType, TYPE_TOKENS
 from ast_nodes import (
     Node, Program,
-    StructField, StructDecl, EnumDecl, SkillDecl,
+    StructField, StructDecl, EnumMember, EnumDecl, SkillDecl,
     FunctionDecl, VarDecl, ConstDecl, Assignment,
     CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, TryCatch,
@@ -16,7 +16,7 @@ from ast_nodes import (
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
-    Identifier, Literal, Lambda,
+    Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
 
 COMPOUND_OPS = (
@@ -161,6 +161,7 @@ class Parser:
         if tok.type == TokenType.FOR:     return self._for()
         if tok.type == TokenType.TRY:     return self._try()
         if tok.type == TokenType.SWITCH:  return self._switch()
+        if tok.type == TokenType.MATCH:   return self._match_stmt()
         if tok.type == TokenType.ASSERT:  return self._assert()
         if tok.type in (TokenType.SAFE, TokenType.UNSAFE): return self._safety()
         if tok.type == TokenType.BREAK:
@@ -244,7 +245,18 @@ class Parser:
         self._expect(TokenType.LBRACE)
         members = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):
-            members.append(self._expect(TokenType.IDENT).value)
+            mname_tok = self._expect(TokenType.IDENT)
+            mname = mname_tok.value
+            mline = mname_tok.line
+            fields = []
+            if self._match(TokenType.LPAREN):
+                self._advance()
+                while not self._match(TokenType.RPAREN, TokenType.EOF):
+                    fields.append(self._parse_type())
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.RPAREN)
+            members.append(EnumMember(mname, fields, mline))
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RBRACE)
@@ -542,6 +554,37 @@ class Parser:
                               TokenType.RBRACE, TokenType.EOF):
             stmts.append(self._stmt())
         return stmts
+
+    # ── match ───────────────────────────────────────────────
+
+    def _match_stmt(self):
+        m_tok = self._expect(TokenType.MATCH)
+        subject = self._expr()
+        self._expect(TokenType.LBRACE)
+        cases = []
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            pat_tok = self._expect(TokenType.IDENT)
+            pat_name = pat_tok.value
+            pat_vars = []
+            if self._match(TokenType.LPAREN):
+                self._advance()
+                while not self._match(TokenType.RPAREN, TokenType.EOF):
+                    pat_vars.append(self._expect(TokenType.IDENT).value)
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.RPAREN)
+            self._expect(TokenType.FAT_ARROW)
+            if self._match(TokenType.LBRACE):
+                self._advance()
+                body = []
+                while not self._match(TokenType.RBRACE, TokenType.EOF):
+                    body.append(self._stmt())
+                self._expect(TokenType.RBRACE)
+            else:
+                body = [self._stmt()]
+            cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line))
+        self._expect(TokenType.RBRACE)
+        return MatchStatement(subject, cases, m_tok.line)
 
     # ── assert ──────────────────────────────────────────────
 

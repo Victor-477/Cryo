@@ -43,6 +43,7 @@ class TokenType(Enum):
     FUTURE   = auto()
     SCHEMA   = auto()
     TOOL     = auto()
+    MATCH    = auto()
     # Tipos
     TYPE_INT    = auto()
     TYPE_NUMBER = auto()
@@ -153,6 +154,7 @@ KEYWORDS = {
     'future':   TokenType.FUTURE,
     'schema':   TokenType.SCHEMA,
     'tool':     TokenType.TOOL,
+    'match':    TokenType.MATCH,
     'int':     TokenType.TYPE_INT,
     'number':  TokenType.TYPE_NUMBER,
     'string':  TokenType.TYPE_STRING,

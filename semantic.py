@@ -18,13 +18,13 @@
 from typing import Dict, List, Set, Tuple
 
 from ast_nodes import (
-    Program, Node, FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl,
+    Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
     Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, SpawnExpr, AwaitExpr,
     MapLiteral, UnaryExpr, CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
-    ArrayLiteral, StructInit, Identifier, Literal, Lambda,
+    ArrayLiteral, StructInit, Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
 
 
@@ -67,6 +67,8 @@ class _Checker:
         self.errors: List[str] = []
         self.fn_arity: Dict[str, int] = {}
         self.enum_members: Set[str] = set()     # 'Nivel_ALTO'
+        self.enum_defs: Dict[str, EnumDecl] = {}
+        self.member_to_enum: Dict[str, str] = {}
         self.global_consts: Set[str] = set()
         self.type_names: Set[str] = set()        # struct/enum/schema (usáveis em schema_of etc.)
         self.loop_depth = 0
@@ -88,8 +90,15 @@ class _Checker:
             elif isinstance(n, EnumDecl):
                 name, kind = n.name, 'enum'
                 self.type_names.add(n.name)
+                self.enum_defs[n.name] = n
                 for m in n.members:
-                    self.enum_members.add(f"{n.name}_{m}")
+                    self.enum_members.add(f"{n.name}_{m.name}")
+                    self.enum_members.add(m.name)
+                    self.member_to_enum[m.name] = n.name
+                    self.member_to_enum[f"{n.name}_{m.name}"] = n.name
+                    if m.fields:
+                        self.fn_arity[m.name] = len(m.fields)
+                        self.fn_arity[f"{n.name}_{m.name}"] = len(m.fields)
             elif isinstance(n, ConstDecl):
                 self.global_consts.add(n.name)
             if name is not None:
@@ -202,6 +211,75 @@ class _Checker:
             if n.default_body:
                 self.check_block(n.default_body, scope)
             self.loop_depth -= 1
+        elif isinstance(n, MatchStatement):
+            self.check_expr(n.subject, scope)
+            
+            # Find the enum being matched (if any)
+            enum_name = None
+            for case in n.cases:
+                if case.pattern_name != '_':
+                    enum_name = self.member_to_enum.get(case.pattern_name)
+                    if enum_name:
+                        break
+            
+            matched_variants = set()
+            has_wildcard = False
+            
+            for case in n.cases:
+                if case.pattern_name == '_':
+                    has_wildcard = True
+                    scope.push()
+                    self.check_block(case.body, scope)
+                    scope.pop()
+                    continue
+                
+                # Check if it's a valid enum member
+                if case.pattern_name not in self.member_to_enum:
+                    self.err(case.line, f"padrão '{case.pattern_name}' não é um membro de enum conhecido")
+                    continue
+                
+                matched_variants.add(case.pattern_name)
+                
+                # Retrieve the enum member definition to check fields
+                enum_def = self.enum_defs.get(self.member_to_enum[case.pattern_name])
+                member_def = None
+                if enum_def:
+                    for m in enum_def.members:
+                        if m.name == case.pattern_name or f"{enum_def.name}_{m.name}" == case.pattern_name:
+                            member_def = m
+                            break
+                
+                if member_def:
+                    expected_len = len(member_def.fields)
+                    actual_len = len(case.pattern_vars)
+                    if expected_len != actual_len:
+                        self.err(case.line, f"padrão '{case.pattern_name}' espera {expected_len} variáveis, obtido {actual_len}")
+                    
+                    scope.push()
+                    for i, var_name in enumerate(case.pattern_vars):
+                        if i < len(member_def.fields):
+                            scope.declare(var_name)
+                    self.check_block(case.body, scope)
+                    scope.pop()
+                else:
+                    scope.push()
+                    self.check_block(case.body, scope)
+                    scope.pop()
+            
+            # Exhaustiveness check
+            if enum_name and not has_wildcard:
+                enum_def = self.enum_defs.get(enum_name)
+                if enum_def:
+                    all_variants = {m.name for m in enum_def.members}
+                    matched_short_names = set()
+                    for v in matched_variants:
+                        if '_' in v:
+                            matched_short_names.add(v.split('_')[-1])
+                        else:
+                            matched_short_names.add(v)
+                    missing = all_variants - matched_short_names
+                    if missing:
+                        self.err(n.line, f"match não exaustivo para enum '{enum_name}'. Variantes ausentes: {', '.join(missing)}")
         elif isinstance(n, TryCatch):
             self.check_block(n.try_body, scope)
             scope.push()

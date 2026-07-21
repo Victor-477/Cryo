@@ -27,9 +27,28 @@ class StructDecl(Node):
     line:   int = 0
 
 @dataclass
+class EnumMember:
+    name:   str
+    fields: List[str]  # Lista de tipos associados, ex: ["int"], ou vazia
+    line:   int = 0
+
+@dataclass
 class EnumDecl(Node):
     name:    str
-    members: List[str]
+    members: List[EnumMember]
+    line:    int = 0
+
+@dataclass
+class MatchCase(Node):
+    pattern_name: str         # ex: "Ok", "Err", "_"
+    pattern_vars: List[str]   # ex: ["v"]
+    body:         List[Node]  # Instruções do bloco
+    line:         int = 0
+
+@dataclass
+class MatchStatement(Node):
+    subject: Node
+    cases:   List[MatchCase]
     line:    int = 0
 
 @dataclass
