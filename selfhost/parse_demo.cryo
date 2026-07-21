@@ -1,0 +1,5 @@
+// Demonstração do parser auto-hospedado rodando na VM Pyro.
+//   python burnout/cryoc.py cryo/selfhost/parse_demo.cryo --backend pyro --run
+import "parser.cryo"
+
+parse("fn f(int n) -> number ={ number x = 3.14; int c = n * 2; if (c >= 10 && n != 0) { c = c - 1; } return x; } string s = \"Cryo\";");

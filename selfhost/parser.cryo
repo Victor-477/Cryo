@@ -1,0 +1,263 @@
+// ============================================================
+//  Cryo self-hosting — Parser escrito em Cryo (Fase 9.3, estágio 2)
+//
+//  Recursivo-descendente: tokens (do lexer.cryo) -> AST serializada
+//  como S-expression. Replica a MESMA precedência e as mesmas formas
+//  do parser de referência (cryo/parser.py), para um subconjunto:
+//  declarações de função, var decl, atribuição, return, if/else,
+//  while, expressão-statement; expressões com a cadeia de precedência
+//  || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unário -,! ; primários
+//  int/float/string/bool/ident/chamada/parênteses.
+//
+//  O cursor é um "box" int[] pos (arrays são por-referência), então
+//  as funções compartilham a posição sem variáveis globais mutáveis.
+// ============================================================
+import "lexer.cryo"
+
+// ── acessores do fluxo de tokens ────────────────────────────
+fn pt(string[] tt, int[] pos) -> string ={
+    if (pos[0] < len(tt)) { return tt[pos[0]]; }
+    return "EOF";
+}
+fn pt2(string[] tt, int[] pos) -> string ={
+    if (pos[0] + 1 < len(tt)) { return tt[pos[0] + 1]; }
+    return "EOF";
+}
+fn pv(string[] tv, int[] pos) -> string ={
+    if (pos[0] < len(tv)) { return tv[pos[0]]; }
+    return "";
+}
+fn adv(int[] pos) -> void ={
+    pos[0] = pos[0] + 1;
+}
+fn isTypeTok(string t) -> bool ={
+    return t == "TYPE_INT" || t == "TYPE_NUMBER" || t == "TYPE_STRING"
+        || t == "TYPE_BOOL" || t == "TYPE_VOID";
+}
+
+// ── expressões (precedência crescente) ──────────────────────
+fn pExpr(string[] tt, string[] tv, int[] pos) -> string ={
+    return pOr(tt, tv, pos);
+}
+
+fn pOr(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pAnd(tt, tv, pos);
+    while (pt(tt, pos) == "OR") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pAnd(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pAnd(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pEq(tt, tv, pos);
+    while (pt(tt, pos) == "AND") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pEq(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pEq(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pCmp(tt, tv, pos);
+    while (pt(tt, pos) == "EQ" || pt(tt, pos) == "NEQ") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pCmp(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pCmp(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pAdd(tt, tv, pos);
+    while (pt(tt, pos) == "LT" || pt(tt, pos) == "GT"
+        || pt(tt, pos) == "LEQ" || pt(tt, pos) == "GEQ") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pAdd(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pAdd(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pMul(tt, tv, pos);
+    while (pt(tt, pos) == "PLUS" || pt(tt, pos) == "MINUS") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pMul(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pMul(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pUnary(tt, tv, pos);
+    while (pt(tt, pos) == "STAR" || pt(tt, pos) == "SLASH" || pt(tt, pos) == "PERCENT") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pUnary(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pUnary(string[] tt, string[] tv, int[] pos) -> string ={
+    string t = pt(tt, pos);
+    if (t == "MINUS" || t == "NOT") {
+        string op = pv(tv, pos); adv(pos);
+        string operand = pUnary(tt, tv, pos);
+        return "(un " + op + " " + operand + ")";
+    }
+    return pPrimary(tt, tv, pos);
+}
+fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
+    string t = pt(tt, pos);
+    if (t == "INT_LIT")   { string v = pv(tv, pos); adv(pos); return "(int " + v + ")"; }
+    if (t == "FLOAT_LIT") { string v = pv(tv, pos); adv(pos); return "(float " + v + ")"; }
+    if (t == "STR_LIT")   { string v = pv(tv, pos); adv(pos); return "(str " + v + ")"; }
+    if (t == "BOOL_LIT")  { string v = pv(tv, pos); adv(pos); return "(bool " + v + ")"; }
+    if (t == "LPAREN") {
+        adv(pos);
+        string e = pExpr(tt, tv, pos);
+        if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        return e;
+    }
+    if (t == "IDENT") {
+        string name = pv(tv, pos); adv(pos);
+        if (pt(tt, pos) == "LPAREN") {
+            adv(pos);
+            string args = "";
+            while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+                string a = pExpr(tt, tv, pos);
+                args = args + " " + a;
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+            }
+            if (pt(tt, pos) == "RPAREN") { adv(pos); }
+            return "(call " + name + args + ")";
+        }
+        return "(id " + name + ")";
+    }
+    return "(err " + t + ")";
+}
+
+// ── tipos (subconjunto: primitivo ou ident, sem []/? ) ──────
+fn pType(string[] tt, string[] tv, int[] pos) -> string ={
+    string v = pv(tv, pos); adv(pos);
+    return v;
+}
+
+// ── statements ──────────────────────────────────────────────
+fn pStmt(string[] tt, string[] tv, int[] pos) -> string ={
+    string t = pt(tt, pos);
+    if (t == "FN")     { return pFn(tt, tv, pos); }
+    if (t == "RETURN") { return pReturn(tt, tv, pos); }
+    if (t == "IF")     { return pIf(tt, tv, pos); }
+    if (t == "WHILE")  { return pWhile(tt, tv, pos); }
+    if (isTypeTok(t))  { return pVarDecl(tt, tv, pos); }
+    if (t == "IDENT") {
+        string nt = pt2(tt, pos);
+        if (nt == "ASSIGN") { return pAssign(tt, tv, pos); }
+        if (nt == "IDENT")  { return pVarDecl(tt, tv, pos); }
+        return pExprStmt(tt, tv, pos);
+    }
+    return pExprStmt(tt, tv, pos);
+}
+
+// coleta statements até '}' (consumindo o '}'); prefixa cada um com espaço
+fn pStmtsUntilBrace(string[] tt, string[] tv, int[] pos) -> string ={
+    string out = "";
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        string s = pStmt(tt, tv, pos);
+        out = out + " " + s;
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    return out;
+}
+// bloco '{ ... }' -> statements (consome '{' e '}')
+fn pBlock(string[] tt, string[] tv, int[] pos) -> string ={
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    return pStmtsUntilBrace(tt, tv, pos);
+}
+
+fn pVarDecl(string[] tt, string[] tv, int[] pos) -> string ={
+    string ty = pType(tt, tv, pos);
+    string name = pv(tv, pos); adv(pos);   // IDENT
+    string init = "nil";
+    if (pt(tt, pos) == "ASSIGN") { adv(pos); init = pExpr(tt, tv, pos); }
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(var " + ty + " " + name + " " + init + ")";
+}
+fn pAssign(string[] tt, string[] tv, int[] pos) -> string ={
+    string name = pv(tv, pos); adv(pos);   // IDENT
+    adv(pos);                              // ASSIGN
+    string e = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(assign " + name + " " + e + ")";
+}
+fn pReturn(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);   // RETURN
+    if (pt(tt, pos) == "SEMICOLON" || pt(tt, pos) == "RBRACE") {
+        if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+        return "(return nil)";
+    }
+    string e = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(return " + e + ")";
+}
+fn pIf(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);   // IF
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+    string cond = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    string thenB = pBlock(tt, tv, pos);
+    string s = "(if " + cond + " (then" + thenB + ")";
+    if (pt(tt, pos) == "ELSE") {
+        adv(pos);
+        if (pt(tt, pos) == "IF") {
+            string e = pIf(tt, tv, pos);
+            s = s + " (else " + e + ")";
+        } else {
+            string elseB = pBlock(tt, tv, pos);
+            s = s + " (else" + elseB + ")";
+        }
+    }
+    return s + ")";
+}
+fn pWhile(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);   // WHILE
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+    string cond = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    string body = pBlock(tt, tv, pos);
+    return "(while " + cond + " (body" + body + "))";
+}
+fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);   // FN
+    string name = pv(tv, pos); adv(pos);   // IDENT
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+    string params = "";
+    while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+        string pty = pType(tt, tv, pos);
+        string pname = pv(tv, pos); adv(pos);   // IDENT
+        params = params + " (p " + pty + " " + pname + ")";
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+    }
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    string ret = "void";
+    if (pt(tt, pos) == "ARROW") { adv(pos); ret = pType(tt, tv, pos); }
+    if (pt(tt, pos) == "BODY_ASSIGN") { adv(pos); }
+    string body = pStmtsUntilBrace(tt, tv, pos);   // '={' já consumido
+    return "(fn " + name + " (params" + params + ") " + ret + " (body" + body + "))";
+}
+fn pExprStmt(string[] tt, string[] tv, int[] pos) -> string ={
+    // o parser de referência devolve a expressão crua como statement
+    string e = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return e;
+}
+
+// ── entrada: lexa e imprime uma S-expression por statement de topo ──
+fn parse(string src) -> void ={
+    string[] tt = [];
+    string[] tv = [];
+    lex(src, tt, tv);
+    int[] pos = [0];
+    while (pt(tt, pos) != "EOF") {
+        string s = pStmt(tt, tv, pos);
+        print(s);
+    }
+}

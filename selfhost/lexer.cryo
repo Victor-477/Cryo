@@ -79,12 +79,26 @@ fn kw(string s) -> string ={
     return "IDENT";
 }
 
-fn emit(string typ, string val) -> void ={
-    print(typ + " " + val);
+// acrescenta um token (tipo + valor) aos arrays de saída
+fn pushTok(string[] tt, string[] tv, string typ, string val) -> void ={
+    tt.push(typ);
+    tv.push(val);
 }
 
-// tokeniza src e imprime "TIPO valor" por linha, terminando em "EOF "
+// estágio 1: imprime "TIPO valor" por linha (usa lex internamente)
 fn tokenize(string src) -> void ={
+    string[] tt = [];
+    string[] tv = [];
+    lex(src, tt, tv);
+    int i = 0;
+    while (i < len(tt)) {
+        print(tt[i] + " " + tv[i]);
+        i = i + 1;
+    }
+}
+
+// tokeniza src preenchendo tt (tipos) e tv (valores); termina com "EOF"
+fn lex(string src, string[] tt, string[] tv) -> void ={
     int n = len(src);
     int i = 0;
     while (i < n) {
@@ -130,7 +144,7 @@ fn tokenize(string src) -> void ={
                 }
             }
             i = i + 1;   // aspa final
-            emit("STR_LIT", s);
+            pushTok(tt, tv, "STR_LIT", s);
             continue;
         }
 
@@ -147,8 +161,8 @@ fn tokenize(string src) -> void ={
                 }
             }
             string num = substr(src, start, i - start);
-            if (isFloat) { emit("FLOAT_LIT", num); }
-            else         { emit("INT_LIT", num); }
+            if (isFloat) { pushTok(tt, tv, "FLOAT_LIT", num); }
+            else         { pushTok(tt, tv, "INT_LIT", num); }
             continue;
         }
 
@@ -157,45 +171,45 @@ fn tokenize(string src) -> void ={
             int start = i;
             while (i < n && isAlnum(src[i])) { i = i + 1; }
             string word = substr(src, start, i - start);
-            emit(kw(word), word);
+            pushTok(tt, tv, kw(word), word);
             continue;
         }
 
         // operadores de dois caracteres
-        if (c == "=" && d == "{") { emit("BODY_ASSIGN", "={"); i = i + 2; continue; }
-        if (c == "-" && d == ">") { emit("ARROW", "->");       i = i + 2; continue; }
-        if (c == "=" && d == "=") { emit("EQ", "==");          i = i + 2; continue; }
-        if (c == "!" && d == "=") { emit("NEQ", "!=");         i = i + 2; continue; }
-        if (c == "<" && d == "=") { emit("LEQ", "<=");         i = i + 2; continue; }
-        if (c == ">" && d == "=") { emit("GEQ", ">=");         i = i + 2; continue; }
-        if (c == "&" && d == "&") { emit("AND", "&&");         i = i + 2; continue; }
-        if (c == "|" && d == "|") { emit("OR", "||");          i = i + 2; continue; }
-        if (c == "+" && d == "+") { emit("PLUS_PLUS", "++");   i = i + 2; continue; }
-        if (c == "-" && d == "-") { emit("MINUS_MINUS", "--"); i = i + 2; continue; }
+        if (c == "=" && d == "{") { pushTok(tt, tv, "BODY_ASSIGN", "={"); i = i + 2; continue; }
+        if (c == "-" && d == ">") { pushTok(tt, tv, "ARROW", "->");       i = i + 2; continue; }
+        if (c == "=" && d == "=") { pushTok(tt, tv, "EQ", "==");          i = i + 2; continue; }
+        if (c == "!" && d == "=") { pushTok(tt, tv, "NEQ", "!=");         i = i + 2; continue; }
+        if (c == "<" && d == "=") { pushTok(tt, tv, "LEQ", "<=");         i = i + 2; continue; }
+        if (c == ">" && d == "=") { pushTok(tt, tv, "GEQ", ">=");         i = i + 2; continue; }
+        if (c == "&" && d == "&") { pushTok(tt, tv, "AND", "&&");         i = i + 2; continue; }
+        if (c == "|" && d == "|") { pushTok(tt, tv, "OR", "||");          i = i + 2; continue; }
+        if (c == "+" && d == "+") { pushTok(tt, tv, "PLUS_PLUS", "++");   i = i + 2; continue; }
+        if (c == "-" && d == "-") { pushTok(tt, tv, "MINUS_MINUS", "--"); i = i + 2; continue; }
 
         // operadores/pontuação de um caractere
-        if (c == "+") { emit("PLUS", "+");       i = i + 1; continue; }
-        if (c == "-") { emit("MINUS", "-");      i = i + 1; continue; }
-        if (c == "*") { emit("STAR", "*");       i = i + 1; continue; }
-        if (c == "/") { emit("SLASH", "/");      i = i + 1; continue; }
-        if (c == "%") { emit("PERCENT", "%");    i = i + 1; continue; }
-        if (c == "=") { emit("ASSIGN", "=");     i = i + 1; continue; }
-        if (c == "<") { emit("LT", "<");         i = i + 1; continue; }
-        if (c == ">") { emit("GT", ">");         i = i + 1; continue; }
-        if (c == "!") { emit("NOT", "!");        i = i + 1; continue; }
-        if (c == "(") { emit("LPAREN", "(");     i = i + 1; continue; }
-        if (c == ")") { emit("RPAREN", ")");     i = i + 1; continue; }
-        if (c == "{") { emit("LBRACE", "{");     i = i + 1; continue; }
-        if (c == "}") { emit("RBRACE", "}");     i = i + 1; continue; }
-        if (c == "[") { emit("LBRACKET", "[");   i = i + 1; continue; }
-        if (c == "]") { emit("RBRACKET", "]");   i = i + 1; continue; }
-        if (c == ";") { emit("SEMICOLON", ";");  i = i + 1; continue; }
-        if (c == ",") { emit("COMMA", ",");      i = i + 1; continue; }
-        if (c == ":") { emit("COLON", ":");      i = i + 1; continue; }
-        if (c == ".") { emit("DOT", ".");        i = i + 1; continue; }
+        if (c == "+") { pushTok(tt, tv, "PLUS", "+");       i = i + 1; continue; }
+        if (c == "-") { pushTok(tt, tv, "MINUS", "-");      i = i + 1; continue; }
+        if (c == "*") { pushTok(tt, tv, "STAR", "*");       i = i + 1; continue; }
+        if (c == "/") { pushTok(tt, tv, "SLASH", "/");      i = i + 1; continue; }
+        if (c == "%") { pushTok(tt, tv, "PERCENT", "%");    i = i + 1; continue; }
+        if (c == "=") { pushTok(tt, tv, "ASSIGN", "=");     i = i + 1; continue; }
+        if (c == "<") { pushTok(tt, tv, "LT", "<");         i = i + 1; continue; }
+        if (c == ">") { pushTok(tt, tv, "GT", ">");         i = i + 1; continue; }
+        if (c == "!") { pushTok(tt, tv, "NOT", "!");        i = i + 1; continue; }
+        if (c == "(") { pushTok(tt, tv, "LPAREN", "(");     i = i + 1; continue; }
+        if (c == ")") { pushTok(tt, tv, "RPAREN", ")");     i = i + 1; continue; }
+        if (c == "{") { pushTok(tt, tv, "LBRACE", "{");     i = i + 1; continue; }
+        if (c == "}") { pushTok(tt, tv, "RBRACE", "}");     i = i + 1; continue; }
+        if (c == "[") { pushTok(tt, tv, "LBRACKET", "[");   i = i + 1; continue; }
+        if (c == "]") { pushTok(tt, tv, "RBRACKET", "]");   i = i + 1; continue; }
+        if (c == ";") { pushTok(tt, tv, "SEMICOLON", ";");  i = i + 1; continue; }
+        if (c == ",") { pushTok(tt, tv, "COMMA", ",");      i = i + 1; continue; }
+        if (c == ":") { pushTok(tt, tv, "COLON", ":");      i = i + 1; continue; }
+        if (c == ".") { pushTok(tt, tv, "DOT", ".");        i = i + 1; continue; }
 
         // desconhecido: ignora
         i = i + 1;
     }
-    emit("EOF", "");
+    pushTok(tt, tv, "EOF", "");
 }
