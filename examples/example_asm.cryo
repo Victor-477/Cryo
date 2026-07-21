@@ -4,9 +4,9 @@
 //  Subset: integers, functions/recursion, control flow.
 // ============================================================
 
-fn fatorial(int n) -> int ={
+fn factorial(int n) -> int ={
     if (n <= 1) { return 1; }
-    return n * fatorial(n - 1);
+    return n * factorial(n - 1);
 }
 
 fn fib(int n) -> int ={
@@ -34,7 +34,7 @@ fn ehPrimo(int n) -> bool ={
 }
 
 // ── Main program ─────────────────────────────────────
-int f10 = fatorial(10);
+int f10 = factorial(10);
 int fib20 = fib(20);
 int g = gcd(48, 36);
 
@@ -43,14 +43,14 @@ int mask = 0xF0 | 0x0F;
 int shifted = 1 << 10;
 
 // prime count with break/continue
-int primos = 0;
+int primes = 0;
 for (int k = 2; k <= 50; k++) {
     if (!ehPrimo(k)) { continue; }
-    primos++;
+    primes++;
 }
 
 // native assert (calls the safe runtime)
-assert(f10 == 3628800, "fatorial(10) incorreto");
+assert(f10 == 3628800, "factorial(10) incorreto");
 
 print("== Cryo backend assembly ==");
 print(f10);
@@ -58,4 +58,4 @@ print(fib20);
 print(g);
 print(mask);
 print(shifted);
-print(primos);
+print(primes);

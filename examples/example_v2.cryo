@@ -17,7 +17,7 @@ enum Status {
 
 struct Produto {
     int    id;
-    string nome;
+    string name;
     number preco;
     bool   disponivel;
     Status status;
@@ -42,23 +42,23 @@ fn calcularTotal(number preco, number quantidade) -> number ={
     return subtotal + imposto;
 }
 
-fn ehValido(number valor) -> bool ={
-    return valor > 0 && valor <= 999999;
+fn ehValido(number value) -> bool ={
+    return value > 0 && value <= 999999;
 }
 
 fn descricaoProduto(Produto p) -> string ={
     if (p.disponivel) {
-        return "Disponível: " + p.nome;
+        return "Disponível: " + p.name;
     } else {
-        return "Indisponível: " + p.nome;
+        return "Indisponível: " + p.name;
     }
 }
 
-fn fatorial(int n) -> int ={
+fn factorial(int n) -> int ={
     if (n <= 1) {
         return 1;
     }
-    return n * fatorial(n - 1);
+    return n * factorial(n - 1);
 }
 
 fn potencia(number base, int exp) -> number ={
@@ -85,14 +85,14 @@ categorias.push("Esportes")
 // Struct with new
 Produto notebook = new Produto {
     id:          1,
-    nome:        "Notebook Pro",
+    name:        "Notebook Pro",
     preco:       4999.99,
     disponivel:  true,
     status:      Status.ATIVO
 }
 
 // Access fields
-string nomeNot = notebook.nome
+string nomeNot = notebook.name
 number precoNot = notebook.preco
 bool   dispNot  = notebook.disponivel
 
@@ -123,34 +123,34 @@ while (!sucesso && tentativas < 3) {
 }
 
 // For with compound assignment
-number soma = 0;
+number sum = 0;
 for (int i = 1; i <= 10; i++) {
-    soma += i;
+    sum += i;
 }
 
 // Try / Catch / Finally
 try {
     number raiz = sqrt(totalComImposto);
-} catch (string erro) {
-    string msg = "Erro ao calcular raiz: " + erro;
+} catch (string Error) {
+    string msg = "Error ao calcular raiz: " + Error;
 } finally {
     bool finalizado = true;
 }
 
 // Chained calls
-int fat5   = fatorial(5)
+int fat5   = factorial(5)
 number pot = potencia(2.0, 8)
 
 // Inline Python block
 >Python(
 print("=== Sistema Cryo v0.2 ===")
-print(f"Produto: {notebook.nome}")
-print(f"Preço com imposto: R$ {totalComImposto:.2f}")
+print(f"Produto: {notebook.name}")
+print(f"Preço with imposto: R$ {totalComImposto:.2f}")
 print(f"Categorias: {list(categorias)}")
-print(f"Soma 1..10: {soma}")
+print(f"Soma 1..10: {sum}")
 print(f"5! = {fat5}")
 print(f"2^8 = {pot}")
 print(f"Cliente: {clienteFinal}")
-print(f"Tentativas: {tentativas}, Sucesso: {sucesso}")
+print(f"Tentativas: {tentativas}, Success: {sucesso}")
 print(f"Versão: {VERSAO}")
 )

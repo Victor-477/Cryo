@@ -21,8 +21,8 @@ print("payload:");
 print(payload);
 
 // ── typed deserialization (JSON -> struct) ─────────────────
-string entrada = "{\"cliente\": \"Bruno\", \"total\": 99.90, \"pago\": true}";
-Pedido q = json_decode(entrada) as Pedido;
+string input = "{\"cliente\": \"Bruno\", \"total\": 99.90, \"pago\": true}";
+Pedido q = json_decode(input) as Pedido;
 print("cliente decodificado: ${q.cliente}");
 print("total decodificado:   ${q.total}");
 print("pago?                 ${q.pago}");

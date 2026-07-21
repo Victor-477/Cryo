@@ -2,7 +2,7 @@
 //  Example — Node.js / JavaScript backend
 //
 //  Cryo's core compiles to JavaScript (CommonJS) and runs with
-//  `node`. Structs viram objetos, maps viram objetos, arrays viram
+//  `node`. Structs viram objects, maps viram objects, arrays viram
 //  arrays, and `library >node os<` becomes `const os = require("os")`.
 //
 //  Run:
@@ -25,17 +25,17 @@ print("dist^2 (3,4):");
 print(distanciaQuadrado(p));
 
 int[] nums = [5, 3, 8, 1];
-int soma = 0;
-for (int v in nums) { soma += v; }
-print("soma do array:");
-print(soma);
+int sum = 0;
+for (int v in nums) { sum += v; }
+print("sum do array:");
+print(sum);
 
-map<string, int> estoque = { "maca": 10, "pera": 5 };
-estoque["uva"] = 20;
+map<string, int> inventory = { "maca": 10, "pera": 5 };
+inventory["uva"] = 20;
 print("tem uva?");
-print(has(estoque, "uva"));
-print("chaves:");
-print(keys(estoque));
+print(has(inventory, "uva"));
+print("keys:");
+print(keys(inventory));
 
 Cor c = Cor_VERDE;
 print("cor == VERDE?");

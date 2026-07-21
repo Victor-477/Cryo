@@ -6,9 +6,9 @@
 
 struct Produto {
     string sku;
-    string nome;
+    string name;
     number preco;
-    bool   ativo;
+    bool   active;
 }
 
 struct RespostaAPI {
@@ -35,7 +35,7 @@ map<string, number> precos = {
 };
 precos["SKU-4"] = 99.90;
 
-// Lookup with an optional (null-safety): no panics on missing key
+// Lookup with an optional (null-safety): in the panics on missing key
 number? achado = buscarPreco(precos, "SKU-2");
 number precoFinal = achado ?? 0.0;
 
@@ -43,27 +43,27 @@ number? ausente = buscarPreco(precos, "SKU-999");
 number fallback = ausente ?? -1.0;
 
 // Catalog total by iterating the map
-number soma = 0.0;
+number sum = 0.0;
 for (string k in keys(precos)) {
-    soma += precos[k];
+    sum += precos[k];
 }
 
 // JSON serialization of a struct (API/LLM payload)
 Produto p = new Produto {
     sku: "SKU-2",
-    nome: "Plano Pro",
+    name: "Plano Pro",
     preco: precoFinal,
-    ativo: true
+    active: true
 };
 string payload = json_encode(p);
 
-// Typed deserialization (e.g. an LLM response in JSON)
-string entrada = "{\"ok\": true, \"mensagem\": \"criado\", \"total\": 4}";
-RespostaAPI r = json_decode(entrada) as RespostaAPI;
+// Typed deserialization (and.g. an LLM response in JSON)
+string input = "{\"ok\": true, \"mensagem\": \"criado\", \"total\": 4}";
+RespostaAPI r = json_decode(input) as RespostaAPI;
 
 print("preco SKU-2:");      print(precoFinal);
 print("SKU ausente (fallback):"); print(fallback);
-print("soma do catalogo:"); print(soma);
+print("sum do catalogo:"); print(sum);
 print("payload JSON:");     print(payload);
 print("resposta.ok:");      print(r.ok);
 print("resposta.mensagem:"); print(r.mensagem);

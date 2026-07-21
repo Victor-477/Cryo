@@ -16,8 +16,8 @@ fn hipotenusa(number a, number b) -> number ={
     return sqrt(pow(a, 2.0) + pow(b, 2.0));
 }
 
-fn slug(string titulo) -> string ={
-    return lower(replace(trim(titulo), " ", "-"));
+fn slug(string title) -> string ={
+    return lower(replace(trim(title), " ", "-"));
 }
 
 // ── math ──────────────────────────────────────────────
@@ -28,28 +28,28 @@ print("floor/ceil/round de 2.5:");
 print(floor(2.5)); print(ceil(2.5)); print(round(2.5));
 
 // ── conversions ──────────────────────────────────────────────
-int    lidos = to_int("128");
-number taxa  = to_number("0.75");
+int    read = to_int("128");
+number rate  = to_number("0.75");
 print("128 * 0.75 =");
-print(to_number(to_string(lidos)) * taxa);
+print(to_number(to_string(read)) * rate);
 
 // ── strings ─────────────────────────────────────────────────
-string titulo = "  Cryo Compila Para Pyro  ";
-print("slug:");            print(slug(titulo));
-print("contains 'Pyro'?"); print(contains(titulo, "Pyro"));
-print("find('Pyro'):");    print(find(trim(titulo), "Pyro"));
-print("substr(0,4):");     print(substr(trim(titulo), 0, 4));
+string title = "  Cryo Compila for Pyro  ";
+print("slug:");            print(slug(title));
+print("contains 'Pyro'?"); print(contains(title, "Pyro"));
+print("find('Pyro'):");    print(find(trim(title), "Pyro"));
+print("substr(0,4):");     print(substr(trim(title), 0, 4));
 
 string csv = "norte,sul,leste,oeste";
-string[] direcoes = split(csv, ",");
-print("split -> len:");    print(len(direcoes));
-print("join(' > '):");     print(join(direcoes, " > "));
+string[] directions = split(csv, ",");
+print("split -> len:");    print(len(directions));
+print("join(' > '):");     print(join(directions, " > "));
 
 // ── enum + switch ───────────────────────────────────────────
-Estado e = Estado_ATIVO;
-switch (e) {
+Estado and = Estado_ATIVO;
+switch (and) {
     case Estado_PENDENTE: print("pendente");
-    case Estado_ATIVO:    print("ativo!");
+    case Estado_ATIVO:    print("active!");
     default:              print("encerrado");
 }
 
@@ -59,7 +59,7 @@ remove(sessoes, "ana");
 print("sessoes de ana removidas?");
 print(!has(sessoes, "ana"));
 
-assert(slug(titulo) == "cryo-compila-para-pyro", "slug incorreto");
+assert(slug(title) == "cryo-compila-for-pyro", "slug incorreto");
 assert(to_int("128") == 128, "to_int incorreto");
-assert(len(direcoes) == 4, "split incorreto");
+assert(len(directions) == 4, "split incorreto");
 print("stdlib ok nos tres backends");

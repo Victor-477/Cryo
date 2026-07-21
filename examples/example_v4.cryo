@@ -43,34 +43,34 @@ fn primeiroDivisor(int n) -> int ={
 }
 
 // ── Main program ─────────────────────────────────────
-int valor = empacota(0x12, 0x34);
-bool par  = ehPar(valor);
+int value = empacota(0x12, 0x34);
+bool par  = ehPar(value);
 string dia = nomeDia(6);
 int div1   = primeiroDivisor(91);
 
 // safety assert
-assert(valor == 0x1234, "empacotamento incorreto");
+assert(value == 0x1234, "empacotamento incorreto");
 assert(MILHAO == 1000000);
 
 // arithmetic with overflow checking (safe mode, default)
-int soma = 0;
+int sum = 0;
 int i = 1;
 while (i <= 10) {
-    soma += i * i;
+    sum += i * i;
     i++;
 }
 
 // unsafe block: instrumentation turned off locally
 int rapido = 0;
 unsafe {
-    rapido = soma * 2;
+    rapido = sum * 2;
 }
 
 >C(
-    printf("valor empacotado = 0x%llX\n", (long long)valor);
-    printf("par? %s\n", par ? "sim" : "nao");
+    printf("value empacotado = 0x%llX\n", (long long)value);
+    printf("par? %s\n", par ? "yes" : "nao");
     printf("dia(6) = %s\n", dia);
-    printf("primeiro divisor de 91 = %lld\n", (long long)div1);
-    printf("soma dos quadrados 1..10 = %lld\n", (long long)soma);
+    printf("first divisor de 91 = %lld\n", (long long)div1);
+    printf("sum dos quadrados 1..10 = %lld\n", (long long)sum);
     printf("rapido (unsafe) = %lld\n", (long long)rapido);
 )

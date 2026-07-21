@@ -2,16 +2,16 @@
 //  Example — Basic Interactive Calculator in Cryo
 // ============================================================
 
-print("=== Calculadora Cryo / Pyro VM ===");
+print("=== Cryo / Pyro VM Calculator ===");
 
-bool ativo = true;
-while (ativo) {
-    string op = input("Escolha uma operacao (+, -, *, /, ^) ou 'q' para sair: ");
+bool active = true;
+while (active) {
+    string op = input("Choose an operation (+, -, *, /, ^) or 'q' to quit: ");
     if (op == "q") {
-        ativo = false;
+        active = false;
     } else {
-        string s_a = input("Primeiro numero: ");
-        string s_b = input("Segundo numero: ");
+        string s_a = input("First number: ");
+        string s_b = input("Second number: ");
         number a = to_number(s_a);
         number b = to_number(s_b);
 
@@ -26,7 +26,7 @@ while (ativo) {
         }
         if (op == "/") {
             if (b == 0.0) {
-                print("Erro: divisao por zero");
+                print("Error: divisao by zero");
             } else {
                 print(a / b);
             }

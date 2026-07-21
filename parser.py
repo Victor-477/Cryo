@@ -55,8 +55,8 @@ class Parser:
         if tok.type not in types:
             names = [t.name for t in types]
             raise ParseError(
-                f"[Parser] Linha {tok.line}: Esperado {names}, "
-                f"obtido {tok.type.name} ({tok.value!r})"
+                f"[Syntax Error] Line {tok.line}: Expected {names}, "
+                f"got {tok.type.name} ({tok.value!r})"
             )
         return self._advance()
 
@@ -84,7 +84,7 @@ class Parser:
             t = self._parse_type()
             self._expect(TokenType.GT)
             base = f"future<{t}>"
-        # tipo função: fn(T1, T2, ...) -> R   (R opcional -> void)
+        # function type: fn(T1, T2, ...) -> R   (R optional -> void)
         elif self._match(TokenType.FN):
             self._advance()
             self._expect(TokenType.LPAREN)
@@ -104,21 +104,21 @@ class Parser:
             tok = self._cur()
             if tok.type not in valid:
                 raise ParseError(
-                    f"[Parser] Linha {tok.line}: Tipo esperado, obtido {tok.type.name} ({tok.value!r})"
+                    f"[Syntax Error] Line {tok.line}: Expected type, got {tok.type.name} ({tok.value!r})"
                 )
             base = self._advance().value
-        # sufixo de array [] (aplica-se a qualquer base: primitivo, map, future)
+        # array suffix [] (applies to any base: primitive, map, future)
         while self._match(TokenType.LBRACKET) and self._peek().type == TokenType.RBRACKET:
             self._advance()
             self._expect(TokenType.RBRACKET)
             base = base + '[]'
-        # opcional: T?
+        # optional: T?
         if self._match(TokenType.QUESTION):
             self._advance()
             base = base + '?'
         return base
 
-    # ── programa ────────────────────────────────────────────
+    # ── program ────────────────────────────────────────────
 
     def parse(self):
         stmts = []
@@ -132,7 +132,7 @@ class Parser:
         tok = self._cur()
         _line = tok.line
         node = self._stmt_inner(tok)
-        # anota a linha de origem no nó (para a tabela de depuração)
+        # annotate source line in the node (for debugging table)
         try:
             if getattr(node, 'line', 0) in (0, None):
                 node.line = _line
@@ -142,7 +142,7 @@ class Parser:
 
     def _stmt_inner(self, tok):
         if tok.type == TokenType.FN:
-            # `fn name(...)` = declaração; `fn(...)->R var` = var de tipo função
+            # `fn name(...)` = declaração; `fn(...)->R var` = function type var
             if self._peek().type == TokenType.LPAREN:
                 return self._var_decl()
             return self._fn()
@@ -170,11 +170,11 @@ class Parser:
             self._advance(); self._opt_semi(); return Continue()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
-        # tipo primitivo, map ou future -> var decl
+        # primitive type, map or future -> var decl
         if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE):
             return self._var_decl()
 
-        # identificador -> varias possibilidades
+        # identifier -> multiple possibilities
         if tok.type == TokenType.IDENT:
             nt = self._peek()
             # CustomType varName  ou  CustomType[] varName  ou  CustomType? varName
@@ -190,7 +190,7 @@ class Parser:
                 return self._compound()
             if nt.type in (TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
                 return self._increment()
-            # expressao (possivel alvo de atribuicao indexada: m[k] = v)
+            # expression (possible target of indexed assignment: m[k] = v)
             expr = self._postfix()
             if self._match(TokenType.ASSIGN) and isinstance(expr, IndexAccess):
                 self._advance()
@@ -201,7 +201,7 @@ class Parser:
             return expr
 
         raise ParseError(
-            f"[Parser] Linha {tok.line}: Token inesperado {tok.type.name} ({tok.value!r})"
+            f"[Syntax Error] Line {tok.line}: Unexpected token {tok.type.name} ({tok.value!r})"
         )
 
     # ── struct ──────────────────────────────────────────────
@@ -231,7 +231,7 @@ class Parser:
             self._expect(TokenType.COLON)
             val = self._expr()
             fields.append((key, val))
-            # separador opcional
+            # optional separator
             if self._match(TokenType.SEMICOLON, TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RBRACE)
@@ -262,10 +262,10 @@ class Parser:
         self._expect(TokenType.RBRACE)
         return EnumDecl(name, members)
 
-    # ── funcao ──────────────────────────────────────────────
+    # ── function ────────────────────────────────────────────
 
     def _tool(self):
-        self._expect(TokenType.TOOL)      # 'tool fn ...' — exposta a LLMs
+        self._expect(TokenType.TOOL)      # 'tool fn ...' — exposed to LLMs
         return self._fn(is_tool=True)
 
     def _fn(self, is_tool=False):
@@ -316,12 +316,12 @@ class Parser:
     def _import(self):
         self._expect(TokenType.IMPORT)
         tok = self._cur()
-        # import "arquivo.cryo"  -> módulo Cryo (resolvido pelo compilador)
+        # import "file.cryo"  -> Cryo module (resolved by the compiler)
         if tok.type == TokenType.STR_LIT:
             self._advance()
             self._opt_semi()
             return ModuleImport(tok.value)
-        # import >Lang<          -> habilita linguagem estrangeira
+        # import >Lang<          -> enables foreign language
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
         return Import(tag.value)
@@ -330,12 +330,12 @@ class Parser:
         self._expect(TokenType.LIBRARY)
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
-        # A library pode ser qualificada pela linguagem estrangeira:
+        # The library can be qualified by the foreign language:
         #   library >c math<   |   library >go:fmt<   |   library >math<
         raw = tag.value.strip()
         if ':' in raw:
             lang, _, name = raw.partition(':')
-        elif raw.split()[1:]:                 # há espaço -> "lang nome"
+        elif raw.split()[1:]:                 # has space -> "lang name"
             parts = raw.split()
             lang, name = parts[0], ' '.join(parts[1:])
         else:
@@ -347,13 +347,13 @@ class Parser:
         lang, _, code = tok.value.partition(':')
         return ForeignBlock(lang, code)
 
-    # ── interpolação de strings: "total: ${x}" ──────────────
+    # ── string interpolation: "total: ${x}" ──────────────
 
     def _string_literal(self, s: str, line: int):
-        """Literal string; com `${expr}` vira concatenação com to_string(expr)."""
+        """String literal; with `${expr}` becomes concatenation with to_string(expr)."""
         if '${' not in s:
             return Literal('string', s)
-        from lexer import Lexer as _Lexer   # import local (sem ciclo)
+        from lexer import Lexer as _Lexer   # local import (no cycle)
         parts = []
         i = 0
         while True:
@@ -364,7 +364,7 @@ class Parser:
                 break
             if j > i:
                 parts.append(Literal('string', s[i:j]))
-            # acha o '}' correspondente respeitando chaves aninhadas
+            # finds the matching '}' respecting nested braces
             depth, k = 1, j + 2
             while k < len(s) and depth:
                 if s[k] == '{':
@@ -374,11 +374,11 @@ class Parser:
                 k += 1
             if depth:
                 raise ParseError(
-                    f"[Parser] Linha {line}: interpolação '${{' sem '}}' de fechamento")
+                    f"[Syntax Error] Line {line}: interpolation '${{' without closing '}}'")
             frag = s[j + 2:k - 1].strip()
             if not frag:
                 raise ParseError(
-                    f"[Parser] Linha {line}: interpolação vazia '${{}}'")
+                    f"[Syntax Error] Line {line}: empty interpolation '${{}}'")
             expr = Parser(_Lexer(frag).tokenize())._expr()
             parts.append(CallExpr('to_string', [expr]))
             i = k
@@ -386,7 +386,7 @@ class Parser:
             return Literal('string', '')
         node = parts[0]
         if not isinstance(node, Literal):
-            # garante contexto string desde o 1º termo ("" + to_string(x))
+            # ensures string context from the 1st term ("" + to_string(x))
             node = BinaryExpr('+', Literal('string', ''), node)
         for p in parts[1:]:
             node = BinaryExpr('+', node, p)
@@ -438,11 +438,11 @@ class Parser:
         self._opt_semi()
         return DoWhile(body, cond)
 
-    # ── for  (clássico ou for-each) ─────────────────────────
+    # ── for  (classic or for-each) ─────────────────────────
 
     def _is_foreach(self) -> bool:
-        """Detecta 'for (TIPO nome in expr)' — tenta parsear um tipo + nome + 'in'
-        sem consumir (save/restore), cobrindo map<>, future<>, arrays e opcionais."""
+        """Detects 'for (TYPE name in expr)' — tries to parse a type + name + 'in'
+        without consuming (save/restore), covering map<>, future<>, arrays and optionals."""
         save = self.pos
         result = False
         try:
@@ -542,8 +542,8 @@ class Parser:
             else:
                 tok = self._cur()
                 raise ParseError(
-                    f"[Parser] Linha {tok.line}: Esperado 'case' ou 'default' em switch, "
-                    f"obtido {tok.type.name} ({tok.value!r})"
+                    f"[Syntax Error] Line {tok.line}: Expected 'case' or 'default' in switch, "
+                    f"got {tok.type.name} ({tok.value!r})"
                 )
         self._expect(TokenType.RBRACE)
         return Switch(subject, cases, default_body)
@@ -762,20 +762,20 @@ class Parser:
                 else:
                     expr = FieldAccess(expr, member)
             elif self._match(TokenType.NOT):
-                # desempacotamento de opcional: x!
+                # optional unwrapping: x!
                 self._advance()
                 expr = UnwrapExpr(expr)
             elif self._match(TokenType.QUESTION) and not self._starts_expr(self._peek(1)):
-                # propagação de erro: expr?  (só quando o '?' NÃO abre um
-                # ternário — i.e., o token seguinte não inicia uma expressão)
+                # error propagation: expr?  (only when '?' DOES NOT open a
+                # ternary — i.e., the next token does not start an expression)
                 q = self._advance()
                 expr = TryExpr(expr, q.line)
             else:
                 break
         return expr
 
-    # tokens que podem iniciar uma expressão (ramo 'then' de um ternário).
-    # Se o token após '?' está aqui, o '?' é ternário, não propagação.
+    # tokens that can start an expression ('then' branch of a ternary).
+    # If the token after '?' is here, the '?' is ternary, not propagation.
     _EXPR_START = frozenset({
         TokenType.INT_LIT, TokenType.FLOAT_LIT, TokenType.STR_LIT,
         TokenType.BOOL_LIT, TokenType.NULL, TokenType.IDENT,
@@ -812,7 +812,7 @@ class Parser:
             self._expect(TokenType.RBRACKET)
             return ArrayLiteral(elems)
 
-        # map literal: { chave: valor, ... }  ou  {}
+        # map literal: { key: value, ... }  or  {}
         if tok.type == TokenType.LBRACE:
             self._advance()
             pairs = []
@@ -842,7 +842,7 @@ class Parser:
             self._expect(TokenType.RBRACE)
             return StructInit(sname, fields)
 
-        # identificador ou chamada de funcao
+        # identifier or function call
         if tok.type == TokenType.IDENT:
             id_line = tok.line
             name = self._advance().value
@@ -858,7 +858,7 @@ class Parser:
             return Identifier(name, line=id_line)
 
         if tok.type == TokenType.LPAREN:
-            # lambda: ( params ) => corpo   (senão, agrupamento)
+            # lambda: ( params ) => body   (otherwise, grouping)
             if self._lambda_ahead():
                 return self._lambda()
             self._advance()
@@ -867,13 +867,13 @@ class Parser:
             return expr
 
         raise ParseError(
-            f"[Parser] Linha {tok.line}: Token inesperado em expressao: "
+            f"[Syntax Error] Line {tok.line}: Unexpected token in expression: "
             f"{tok.type.name} ({tok.value!r})"
         )
 
     def _lambda_ahead(self) -> bool:
-        """True se o '(' atual abre uma lista de parâmetros de lambda —
-        i.e. o ')' correspondente é seguido de '=>'."""
+        """True if the current '(' opens a lambda parameter list —
+        i.e. the corresponding ')' is followed by '=>'."""
         depth = 0
         i = self.pos
         n = len(self.tokens)
@@ -903,7 +903,7 @@ class Parser:
                 self._advance()
         self._expect(TokenType.RPAREN)
         self._expect(TokenType.FAT_ARROW)
-        # corpo: `=> { stmts }` (bloco) ou `=> expr` (retorno implícito)
+        # body: `=> { stmts }` (block) or `=> expr` (implicit return)
         if self._match(TokenType.LBRACE):
             body = self._block()
         else:

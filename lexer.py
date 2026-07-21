@@ -8,7 +8,7 @@ from typing import Optional, List
 
 
 class TokenType(Enum):
-    # Palavras-chave
+    # Keywords
     FN       = auto()
     RETURN   = auto()
     IMPORT   = auto()
@@ -44,26 +44,26 @@ class TokenType(Enum):
     SCHEMA   = auto()
     TOOL     = auto()
     MATCH    = auto()
-    # Tipos
+    # Types
     TYPE_INT    = auto()
     TYPE_NUMBER = auto()
     TYPE_STRING = auto()
     TYPE_BOOL   = auto()
     TYPE_VOID   = auto()
-    # Literais
+    # Literals
     INT_LIT   = auto()
     FLOAT_LIT = auto()
     STR_LIT   = auto()
     BOOL_LIT  = auto()
-    # Identificador
+    # Identifier
     IDENT = auto()
-    # Aritmetica
+    # Arithmetic
     PLUS    = auto()
     MINUS   = auto()
     STAR    = auto()
     SLASH   = auto()
     PERCENT = auto()
-    # Atribuicao
+    # Assignment
     ASSIGN       = auto()
     BODY_ASSIGN  = auto()
     PLUS_ASSIGN  = auto()
@@ -78,30 +78,30 @@ class TokenType(Enum):
     SHR_ASSIGN     = auto()
     PLUS_PLUS    = auto()
     MINUS_MINUS  = auto()
-    # Comparacao
+    # Comparison
     EQ  = auto()
     NEQ = auto()
     LT  = auto()
     GT  = auto()
     LEQ = auto()
     GEQ = auto()
-    # Logicos
+    # Logical
     AND = auto()
     OR  = auto()
     NOT = auto()
-    # Bit a bit
+    # Bitwise
     AMP   = auto()   # &
     PIPE  = auto()   # |
     CARET = auto()   # ^
     TILDE = auto()   # ~
     SHL   = auto()   # <<
     SHR   = auto()   # >>
-    # Especiais
+    # Special
     ARROW     = auto()
     FAT_ARROW = auto()   # => (lambda)
     NULL_COAL = auto()
     QUESTION  = auto()
-    # Pontuacao
+    # Punctuation
     LPAREN    = auto()
     RPAREN    = auto()
     LBRACE    = auto()
@@ -112,7 +112,7 @@ class TokenType(Enum):
     COMMA     = auto()
     COLON     = auto()
     DOT       = auto()
-    # Linguagem estrangeira
+    # Foreign language
     LANG_TAG   = auto()
     LANG_BLOCK = auto()
     # EOF
@@ -188,7 +188,7 @@ class LexerError(Exception):
 
 class Lexer:
     def __init__(self, source):
-        # Ignora BOM UTF-8 no inicio (comum em editores/PowerShell no Windows)
+        # Ignores UTF-8 BOM at the beginning (common in Windows editors/PowerShell)
         if source.startswith('﻿'):
             source = source[1:]
         self.source = source
@@ -197,7 +197,7 @@ class Lexer:
         self.col    = 1
 
     def _error(self, msg):
-        raise LexerError(f"[Lexer] Linha {self.line}, Col {self.col}: {msg}")
+        raise LexerError(f"[Syntax Error] Line {self.line}, Col {self.col}: {msg}")
 
     def _peek(self, offset=0):
         idx = self.pos + offset
@@ -237,7 +237,7 @@ class Lexer:
         return self.source[start:self.pos]
 
     def _read_number(self, sl, sc):
-        # Prefixos: 0x (hex), 0b (binario), 0o (octal). Underscores permitidos.
+        # Prefixes: 0x (hex), 0b (binary), 0o (octal). Underscores allowed.
         if self._peek() == '0' and self._peek(1) in ('x', 'X', 'b', 'B', 'o', 'O'):
             self._advance()                      # '0'
             base_ch = self._advance().lower()    # 'x' / 'b' / 'o'
@@ -253,7 +253,7 @@ class Lexer:
                 else:
                     break
             if not raw:
-                self._error(f"Literal numerico invalido apos '0{base_ch}'")
+                self._error(f"Invalid numeric literal after '0{base_ch}'")
             return Token(TokenType.INT_LIT, str(int(raw, base)), sl, sc)
 
         num = ''; is_float = False
@@ -280,7 +280,7 @@ class Lexer:
             else:
                 s += self._advance()
         if self.pos >= len(self.source):
-            self._error("String nao terminada")
+            self._error("Unterminated string")
         self._advance()
         return Token(TokenType.STR_LIT, s, sl, sc)
 
@@ -307,7 +307,7 @@ class Lexer:
                 code += self._advance()
             return Token(TokenType.LANG_BLOCK, lang + ':' + code, sl, sc)
         else:
-            self._error(f"Esperado '<' ou '(' apos '{lang}'")
+            self._error(f"Expected '<' or '(' after '{lang}'")
 
     def tokenize(self):
         tokens = []
@@ -455,5 +455,5 @@ class Lexer:
             elif ch == '.':
                 self._advance(); tokens.append(Token(TokenType.DOT,       '.', sl, sc))
             else:
-                self._error(f"Caractere inesperado '{ch}'")
+                self._error(f"Unexpected character '{ch}'")
         return tokens

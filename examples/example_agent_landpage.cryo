@@ -3,7 +3,7 @@
 //
 //  Shows the configurable `agent`: subset of tools and
 //  a step limit. The agent builds the HTML and saves the file.
-//    agent(modelo, prompt, [tools...], maxPassos)
+//    agent(model, prompt, [tools...], maxSteps)
 //
 //  Run (with a real LLM via gateway, or the test mock):
 //    CRYO_LLM_URL=http://127.0.0.1:8804 \
@@ -12,10 +12,10 @@
 // ============================================================
 
 // Tool: builds the landing page HTML from the texts.
-tool fn montar_html(string titulo, string subtitulo, string cta) -> string ={
+tool fn montar_html(string title, string subtitulo, string cta) -> string ={
     return "<!doctype html>\n<html lang=\"pt-BR\">\n<head>\n<meta charset=\"utf-8\">\n" +
            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
-           "<title>" + titulo + "</title>\n<style>\n" +
+           "<title>" + title + "</title>\n<style>\n" +
            "*{box-sizing:border-box} body{margin:0;font-family:system-ui,sans-serif;" +
            "background:radial-gradient(circle at 50% 0,#1b2550,#0b1020);color:#e6e9f0}\n" +
            ".hero{max-width:760px;margin:0 auto;padding:120px 24px;text-align:center}\n" +
@@ -24,27 +24,27 @@ tool fn montar_html(string titulo, string subtitulo, string cta) -> string ={
            "a.btn{display:inline-block;padding:16px 32px;background:#5b8cff;color:#fff;" +
            "border-radius:12px;text-decoration:none;font-weight:700;font-size:18px}\n" +
            "</style>\n</head>\n<body>\n  <div class=\"hero\">\n" +
-           "    <h1>" + titulo + "</h1>\n" +
+           "    <h1>" + title + "</h1>\n" +
            "    <p>" + subtitulo + "</p>\n" +
            "    <a class=\"btn\" href=\"#\">" + cta + "</a>\n" +
            "  </div>\n</body>\n</html>\n";
 }
 
 // Tool: saves the content to a file on disk.
-tool fn salvar_pagina(string html, string caminho) -> bool ={
-    return pyro_write_file(caminho, html);
+tool fn salvar_pagina(string html, string path) -> bool ={
+    return pyro_write_file(path, html);
 }
 
 // Tool: opens the file in the system default browser.
-tool fn abrir_pagina(string caminho) -> bool ={
-    return pyro_open(caminho);
+tool fn abrir_pagina(string path) -> bool ={
+    return pyro_open(path);
 }
 
 // The agent builds, saves and opens it in the browser; 3 tools and 5 steps.
 string resultado = agent("gpt-x",
-    "Crie uma landing page para o produto 'Cryo Lang' com subtitulo " +
-    "'A linguagem que compila para Pyro' e botao 'Comecar agora'. " +
-    "Salve em build/landpage.html e depois abra a pagina no navegador.",
+    "Crie uma landing page for o produto 'Cryo Lang' with subtitulo " +
+    "'A linguagem que compila for Pyro' and botao 'Comecar agora'. " +
+    "Salve in build/landpage.html and depois abra a pagina in the navegador.",
     ["montar_html", "salvar_pagina", "abrir_pagina"], 5);
 
 print("== agente (tools: montar_html, salvar_pagina, abrir_pagina) ==");

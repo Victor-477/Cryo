@@ -8,22 +8,22 @@ enum Nivel { BAIXO, MEDIO, ALTO }
 
 struct Sensor {
     int    id;
-    string nome;
-    number valor;
-    bool   ativo;
+    string name;
+    number value;
+    bool   active;
 }
 
 const number PI     = 3.14159265
 const string VERSAO = "0.6.0"
 
 // ── Typed functions ────────────────────────────────────────
-fn areaCirculo(number raio) -> number ={
-    return PI * raio * raio;
+fn areaCircle(number radius) -> number ={
+    return PI * radius * radius;
 }
 
-fn fatorial(int n) -> int ={
+fn factorial(int n) -> int ={
     if (n <= 1) { return 1; }
-    return n * fatorial(n - 1);
+    return n * factorial(n - 1);
 }
 
 fn ehPar(int n) -> bool ={
@@ -39,24 +39,24 @@ fn descNivel(Nivel nv) -> string ={
 }
 
 // ── Main program ─────────────────────────────────────
-number area = areaCirculo(5.0);
-int    f10  = fatorial(10);
+number area = areaCircle(5.0);
+int    f10  = factorial(10);
 bool   par  = ehPar(f10);
 
 // Struct
 Sensor s1 = new Sensor {
     id:    1,
-    nome:  "Temperatura",
-    valor: 36.6,
-    ativo: true
+    name:  "Temperatura",
+    value: 36.6,
+    active: true
 }
-string nomeSensor = s1.nome;
+string nomeSensor = s1.name;
 
 // Array + sum with a loop
-int[] valores = [10, 20, 30, 40, 50]
-int soma = 0;
+int[] values = [10, 20, 30, 40, 50]
+int sum = 0;
 for (int i = 0; i < 5; i++) {
-    soma += valores[i];
+    sum += values[i];
 }
 
 // Bitwise / shift
@@ -70,30 +70,30 @@ string resultado = leitura ?? "sem leitura";
 string nivelTxt = descNivel(Nivel_ALTO);
 
 // safety assert
-assert(f10 == 3628800, "fatorial(10) incorreto");
+assert(f10 == 3628800, "factorial(10) incorreto");
 assert(empacotado == 0x1234);
 
 // try / catch (mapped to panic/recover in Go)
 string estado = "ok";
 try {
-    if (soma > 100) {
-        throw("soma grande demais");
+    if (sum > 100) {
+        throw("sum grande demais");
     }
 } catch (string err) {
     estado = "capturado: " + err;
 }
 
 print("=== Cryo v" + VERSAO + " — backend Go ===");
-print("area circulo r=5:");
+print("area circle r=5:");
 print(area);
 print("10! =");
 print(f10);
-print("10! e par?");
+print("10! and par?");
 print(par);
 print("sensor:");
 print(nomeSensor);
-print("soma do array:");
-print(soma);
+print("sum do array:");
+print(sum);
 print("empacotado (0x1234):");
 print(empacotado);
 print("resultado:");

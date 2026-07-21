@@ -12,37 +12,37 @@ struct Ponto { int x; int y; }
 int[] nums = [3, 1, 4, 1, 5, 9, 2, 6];
 nums.push(10);
 int total = 0;
-int maior = 0;
+int max = 0;
 for (int v in nums) {
     total += v;
-    if (v > maior) { maior = v; }
+    if (v > max) { max = v; }
 }
 nums[0] = 100;
 
 // ── Maps ────────────────────────────────────────────────────
-map<string, int> estoque = {"maca": 10, "pera": 5};
-estoque["uva"] = 20;
-int somaEstoque = 0;
-for (string k in keys(estoque)) {
-    somaEstoque += estoque[k];
+map<string, int> inventory = {"maca": 10, "pera": 5};
+inventory["uva"] = 20;
+int sumInventory = 0;
+for (string k in keys(inventory)) {
+    sumInventory += inventory[k];
 }
 
 // ── Structs (= map of fields) ───────────────────────────────
 Ponto p = new Ponto { x: 3, y: 4 };
 int dist2 = p.x * p.x + p.y * p.y;
 
-print("== containers na VM Pyro ==");
+print("== containers in the VM Pyro ==");
 print("array (nums):"); print(nums);
-print("tamanho:");      print(len(nums));
-print("soma:");         print(total);
-print("maior:");        print(maior);
-print("map (estoque):"); print(estoque);
-print("tem maca?:");    print(has(estoque, "maca"));
-print("tem kiwi?:");    print(has(estoque, "kiwi"));
-print("soma estoque:"); print(somaEstoque);
+print("size:");      print(len(nums));
+print("sum:");         print(total);
+print("max:");        print(max);
+print("map (inventory):"); print(inventory);
+print("tem maca?:");    print(has(inventory, "maca"));
+print("tem kiwi?:");    print(has(inventory, "kiwi"));
+print("sum inventory:"); print(sumInventory);
 print("ponto:");        print(p);
 print("p.x:");          print(p.x);
 print("dist^2:");       print(dist2);
 
-assert(len(nums) == 9, "tamanho do array incorreto");
+assert(len(nums) == 9, "size do array incorreto");
 assert(dist2 == 25, "distancia incorreta");

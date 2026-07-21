@@ -13,19 +13,19 @@ import >Node<
 library >node fs<     // -> const fs = require("fs");
 
 // Builds the content in Cryo (string) and passes it to the Node block.
-string titulo = "Relatorio Cryo";
-string corpo  = titulo + "\n" + "gerado pelo backend Node\n";
-print("conteudo montado em Cryo:");
+string title = "Relatorio Cryo";
+string corpo  = title + "\n" + "gerado pelo backend Node\n";
+print("conteudo montado in Cryo:");
 print(corpo);
 
 // Node block: writes and re-reads the file with fs.
 >Node(
-    const caminho = "build/cryo_node_out.txt";
+    const path = "build/cryo_node_out.txt";
     fs.mkdirSync("build", { recursive: true });
-    fs.writeFileSync(caminho, corpo);
-    const lido = fs.readFileSync(caminho, "utf8");
-    console.log("[node] arquivo escrito em", caminho);
-    console.log("[node] bytes lidos:", lido.length);
+    fs.writeFileSync(path, corpo);
+    const lido = fs.readFileSync(path, "utf8");
+    console.log("[node] file escrito in", path);
+    console.log("[node] bytes read:", lido.length);
     console.log("[node] primeira linha:", lido.split("\n")[0]);
 )
 

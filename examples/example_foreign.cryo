@@ -11,7 +11,7 @@
 //    python burnout/cryoc.py cryo/examples/example_foreign.cryo --backend c  --run
 //
 //  Without the `import >Go<` below, the >Go( ... ) block is REJECTED
-//  by the compiler ([Erro Estrangeiro]).
+//  by the compiler ([Error Estrangeiro]).
 // ============================================================
 
 // Enables the foreign languages used in this program.
@@ -28,7 +28,7 @@ print(lado * lado);
 
 // Go block — emitted on the go backend, omitted on the others.
 >Go(
-    fmt.Println("[go] Ola da camada Go, com fmt importado via library!")
+    fmt.Println("[go] Ola da camada Go, with fmt importado via library!")
 )
 
 // C block — emitted on the c backend, omitted on the others.

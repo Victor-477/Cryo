@@ -15,14 +15,14 @@ library >go net/http<   // -> import "net/http"
 library >go fmt<        // -> import "fmt"
 library >go time<       // -> import "time"
 
-string url = "https://example.com";
+string url = "https://example.with";
 print("buscando (via bloco Go + net/http):");
 print(url);
 
 // Go block: HTTP client with timeout, using the net/http library.
 >Go(
     client := &http.Client{Timeout: 4 * time.Second}
-    resp, err := client.Get("https://example.com")
+    resp, err := client.Get("https://example.with")
     if err != nil {
         fmt.Println("[go] request falhou (offline?):", err)
     } else {

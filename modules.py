@@ -1,21 +1,21 @@
 # ============================================================
-#  Cryo — Resolução de módulos (import "arquivo.cryo")
+#  Cryo — Module resolution (import "file.cryo")
 #
-#  Um programa Cryo pode importar outros arquivos .cryo. O
-#  resolvedor roda depois do parse e ANTES da verificação e do
-#  codegen: carrega cada módulo (relativo ao arquivo que o
-#  importa), recursivamente, e produz um único Program achatado.
+#  A Cryo program can import other .cryo files. The
+#  resolver runs after parsing and BEFORE checking and
+#  codegen: loads each module (relative to the file that
+#  imports it), recursively, and produces a single flattened Program.
 #
-#  Regras (v1):
-#  - Um módulo contribui com as suas DECLARAÇÕES: funções, structs,
-#    enums, consts, schemas/tools, skills, `import >Lang<` e
-#    `library >...<`. Statements executáveis de topo de um módulo
-#    importado são ignorados (só o programa de entrada "roda").
-#  - O mesmo arquivo importado várias vezes entra UMA vez
-#    (deduplicação por caminho absoluto).
-#  - Ciclos de import são detectados e rejeitados.
-#  - Colisão de nome (duas declarações com o mesmo nome vindas de
-#    arquivos diferentes) é erro, com os dois caminhos na mensagem.
+#  Rules (v1):
+#  - A module contributes its DECLARATIONS: functions, structs,
+#    enums, consts, schemas/tools, skills, `import >Lang<` and
+#    `library >...<`. Top-level executable statements of an imported
+#    module are ignored (only the entry program "runs").
+#  - The same imported file multiple times enters ONCE
+#    (deduplication by absolute path).
+#  - Import cycles are detected and rejected.
+#  - Name collision (two declarations with the same name coming from
+#    different files) is an error, with both paths in the message.
 # ============================================================
 import os
 from typing import Dict, List, Optional, Set
@@ -27,11 +27,11 @@ from ast_nodes import (
 
 
 class ModuleError(Exception):
-    """Erro de resolução de módulos (arquivo ausente, ciclo, colisão)."""
+    """Module resolution error (missing file, cycle, collision)."""
     pass
 
 
-# declarações que um módulo exporta
+# declarations that a module exports
 _DECLS = (FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl,
           Import, Library)
 
@@ -48,63 +48,63 @@ def _parse_file(path: str) -> Program:
         with open(path, 'r', encoding='utf-8') as f:
             src = f.read()
     except OSError as e:
-        raise ModuleError(f"não foi possível ler o módulo '{path}': {e}")
+        raise ModuleError(f"[Module Error] could not read module '{path}': {e}")
     return Parser(Lexer(src).tokenize()).parse()
 
 
 def resolve_modules(program: Program, base_dir: str) -> Program:
-    """Resolve todos os `import "arquivo.cryo"` de um Program.
+    """Resolves all `import "file.cryo"` of a Program.
 
-    Devolve um novo Program com as declarações dos módulos importados
-    (em ordem de import, profundidade primeiro) seguidas dos statements
-    do programa de entrada. Sem ModuleImport no resultado.
+    Returns a new Program with the declarations of the imported modules
+    (in import order, depth-first) followed by the statements
+    of the entry program. Without ModuleImport in the result.
     """
-    loaded: Set[str] = set()            # abspaths já incorporados
-    loading: List[str] = []             # pilha p/ detecção de ciclo
-    origem: Dict[str, str] = {}         # nome da declaração -> arquivo
+    loaded: Set[str] = set()            # abspaths already incorporated
+    loading: List[str] = []             # stack for cycle detection
+    origem: Dict[str, str] = {}         # declaration name -> file
     decls: List[Node] = []
 
     def load(path: str, importer_dir: str):
         full = os.path.normpath(os.path.join(importer_dir, path))
         full = os.path.abspath(full)
         if full in loaded:
-            return                       # dedup: já incorporado
+            return                       # dedup: already incorporated
         if full in loading:
             cadeia = ' -> '.join(os.path.basename(p) for p in loading + [full])
-            raise ModuleError(f"ciclo de imports detectado: {cadeia}")
+            raise ModuleError(f"[Module Error] import cycle detected: {cadeia}")
         if not os.path.isfile(full):
             raise ModuleError(
-                f"módulo não encontrado: '{path}' (procurado em {full})")
+                f"[Module Error] module not found: '{path}' (looked in {full})")
         loading.append(full)
         mod = _parse_file(full)
         mod_dir = os.path.dirname(full)
         for n in mod.statements:
             if isinstance(n, ModuleImport):
-                load(n.path, mod_dir)    # imports aninhados, relativo ao módulo
+                load(n.path, mod_dir)    # nested imports, relative to the module
             elif isinstance(n, _DECLS):
-                nome = _decl_name(n)
-                if nome:
-                    if nome in origem and origem[nome] != full:
+                name = _decl_name(n)
+                if name:
+                    if name in origem and origem[name] != full:
                         raise ModuleError(
-                            f"declaração duplicada '{nome}': definida em "
-                            f"{origem[nome]} e em {full}")
-                    origem.setdefault(nome, full)
+                            f"[Module Error] duplicate declaration '{name}': defined in "
+                            f"{origem[name]} and in {full}")
+                    origem.setdefault(name, full)
                 decls.append(n)
-            # statements executáveis de módulo importado: ignorados
+            # executable statements of imported module: ignored
         loading.pop()
         loaded.add(full)
 
-    # varre o programa de entrada
+    # scan the entry program
     rest: List[Node] = []
     for n in program.statements:
         if isinstance(n, ModuleImport):
             load(n.path, base_dir)
         else:
-            nome = _decl_name(n)
-            if nome and nome in origem:
+            name = _decl_name(n)
+            if name and name in origem:
                 raise ModuleError(
-                    f"declaração duplicada '{nome}': definida em "
-                    f"{origem[nome]} e no programa principal")
+                    f"[Module Error] duplicate declaration '{name}': defined in "
+                    f"{origem[name]} and in the main program")
             rest.append(n)
 
     if not decls:

@@ -1,14 +1,14 @@
 # ============================================================
-#  Cryo — Verificação de blocos estrangeiros e libraries
+#  Cryo — Verification of foreign blocks and libraries
 #
-#  Regra da linguagem: um bloco estrangeiro `>Lang( ... )` só é
-#  válido se a linguagem `Lang` tiver sido importada no programa
-#  com `import >Lang<`. O mesmo vale para `library >...<`, que
-#  pertence a uma linguagem estrangeira importada.
+#  Language rule: a foreign block `>Lang( ... )` is only
+#  valid if the language `Lang` has been imported in the program
+#  with `import >Lang<`. The same goes for `library >...<`, which
+#  belongs to an imported foreign language.
 #
-#  Esta verificação é semântica (não é a instrumentação --safe):
-#  roda depois do parse e antes da geração de código, e é
-#  independente do backend. Levanta ForeignError na 1ª violação.
+#  This check is semantic (it is not --safe instrumentation):
+#  it runs after parse and before code generation, and is
+#  backend independent. Raises ForeignError on the 1st violation.
 # ============================================================
 from dataclasses import fields
 from typing import Any, Set
@@ -17,12 +17,12 @@ from ast_nodes import Node, Import, Library, ForeignBlock
 
 
 class ForeignError(Exception):
-    """Uso de bloco estrangeiro ou library sem o import correspondente."""
+    """Use of foreign block or library without the corresponding import."""
     pass
 
 
 def _walk(node: Any):
-    """Gera todos os nós Node contidos em 'node' (recursivo)."""
+    """Yields all Node elements contained in 'node' (recursive)."""
     if isinstance(node, Node):
         yield node
         for f in fields(node):
@@ -37,7 +37,7 @@ def _norm(lang: str) -> str:
 
 
 def collect_imports(program) -> Set[str]:
-    """Conjunto das linguagens estrangeiras importadas (normalizadas)."""
+    """Set of imported foreign languages (normalized)."""
     langs = set()
     for n in _walk(program):
         if isinstance(n, Import):
@@ -46,46 +46,46 @@ def collect_imports(program) -> Set[str]:
 
 
 def verify(program) -> Set[str]:
-    """Verifica blocos estrangeiros e libraries contra os `import`.
+    """Checks foreign blocks and libraries against `import`.
 
-    Devolve o conjunto de linguagens importadas. Levanta ForeignError,
-    com mensagem acionável, na primeira violação encontrada.
+    Returns the set of imported languages. Raises ForeignError,
+    with actionable message, on the first violation found.
     """
     imported = collect_imports(program)
 
     for n in _walk(program):
-        # ── blocos estrangeiros: exigem o import da sua linguagem ──
+        # ── foreign blocks: require import of their language ──
         if isinstance(n, ForeignBlock):
             lang = _norm(n.lang)
             if lang not in imported:
                 raise ForeignError(
-                    f"bloco estrangeiro >{n.lang}( ... ) usado sem importar a "
-                    f"linguagem. Adicione 'import >{n.lang}<' antes de usar "
-                    f"blocos {n.lang}."
+                    f"foreign block >{n.lang}( ... ) used without importing the "
+                    f"language. Add 'import >{n.lang}<' before using "
+                    f"{n.lang} blocks."
                 )
 
-        # ── libraries: pertencem a uma linguagem estrangeira importada ──
+        # ── libraries: belong to an imported foreign language ──
         if isinstance(n, Library):
             lang = _norm(n.lang)
             if lang:
                 if lang not in imported:
                     raise ForeignError(
-                        f"library >{n.lang} {n.name}< requer 'import >{n.lang}<' "
-                        f"no programa."
+                        f"library >{n.lang} {n.name}< requires 'import >{n.lang}<' "
+                        f"in the program."
                     )
             else:
-                # library não qualificada: infere a linguagem se houver
-                # exatamente uma importada; senão exige qualificação.
+                # unqualified library: infers the language if there is
+                # exactly one imported; otherwise requires qualification.
                 if not imported:
                     raise ForeignError(
-                        f"library >{n.name}< requer uma linguagem importada "
-                        f"(ex.: 'import >c<' e depois 'library >c {n.name}<')."
+                        f"library >{n.name}< requires an imported language "
+                        f"(e.g.: 'import >c<' and then 'library >c {n.name}<')."
                     )
                 if len(imported) > 1:
                     langs = ", ".join(sorted(imported))
                     raise ForeignError(
-                        f"library >{n.name}< é ambígua: várias linguagens "
-                        f"importadas ({langs}). Qualifique com "
+                        f"library >{n.name}< is ambiguous: multiple languages "
+                        f"imported ({langs}). Qualify with "
                         f"'library >LANG {n.name}<'."
                     )
 
@@ -93,7 +93,7 @@ def verify(program) -> Set[str]:
 
 
 def resolve_library_lang(lib: Library, imported: Set[str]) -> str:
-    """Linguagem efetiva de uma library: a explícita, ou a única importada."""
+    """Effective language of a library: the explicit one, or the only imported one."""
     lang = _norm(lib.lang)
     if lang:
         return lang

@@ -1,5 +1,5 @@
 // ============================================================
-//  Phase 3 example — e-commerce agent with SEVERAL tools
+//  Phase 3 example — and-commerce agent with SEVERAL tools
 //
 //  A realistic agentic flow: the model chains 6 tools to
 //  build an order — look up customer, look up product (returns
@@ -11,19 +11,19 @@
 //      python burnout/cryoc.py cryo/examples/example_agent_pedido.cryo --backend go --run
 // ============================================================
 
-struct Produto { string nome; number preco; }
+struct Produto { string name; number preco; }
 
 // ── Tools exposed to the agent (schema derived from the signature) ──
 
 tool fn buscar_cliente(string email) -> string ={
-    if (email == "ana@loja.com") { return "Ana Silva"; }
+    if (email == "ana@loja.with") { return "Ana Silva"; }
     return "Cliente Desconhecido";
 }
 
 tool fn buscar_produto(string sku) -> Produto ={
-    if (sku == "SKU-1") { return new Produto { nome: "Fone Bluetooth", preco: 129.90 }; }
-    if (sku == "SKU-2") { return new Produto { nome: "Teclado Mecanico", preco: 249.90 }; }
-    return new Produto { nome: "Desconhecido", preco: 0.0 };
+    if (sku == "SKU-1") { return new Produto { name: "Fone Bluetooth", preco: 129.90 }; }
+    if (sku == "SKU-2") { return new Produto { name: "Teclado Mecanico", preco: 249.90 }; }
+    return new Produto { name: "Desconhecido", preco: 0.0 };
 }
 
 tool fn verificar_estoque(string sku) -> int ={
@@ -33,7 +33,7 @@ tool fn verificar_estoque(string sku) -> int ={
 }
 
 tool fn calcular_frete(string cep, int qtd) -> number ={
-    return 12.50 + qtd * 6.00;    // base + por item
+    return 12.50 + qtd * 6.00;    // base + by item
 }
 
 tool fn aplicar_cupom(number total, string cupom) -> number ={
@@ -46,12 +46,12 @@ tool fn criar_pedido(string cliente, number total) -> string ={
     return "PED-1007";
 }
 
-// ── O agente decide quais tools chamar, em qual ordem ────────
+// ── The agent decide quais tools chamar, in qual ordem ────────
 string resposta = agent("gpt-x",
-    "Faça um pedido para ana@loja.com: 2 unidades do SKU-1, " +
-    "cupom PROMO10, entrega no CEP 01000-000. Confirme o total e o estoque.");
+    "Faça um pedido for ana@loja.with: 2 unidades do SKU-1, " +
+    "cupom PROMO10, entrega in the CEP 01000-000. Confirme o total and o inventory.");
 
-print("== Tools disponiveis para o agente ==");
+print("== Tools disponiveis for o agente ==");
 print(tools());
 print("== Resposta do agente ==");
 print(resposta);

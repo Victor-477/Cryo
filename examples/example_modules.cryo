@@ -14,21 +14,21 @@
 
 import "lib_geometria.cryo"
 
-number raio = 2.5;
-Circulo c = new Circulo { raio: raio };
+number radius = 2.5;
+Circle c = new Circle { radius: radius };
 
 // String interpolation: ${expr} inside the literal
-print("circulo de raio ${c.raio}:");
-print("  area      = ${areaCirculo(c.raio)}");
-print("  perimetro = ${perimetroCirculo(c.raio)}");
-print("forma: ${descreve(Forma_CIRCULO)} (PI do modulo = ${GEO_PI})");
+print("circle de radius ${c.radius}:");
+print("  area      = ${areaCircle(c.radius)}");
+print("  perimeter = ${perimetroCircle(c.radius)}");
+print("Shape: ${descreve(Forma_CIRCULO)} (PI do modulo = ${GEO_PI})");
 
 // Module constant visible inside local functions
 fn dobroDaArea(number r) -> number ={
     return 2.0 * GEO_PI * r * r;
 }
-print("dobro da area: ${dobroDaArea(raio)}");
+print("double da area: ${dobroDaArea(radius)}");
 
-assert(descreve(Forma_QUADRADO) == "quadrado", "enum do modulo falhou");
-assert(areaCirculo(1.0) > 3.14, "funcao do modulo falhou");
+assert(descreve(Forma_SQUARE) == "quadrado", "enum do modulo falhou");
+assert(areaCircle(1.0) > 3.14, "funcao do modulo falhou");
 print("modulos + interpolacao ok");

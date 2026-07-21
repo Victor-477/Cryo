@@ -1,7 +1,7 @@
 // ============================================================
 //  Cryo module — geometry library
 //
-//  Importado com:  import "lib_geometria.cryo"
+//  Imported with:  import "lib_geometria.cryo"
 //  A module exports declarations (const, struct, enum, fn, tool,
 //  schema, skill). Top-level executable statements only run when
 //  the file is compiled as the entry program.
@@ -9,22 +9,22 @@
 
 const number GEO_PI = 3.14159265
 
-struct Circulo { number raio; }
+struct Circle { number radius; }
 
-enum Forma { CIRCULO, QUADRADO, TRIANGULO }
+enum Shape { CIRCULO, SQUARE, TRIANGLE }
 
-fn areaCirculo(number raio) -> number ={
-    return GEO_PI * raio * raio;
+fn areaCircle(number radius) -> number ={
+    return GEO_PI * radius * radius;
 }
 
-fn perimetroCirculo(number raio) -> number ={
-    return 2.0 * GEO_PI * raio;
+fn perimetroCircle(number radius) -> number ={
+    return 2.0 * GEO_PI * radius;
 }
 
-fn descreve(Forma f) -> string ={
+fn descreve(Shape f) -> string ={
     switch (f) {
-        case Forma_CIRCULO:  return "circulo";
-        case Forma_QUADRADO: return "quadrado";
+        case Forma_CIRCULO:  return "circle";
+        case Forma_SQUARE: return "quadrado";
         default:             return "triangulo";
     }
 }

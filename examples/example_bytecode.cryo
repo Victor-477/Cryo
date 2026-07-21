@@ -9,9 +9,9 @@
 //  Go/C/asm); the Pyro VM loads and runs this bytecode.
 // ============================================================
 
-fn fatorial(int n) -> int ={
+fn factorial(int n) -> int ={
     if (n <= 1) { return 1; }
-    return n * fatorial(n - 1);
+    return n * factorial(n - 1);
 }
 
 fn fib(int n) -> int ={
@@ -30,35 +30,35 @@ fn ehPrimo(int n) -> bool ={
 }
 
 // Sum of squares 1..10
-int soma = 0;
+int sum = 0;
 for (int i = 1; i <= 10; i++) {
-    soma += i * i;
+    sum += i * i;
 }
 
 // Prime count up to 50 (break/continue)
-int primos = 0;
+int primes = 0;
 for (int k = 2; k <= 50; k++) {
     if (!ehPrimo(k)) { continue; }
-    primos++;
+    primes++;
 }
 
 // Mixed int/float and bitwise arithmetic
-number media = (3.5 + 1.5) * 2.0;
+number average = (3.5 + 1.5) * 2.0;
 int mask = (0xF0 | 0x0F) & 0xFF;
 int shifted = 1 << 8;
 
 // Ternary and logic
-bool grande = soma > 100 ? true : false;
+bool grande = sum > 100 ? true : false;
 
 print("== .cryo -> .pyro (bytecode) -> VM Pyro ==");
-print("fatorial(10):"); print(fatorial(10));
+print("factorial(10):"); print(factorial(10));
 print("fib(20):");      print(fib(20));
-print("soma quadrados:"); print(soma);
-print("primos ate 50:"); print(primos);
-print("media:");        print(media);
+print("sum quadrados:"); print(sum);
+print("primes ate 50:"); print(primes);
+print("average:");        print(average);
 print("mask:");         print(mask);
 print("1<<8:");         print(shifted);
-print("soma > 100?:");  print(grande);
+print("sum > 100?:");  print(grande);
 
-assert(fatorial(5) == 120, "fatorial incorreto");
-assert(primos == 15, "contagem de primos incorreta");
+assert(factorial(5) == 120, "factorial incorreto");
+assert(primes == 15, "contagem de primes incorreta");

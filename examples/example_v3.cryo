@@ -6,7 +6,7 @@
 // Enables C foreign blocks (required to use >C( ... )).
 import >C<
 
-// ── Enum e Struct ──────────────────────────────────────────
+// ── Enum and Struct ──────────────────────────────────────────
 
 enum Nivel {
     BAIXO,
@@ -16,9 +16,9 @@ enum Nivel {
 
 struct Sensor {
     int    id;
-    string nome;
-    number valor;
-    bool   ativo;
+    string name;
+    number value;
+    bool   active;
 }
 
 // ── Constants ─────────────────────────────────────────────
@@ -29,8 +29,8 @@ const string VERSAO    = "0.3.0"
 
 // ── Functions with typed return ──────────────────────────────
 
-fn areaCirculo(number raio) -> number ={
-    return PI * raio * raio;
+fn areaCircle(number radius) -> number ={
+    return PI * radius * radius;
 }
 
 fn ehPrimo(int n) -> bool ={
@@ -43,9 +43,9 @@ fn ehPrimo(int n) -> bool ={
     return true;
 }
 
-fn fatorial(int n) -> int ={
+fn factorial(int n) -> int ={
     if (n <= 1) { return 1; }
-    return n * fatorial(n - 1);
+    return n * factorial(n - 1);
 }
 
 fn descNivel(Nivel nv) -> string ={
@@ -61,8 +61,8 @@ fn descNivel(Nivel nv) -> string ={
 // ── Main program ─────────────────────────────────────
 
 // Math calculations
-number area  = areaCirculo(5.0);
-int    fat10 = fatorial(10);
+number area  = areaCircle(5.0);
+int    fat10 = factorial(10);
 
 // Array of sensors (indices)
 int[] ids = [101, 102, 103, 104, 105]
@@ -70,19 +70,19 @@ int[] ids = [101, 102, 103, 104, 105]
 // Struct with new
 Sensor s1 = new Sensor {
     id:    1,
-    nome:  "Temperatura",
-    valor: 36.6,
-    ativo: true
+    name:  "Temperatura",
+    value: 36.6,
+    active: true
 }
 
 // Field access
-string nomeSensor = s1.nome;
-number valSensor  = s1.valor;
+string nomeSensor = s1.name;
+number valSensor  = s1.value;
 
 // For loop - sum of the first 100 integers
-number soma = 0;
+number sum = 0;
 for (int i = 1; i <= 100; i++) {
-    soma += i;
+    sum += i;
 }
 
 // While - count primes up to 50
@@ -105,17 +105,17 @@ try {
     number raiz = sqrt(area);
     ok = true;
 } catch (string err) {
-    string msg = "Erro: " + err;
+    string msg = "Error: " + err;
 }
 
 // Native output via inline C block
 >C(
     printf("=== Cryo v%s — Backend C Nativo ===\n", VERSAO);
-    printf("Area circulo r=5: %.4f\n", area);
+    printf("Area circle r=5: %.4f\n", area);
     printf("10! = %lld\n", (long long)fat10);
-    printf("Soma 1..100 = %.0f\n", soma);
+    printf("Soma 1..100 = %.0f\n", sum);
     printf("Primos ate 50: %lld\n", (long long)qtdPrimos);
     printf("Sensor: %s = %.1f\n", nomeSensor, valSensor);
     printf("Resultado: %s\n", resultado);
-    printf("Calculo OK: %s\n", ok ? "sim" : "nao");
+    printf("Calculo OK: %s\n", ok ? "yes" : "nao");
 )

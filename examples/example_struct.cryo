@@ -5,7 +5,7 @@
 //         returns in a register only on the System V ABI.
 //
 //  Return classification:
-//    - SysV : struct <= 8B em RAX; <= 16B em RAX:RDX
+//    - SysV : struct <= 8B in RAX; <= 16B in RAX:RDX
 //    - Win64: struct of 1/2/4/8 bytes in RAX (larger structs -> --backend c)
 // ============================================================
 
@@ -25,7 +25,7 @@ fn quadrado(int n) -> Boxed ={
 
 // ── Main program ─────────────────────────────────────
 Point p = make(3, 4);
-int soma = p.x + p.y;
+int sum = p.x + p.y;
 
 Boxed q = quadrado(9);
 
@@ -34,6 +34,6 @@ print(p.x);
 print("Point.y:");
 print(p.y);
 print("x+y:");
-print(soma);
+print(sum);
 print("quadrado(9).v:");
 print(q.v);

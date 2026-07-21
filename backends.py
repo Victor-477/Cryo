@@ -1,16 +1,16 @@
 # ============================================================
-#  Cryo — Seleção automática de backend (--backend auto)
+#  Cryo — Automatic backend selection (--backend auto)
 #
-#  Analisa a AST, deduz de quais recursos o programa depende e
-#  escolhe o backend mais adequado — otimizando o processamento:
-#  programas de núcleo puro vão para o bytecode Pyro (leve, sem
-#  toolchain externo); recursos avançados escalam para Go; blocos
-#  estrangeiros forçam o backend que os emite (Go/C/Node).
+#  Analyzes the AST, deduces which features the program depends on and
+#  chooses the most suitable backend — optimizing processing:
+#  pure core programs go to Pyro bytecode (lightweight, no
+#  external toolchain); advanced features scale to Go; foreign blocks
+#  force the backend that emits them (Go/C/Node).
 #
-#  A escolha é conservadora: só recomenda um backend que sabe
-#  compilar todos os recursos usados. Na dúvida, cai para 'go'
-#  (superconjunto). O compilador ainda tem uma rede de segurança
-#  que recompila em 'go' se o backend escolhido falhar.
+#  The choice is conservative: it only recommends a backend that knows
+#  how to compile all used features. When in doubt, falls back to 'go'
+#  (superset). The compiler still has a safety net
+#  that recompiles in 'go' if the chosen backend fails.
 # ============================================================
 from dataclasses import fields
 from typing import Any, Tuple, Set
@@ -22,7 +22,7 @@ from ast_nodes import (
 )
 
 
-# builtin -> tag de capacidade exigida
+# builtin -> required capability tag
 _CALL_TAG = {
     'to_string': 'convfn', 'to_int': 'convfn', 'to_number': 'convfn',
     'input': 'input',
@@ -42,7 +42,7 @@ _CALL_TAG = {
     'pyro_write_file': 'machine', 'pyro_open': 'machine', 'pyro_exit': 'machine',
 }
 
-# backend -> conjunto de tags de capacidade suportadas
+# backend -> set of supported capability tags
 _SUPPORTS = {
     'asm':  set(),
     'pyro': {'float', 'string', 'array', 'map', 'struct', 'enum',
@@ -57,13 +57,13 @@ _SUPPORTS = {
              'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
 }
 
-# linguagens estrangeiras que cada backend consegue emitir
+# foreign languages that each backend can emit
 _LANG_OF = {
     'go': {'go'}, 'node': {'node', 'js', 'javascript'}, 'c': {'c'},
     'pyro': set(), 'asm': set(),
 }
 
-# ordem de preferência: mais leve/nativo primeiro
+# preference order: more lightweight/native first
 _PREF = ['pyro', 'go', 'node', 'c', 'asm']
 
 
@@ -99,7 +99,7 @@ def _type_tags(t: str) -> Set[str]:
 
 
 def analyze(program) -> Tuple[Set[str], Set[str]]:
-    """Devolve (tags de capacidade exigidas, linguagens de blocos estrangeiros)."""
+    """Returns (required capability tags, foreign block languages)."""
     tags: Set[str] = set()
     foreign: Set[str] = set()
 
@@ -157,21 +157,21 @@ _ADVANCED = {'concurrency', 'llm', 'http', 'machine', 'optional', 'json',
 def _reason(backend: str, tags: Set[str], foreign: Set[str]) -> str:
     if foreign:
         langs = '/'.join(sorted(foreign))
-        return f"bloco estrangeiro ({langs}) só é emitido pelo backend {backend}"
+        return f"foreign block ({langs}) is only emitted by the {backend} backend"
     if backend == 'pyro':
-        return "núcleo puro — bytecode Pyro (mais leve, sem toolchain externo)"
+        return "pure core — Pyro bytecode (more lightweight, without external toolchain)"
     if backend == 'go':
         adv = sorted(tags & _ADVANCED)
-        return ("recursos além do núcleo Pyro"
+        return ("features beyond the Pyro core"
                 + (f" ({', '.join(adv)})" if adv else ""))
-    return f"recursos cobertos pelo backend {backend}"
+    return f"features covered by the {backend} backend"
 
 
 def missing_capabilities(program, backend: str) -> Tuple[Set[str], Set[str]]:
-    """Recursos exigidos pelo programa que ``backend`` NÃO cobre.
+    """Features required by the program that ``backend`` DOES NOT cover.
 
-    Devolve (tags_de_recurso_faltando, linguagens_de_bloco_não_emitidas).
-    Vazio nos dois quando o backend dá conta de tudo.
+    Returns (missing_feature_tags, unissued_block_languages).
+    Empty in both when the backend can handle everything.
     """
     tags, foreign = analyze(program)
     missing_tags = tags - _SUPPORTS.get(backend, set())
@@ -180,7 +180,7 @@ def missing_capabilities(program, backend: str) -> Tuple[Set[str], Set[str]]:
 
 
 def select_backend(program) -> Tuple[str, str]:
-    """Escolhe o backend ideal para o programa. Devolve (backend, motivo)."""
+    """Chooses the ideal backend for the program. Returns (backend, reason)."""
     tags, foreign = analyze(program)
 
     for b in _PREF:
@@ -190,5 +190,5 @@ def select_backend(program) -> Tuple[str, str]:
             continue
         return b, _reason(b, tags, foreign)
 
-    # nenhum backend cobre tudo (ex.: map + bloco C) — go como fallback seguro
-    return 'go', "combinação de recursos sem backend único ideal; go como fallback"
+    # no backend covers everything (e.g., map + C block) — go as safe fallback
+    return 'go', "combination of features without a single ideal backend; go as fallback"

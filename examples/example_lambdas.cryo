@@ -7,7 +7,7 @@
 // ============================================================
 
 // named function used as a first-class value
-fn dobro(int n) -> int ={ return n * 2; }
+fn double(int n) -> int ={ return n * 2; }
 
 // takes a function as a parameter (type fn(int)->int)
 fn aplicar(fn(int)->int f, int x) -> int ={
@@ -29,7 +29,7 @@ fn mapear(int[] xs, fn(int)->int f) -> int[] ={
 }
 
 // 1) pass a named function as a value
-print(aplicar(dobro, 21));            // 42
+print(aplicar(double, 21));            // 42
 
 // 2) lambda assigned to a function-typed variable
 fn(int)->int inc = (int x) => x + 1;

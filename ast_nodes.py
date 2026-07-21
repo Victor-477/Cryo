@@ -13,7 +13,7 @@ class Node:
 class Program(Node):
     statements: List[Node]
 
-# -- tipos declarados ------------------------------------
+# -- declared types ------------------------------------
 
 @dataclass
 class StructField(Node):
@@ -29,7 +29,7 @@ class StructDecl(Node):
 @dataclass
 class EnumMember:
     name:   str
-    fields: List[str]  # Lista de tipos associados, ex: ["int"], ou vazia
+    fields: List[str]  # List of associated types, e.g: ["int"], or empty
     line:   int = 0
 
 @dataclass
@@ -42,7 +42,7 @@ class EnumDecl(Node):
 class MatchCase(Node):
     pattern_name: str         # ex: "Ok", "Err", "_"
     pattern_vars: List[str]   # ex: ["v"]
-    body:         List[Node]  # Instruções do bloco
+    body:         List[Node]  # Block instructions
     line:         int = 0
 
 @dataclass
@@ -53,12 +53,12 @@ class MatchStatement(Node):
 
 @dataclass
 class SkillDecl(Node):
-    """Skill nativa de LLM: nome + configuração (compilada no binário).
-    Substitui arquivos SKILL.md por dados nativos e compactos."""
+    """Native LLM skill: name + configuration (compiled in the binary).
+    Replaces SKILL.md files with native and compact data."""
     name:   str
-    fields: List[Tuple[str, 'Node']]   # chave -> valor (desc, model, tools, ...)
+    fields: List[Tuple[str, 'Node']]   # key -> value (desc, model, tools, ...)
 
-# -- variaveis / constantes ------------------------------
+# -- variables / constants ------------------------------
 
 @dataclass
 class VarDecl(Node):
@@ -94,7 +94,7 @@ class Increment(Node):
     op:   str
     name: str
 
-# -- funcoes ---------------------------------------------
+# -- functions ---------------------------------------------
 
 @dataclass
 class FunctionDecl(Node):
@@ -102,10 +102,10 @@ class FunctionDecl(Node):
     params:      List[Tuple[str, str]]
     return_type: Optional[str]
     body:        List[Node]
-    is_tool:     bool = False   # 'tool fn' — exposta a LLMs (Fase 3)
+    is_tool:     bool = False   # 'tool fn' — exposed to LLMs (Phase 3)
     line:        int = 0
 
-# -- controle de fluxo -----------------------------------
+# -- flow control -----------------------------------
 
 @dataclass
 class Return(Node):
@@ -159,7 +159,7 @@ class Continue(Node):
 
 @dataclass
 class SwitchCase(Node):
-    values: List[Node]      # valores 'case' (>=1); vazio = default
+    values: List[Node]      # case values (>=1); empty = default
     body:   List[Node]
 
 @dataclass
@@ -168,7 +168,7 @@ class Switch(Node):
     cases:        List[SwitchCase]
     default_body: Optional[List[Node]]
 
-# -- seguranca -------------------------------------------
+# -- security -------------------------------------------
 
 @dataclass
 class Assert(Node):
@@ -178,7 +178,7 @@ class Assert(Node):
 
 @dataclass
 class SafetyBlock(Node):
-    """Bloco 'safe { }' ou 'unsafe { }' que controla a instrumentacao."""
+    """'safe { }' or 'unsafe { }' block that controls instrumentation."""
     safe: bool
     body: List[Node]
 
@@ -190,20 +190,20 @@ class Import(Node):
 
 @dataclass
 class ModuleImport(Node):
-    """Import de outro arquivo Cryo: import "utils.cryo" (resolvido pelo compilador)."""
+    """Import of another Cryo file: import "utils.cryo" (resolved by the compiler)."""
     path: str
 
 @dataclass
 class Library(Node):
     name: str
-    lang: str = ""   # linguagem estrangeira à qual a library pertence (ex.: "c", "go")
+    lang: str = ""   # foreign language to which the library belongs (e.g.: "c", "go")
 
 @dataclass
 class ForeignBlock(Node):
     lang: str
     code: str
 
-# -- expressoes ------------------------------------------
+# -- expressions ------------------------------------------
 
 @dataclass
 class BinaryExpr(Node):
@@ -219,30 +219,30 @@ class TernaryExpr(Node):
 
 @dataclass
 class CastExpr(Node):
-    """Conversao/asserção de tipo: 'expr as Tipo' (ex.: json_decode(s) as T)."""
+    """Type conversion/assertion: 'expr as Type' (e.g.: json_decode(s) as T)."""
     expr:        Node
     target_type: str
 
 @dataclass
 class UnwrapExpr(Node):
-    """Desempacota um opcional: 'x!' (aborta se nulo)."""
+    """Unwraps an optional: 'x!' (aborts if null)."""
     operand: Node
 
 @dataclass
 class TryExpr(Node):
-    """Propagação de erro: 'expr?'. Se expr é Ok(v)/não-nulo, vale v;
-    se é Err(e)/nulo, a função retorna cedo com esse erro/nulo (Fase 8.3)."""
+    """Error propagation: 'expr?'. If expr is Ok(v)/non-null, it evaluates to v;
+    if it is Err(e)/null, the function returns early with this error/null (Phase 8.3)."""
     operand: Node
     line:    int = 0
 
 @dataclass
 class SpawnExpr(Node):
-    """Inicia uma tarefa concorrente e retorna um Future<T>: 'spawn expr'."""
+    """Starts a concurrent task and returns a Future<T>: 'spawn expr'."""
     expr: Node
 
 @dataclass
 class AwaitExpr(Node):
-    """Aguarda o resultado de um Future<T>: 'await f'."""
+    """Awaits the result of a Future<T>: 'await f'."""
     expr: Node
 
 @dataclass
@@ -287,9 +287,9 @@ class StructInit(Node):
 
 @dataclass
 class Lambda(Node):
-    params:      List[Tuple[str, str]]   # [(tipo, nome), ...]
-    return_type: Optional[str]           # None -> inferido pelo backend
-    body:        List[Node]              # `=> expr` vira [Return(expr)]
+    params:      List[Tuple[str, str]]   # [(type, name), ...]
+    return_type: Optional[str]           # None -> inferred by backend
+    body:        List[Node]              # `=> expr` becomes [Return(expr)]
     line:        int = 0
 
 @dataclass

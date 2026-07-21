@@ -1,13 +1,13 @@
 # ============================================================
-#  Cryo Compiler - Auditoria de Seguranca Estatica  (v0.5)
+#  Cryo Compiler - Static Security Audit  (v0.5)
 #
-#  Percorre a AST e reporta padroes de risco antes da geracao
-#  de codigo. Nao substitui o modo --safe (instrumentacao em
-#  tempo de execucao); complementa-o com analise estatica.
+#  Traverses the AST and reports risk patterns before code
+#  generation. Does not replace --safe mode (runtime instrumentation);
+#  complements it with static analysis.
 #
-#  v0.5: analise de taint (fonte nao confiavel -> sink perigoso:
-#  injecao de comando, path traversal, SSRF) e deteccao de
-#  segredos embutidos no codigo-fonte.
+#  v0.5: taint analysis (untrusted source -> dangerous sink:
+#  command injection, path traversal, SSRF) and detection of
+#  hardcoded secrets in the source code.
 # ============================================================
 import re
 from dataclasses import dataclass, fields, is_dataclass
@@ -22,44 +22,44 @@ from ast_nodes import (
 
 @dataclass
 class Finding:
-    level:   str    # 'ALTO' | 'MEDIO' | 'BAIXO'
+    level:   str    # 'HIGH' | 'MEDIUM' | 'LOW'
     rule:    str
     message: str
 
 
-# ── operacoes sensiveis (callee -> nivel, regra, mensagem) ──
+# ── sensitive operations (callee -> level, rule, message) ──
 _SENSITIVE = {
-    'pyro_exec': ('ALTO', 'command-exec',
-                  "pyro_exec() executa um comando de shell arbitrário — "
-                  "nunca passe entrada não confiável como comando."),
-    'pyro_write_file': ('MEDIO', 'file-write',
-                        "pyro_write_file() grava em caminho arbitrário no disco — "
-                        "valide o caminho (evite path traversal)."),
-    'pyro_open': ('MEDIO', 'shell-open',
-                  "pyro_open() abre um arquivo/URL no app padrão do SO — "
-                  "não abra alvos vindos de entrada não confiável."),
-    'pyro_exit': ('BAIXO', 'process-exit',
-                  "pyro_exit() encerra o processo."),
-    'http_get':  ('MEDIO', 'net-egress',
-                  "http_get() faz requisição de rede — risco de SSRF se a URL "
-                  "vier de entrada não confiável."),
-    'http_post': ('MEDIO', 'net-egress',
-                  "http_post() envia dados pela rede — confirme destino e conteúdo."),
-    'llm':   ('BAIXO', 'llm-egress',
-              "llm() envia o prompt a um endpoint externo (CRYO_LLM_URL)."),
-    'agent': ('BAIXO', 'llm-egress',
-              "agent() troca dados com um LLM externo e executa tools em ciclo."),
+    'pyro_exec': ('HIGH', 'command-exec',
+                  "pyro_exec() executes an arbitrary shell command — "
+                  "never pass untrusted input as a command."),
+    'pyro_write_file': ('MEDIUM', 'file-write',
+                        "pyro_write_file() writes to an arbitrary path on disk — "
+                        "validate the path (avoid path traversal)."),
+    'pyro_open': ('MEDIUM', 'shell-open',
+                  "pyro_open() opens a file/URL in the default OS app — "
+                  "do not open targets from untrusted input."),
+    'pyro_exit': ('LOW', 'process-exit',
+                  "pyro_exit() terminates the process."),
+    'http_get':  ('MEDIUM', 'net-egress',
+                  "http_get() makes a network request — SSRF risk if the URL "
+                  "comes from untrusted input."),
+    'http_post': ('MEDIUM', 'net-egress',
+                  "http_post() sends data over the network — confirm destination and content."),
+    'llm':   ('LOW', 'llm-egress',
+              "llm() sends the prompt to an external endpoint (CRYO_LLM_URL)."),
+    'agent': ('LOW', 'llm-egress',
+              "agent() exchanges data with an external LLM and executes tools in a loop."),
 }
 
 
-# ── analise de taint (fluxo de dados nao confiaveis) ─────────
+# ── taint analysis (untrusted data flow) ─────────
 #
-# Fontes: builtins que produzem dado nao confiavel (entrada do
-# usuario, rede, ambiente, saida de LLM). Sinks: builtins que, se
-# alimentados com dado nao confiavel, viram um risco concreto
-# (injecao de comando, path traversal, SSRF). A analise e
-# intraprocedural-aproximada (fixpoint sobre nomes de variaveis no
-# programa inteiro), conservadora e sem substituir revisao manual.
+# Sources: builtins that produce untrusted data (user input,
+# network, environment, LLM output). Sinks: builtins that, if
+# fed with untrusted data, become a concrete risk
+# (command injection, path traversal, SSRF). The analysis is
+# intraprocedural-approximate (fixpoint over variable names in the
+# entire program), conservative and does not replace manual review.
 _TAINT_SOURCES = {
     'input', 'input_int', 'input_num', 'pyro_read',
     'pyro_args', 'pyro_env',
@@ -67,30 +67,30 @@ _TAINT_SOURCES = {
     'llm', 'agent',
 }
 
-# callee -> (indice_do_arg, nivel, regra, mensagem)
+# callee -> (arg_index, level, rule, message)
 _TAINT_SINKS = {
-    'pyro_exec':       (0, 'ALTO', 'tainted-exec',
-                        "comando de shell construído a partir de entrada não "
-                        "confiável — risco de injeção de comando (sanitize/escape "
-                        "ou use uma lista de comandos permitidos)."),
-    'pyro_write_file': (0, 'ALTO', 'tainted-path',
-                        "caminho de arquivo vindo de entrada não confiável — "
-                        "risco de path traversal / escrita arbitrária (valide e "
-                        "normalize o caminho; recuse '..')."),
-    'pyro_open':       (0, 'ALTO', 'tainted-open',
-                        "alvo aberto no SO vindo de entrada não confiável — "
-                        "não abra caminhos/URLs arbitrários."),
-    'http_get':        (0, 'ALTO', 'tainted-ssrf',
-                        "URL vinda de entrada não confiável — risco de SSRF "
-                        "(valide o host contra uma allowlist)."),
-    'http_post':       (0, 'ALTO', 'tainted-ssrf',
-                        "URL vinda de entrada não confiável — risco de SSRF "
-                        "(valide o host contra uma allowlist)."),
+    'pyro_exec':       (0, 'HIGH', 'tainted-exec',
+                        "shell command built from untrusted input "
+                        "— command injection risk (sanitize/escape "
+                        "or use an allowlist of permitted commands)."),
+    'pyro_write_file': (0, 'HIGH', 'tainted-path',
+                        "file path coming from untrusted input — "
+                        "path traversal / arbitrary write risk (validate and "
+                        "normalize the path; reject '..')."),
+    'pyro_open':       (0, 'HIGH', 'tainted-open',
+                        "target opened in OS from untrusted input — "
+                        "do not open arbitrary paths/URLs."),
+    'http_get':        (0, 'HIGH', 'tainted-ssrf',
+                        "URL coming from untrusted input — SSRF risk "
+                        "(validate the host against an allowlist)."),
+    'http_post':       (0, 'HIGH', 'tainted-ssrf',
+                        "URL coming from untrusted input — SSRF risk "
+                        "(validate the host against an allowlist)."),
 }
 
-# ── segredos embutidos ───────────────────────────────────────
-# Por valor: formatos reconhecidos de chaves reais. Por nome:
-# string nao vazia atribuida a uma variavel com nome sensivel.
+# ── hardcoded secrets ───────────────────────────────────────
+# By value: recognized formats of real keys. By name:
+# non-empty string assigned to a variable with a sensitive name.
 _SECRET_VALUE = re.compile(r'(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})')
 _SECRET_NAME  = re.compile(
     r'(api[_-]?key|secret|token|senha|password|passwd|access[_-]?key|'
@@ -98,8 +98,8 @@ _SECRET_NAME  = re.compile(
 
 
 def _expr_is_tainted(expr: Any, tainted: Set[str]) -> bool:
-    """True se a expressao contem (recursivamente) uma chamada a uma
-    fonte de taint ou referencia uma variavel ja marcada como tainted."""
+    """True if the expression contains (recursively) a call to a
+    taint source or references a variable already marked as tainted."""
     for n in _walk(expr):
         if isinstance(n, CallExpr) and n.callee in _TAINT_SOURCES:
             return True
@@ -109,8 +109,8 @@ def _expr_is_tainted(expr: Any, tainted: Set[str]) -> bool:
 
 
 def _compute_taint(program) -> Set[str]:
-    """Conjunto de nomes de variaveis que podem receber dado nao
-    confiavel, por fixpoint monotonico sobre o programa inteiro."""
+    """Set of variable names that can receive untrusted data
+    , via monotonic fixpoint over the entire program."""
     tainted: Set[str] = set()
     changed = True
     while changed:
@@ -130,10 +130,10 @@ def _compute_taint(program) -> Set[str]:
     return tainted
 
 
-# ── walker generico sobre nós dataclass ─────────────────────
+# ── generic walker over dataclass nodes ─────────────────────
 
 def _walk(node: Any):
-    """Gera todos os nós Node contidos em 'node' (recursivo)."""
+    """Yields all Node elements contained in 'node' (recursive)."""
     if isinstance(node, Node):
         yield node
         for f in fields(node):
@@ -143,7 +143,7 @@ def _walk(node: Any):
             yield from _walk(item)
 
 
-# ── regras ──────────────────────────────────────────────────
+# ── rules ──────────────────────────────────────────────────
 
 def audit_ast(program) -> List[Finding]:
     findings: List[Finding] = []
@@ -151,108 +151,108 @@ def audit_ast(program) -> List[Finding]:
     n_foreign = 0
     used_input = False
 
-    # taint: nomes de variaveis que podem carregar dado nao confiavel
+    # taint: variable names that can carry untrusted data
     tainted = _compute_taint(program)
 
     for node in _walk(program):
-        # Blocos de linguagem estrangeira: superficie de injecao,
-        # ignoram totalmente a instrumentacao de seguranca do Cryo.
+        # Foreign language blocks: injection surface,
+        # completely ignore Cryo's security instrumentation.
         if isinstance(node, ForeignBlock):
             n_foreign += 1
             findings.append(Finding(
-                'ALTO', 'foreign-block',
-                f"Bloco estrangeiro >{node.lang}< embute código não verificado "
-                f"pelo compilador — revise manualmente."))
+                'HIGH', 'foreign-block',
+                f"Foreign block >{node.lang}< embeds unverified code "
+                f"by the compiler — review manually."))
 
-        # Blocos 'unsafe': desligam checagens de overflow/divisao.
+        # Unsafe blocks: turn off overflow/division checks.
         if isinstance(node, SafetyBlock) and not node.safe:
             n_unsafe += 1
             findings.append(Finding(
-                'MEDIO', 'unsafe-block',
-                "Bloco 'unsafe' desativa a instrumentação de segurança "
-                "(overflow, divisão por zero)."))
+                'MEDIUM', 'unsafe-block',
+                "Unsafe block disables security instrumentation "
+                "(overflow, division by zero)."))
 
-        # Dependencias externas.
+        # External dependencies.
         if isinstance(node, Library):
             findings.append(Finding(
-                'BAIXO', 'external-lib',
-                f"Dependência externa 'library >{node.name}<' — confie na origem."))
+                'LOW', 'external-lib',
+                f"External dependency 'library >{node.name}<' — trust the origin."))
         if isinstance(node, Import):
             findings.append(Finding(
-                'BAIXO', 'foreign-import',
-                f"Import de runtime estrangeiro >{node.lang}<."))
+                'LOW', 'foreign-import',
+                f"Foreign runtime import >{node.lang}<."))
 
-        # Divisao/modulo por literal zero (erro estatico obvio).
+        # Division/modulo by literal zero (obvious static error).
         if isinstance(node, BinaryExpr) and node.op in ('/', '%'):
             r = node.right
             if isinstance(r, Literal) and r.kind in ('int', 'float') \
                     and float(r.value) == 0.0:
                 findings.append(Finding(
-                    'ALTO', 'div-by-zero',
-                    f"Divisão/módulo por zero literal ('{node.op} 0')."))
+                    'HIGH', 'div-by-zero',
+                    f"Division/modulo by literal zero ('{node.op} 0')."))
 
-        # Entrada externa nao confiavel.
+        # Untrusted external input.
         if isinstance(node, CallExpr) and node.callee in (
                 'input', 'input_int', 'input_num'):
             used_input = True
 
-        # Operacoes sensiveis (maquina / rede / LLM) — superficie de risco.
+        # Sensitive operations (machine / network / LLM) — risk surface.
         if isinstance(node, CallExpr) and node.callee in _SENSITIVE:
             level, rule, msg = _SENSITIVE[node.callee]
             findings.append(Finding(level, rule, msg))
 
-        # Fluxo de taint: dado nao confiavel chegando a um sink perigoso.
+        # Taint flow: untrusted data reaching a dangerous sink.
         if isinstance(node, CallExpr) and node.callee in _TAINT_SINKS:
             argi, level, rule, msg = _TAINT_SINKS[node.callee]
             if argi < len(node.args) and _expr_is_tainted(node.args[argi], tainted):
                 findings.append(Finding(level, rule, msg))
 
-        # Segredos embutidos no codigo-fonte.
+        # Hardcoded secrets in the source code.
         if isinstance(node, (VarDecl, ConstDecl)):
             val = getattr(node, 'value', None)
             if isinstance(val, Literal) and val.kind == 'string':
                 sval = str(val.value)
                 if _SECRET_VALUE.search(sval):
                     findings.append(Finding(
-                        'ALTO', 'hardcoded-secret',
-                        "Segredo embutido no código-fonte (formato de chave "
-                        "reconhecido) — mova para variável de ambiente/secret."))
+                        'HIGH', 'hardcoded-secret',
+                        "Hardcoded secret in the source code (recognized key format) "
+                        "— move to environment variable/secret."))
                 elif sval and _SECRET_NAME.search(node.name):
                     findings.append(Finding(
-                        'MEDIO', 'hardcoded-secret',
-                        f"Possível segredo embutido em '{node.name}' — evite "
-                        f"credenciais no código; use variável de ambiente."))
+                        'MEDIUM', 'hardcoded-secret',
+                        f"Possible hardcoded secret in '{node.name}' — avoid "
+                        f"credentials in code; use environment variables."))
 
     if used_input:
         findings.append(Finding(
-            'BAIXO', 'untrusted-input',
-            "Uso de input(): trate os dados externos como não confiáveis "
-            "(valide faixas, tamanhos e formatos)."))
+            'LOW', 'untrusted-input',
+            "Use of input(): treat external data as untrusted "
+            "(validate ranges, sizes and formats)."))
 
     return findings
 
 
 def format_audit(findings: List[Finding], src: str) -> str:
-    order = {'ALTO': 0, 'MEDIO': 1, 'BAIXO': 2}
+    order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
     findings = sorted(findings, key=lambda f: order.get(f.level, 3))
-    icon = {'ALTO': '⛔', 'MEDIO': '⚠️ ', 'BAIXO': 'ℹ️ '}
+    icon = {'HIGH': '⛔', 'MEDIUM': '⚠️ ', 'LOW': 'ℹ️ '}
     lines = [
         "",
-        "╔══ Auditoria de Segurança Cryo ═══════════════════════",
-        f"║ Fonte: {src}",
-        f"║ Achados: {len(findings)}",
+        "╔══ Cryo Security Audit ═══════════════════════",
+        f"║ Source: {src}",
+        f"║ Findings: {len(findings)}",
         "╚══════════════════════════════════════════════════════",
     ]
     if not findings:
-        lines.append("  ✓ Nenhum padrão de risco detectado.")
+        lines.append("  ✓ No risk pattern detected.")
     else:
         for f in findings:
             lines.append(f"  {icon.get(f.level, '')} [{f.level}] {f.rule}")
             lines.append(f"        {f.message}")
-    n_alto  = sum(1 for f in findings if f.level == 'ALTO')
-    n_medio = sum(1 for f in findings if f.level == 'MEDIO')
+    n_alto  = sum(1 for f in findings if f.level == 'HIGH')
+    n_medio = sum(1 for f in findings if f.level == 'MEDIUM')
     lines.append("")
-    lines.append(f"  Resumo: {n_alto} ALTO · {n_medio} MEDIO · "
-                 f"{len(findings) - n_alto - n_medio} BAIXO")
+    lines.append(f"  Summary: {n_alto} HIGH · {n_medio} MEDIUM · "
+                 f"{len(findings) - n_alto - n_medio} LOW")
     lines.append("")
     return '\n'.join(lines)

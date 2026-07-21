@@ -11,7 +11,7 @@
 
 struct Resposta { bool ok; string origem; }
 
-string url = "https://example.com";
+string url = "https://example.with";
 print("GET ${url}");
 
 sleep(20);                       // pequeno atraso (ex.: backoff)
@@ -25,6 +25,6 @@ print("ok?    ${r.ok}");
 print("origem ${r.origem}");
 
 // invalid domain -> empty body (fail-soft, like on the go backend)
-string vazio = http_get("http://dominio-inexistente-xyz.invalid");
-assert(len(vazio) == 0, "esperado corpo vazio offline");
-print("http nativo ok na VM Pyro");
+string empty = http_get("http://dominio-inexistente-xyz.invalid");
+assert(len(empty) == 0, "esperado corpo empty offline");
+print("http nativo ok in the VM Pyro");

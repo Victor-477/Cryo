@@ -1,16 +1,16 @@
 # ============================================================
-#  Cryo — Formatador canônico (cryoc fmt)
+#  Cryo — Canonical formatter (cryoc fmt)
 #
-#  Reindenta o código a 4 espaços conforme a profundidade de
-#  chaves/colchetes/parênteses, ignorando strings e comentários,
-#  e deixando blocos estrangeiros (>Lang( ... )) e comentários de
-#  bloco verbatim. Remove espaço em branco à direita, garante uma
-#  única linha em branco entre blocos e uma quebra final.
+#  Reindents the code to 4 spaces according to the depth of
+#  braces/brackets/parentheses, ignoring strings and comments,
+#  and leaving foreign blocks (>Lang( ... )) and block comments
+#  verbatim. Removes trailing whitespace, ensures a
+#  single blank line between blocks and a final newline.
 #
-#  Segurança: o formatador SÓ mexe em espaço em branco. Após
-#  formatar, ele confere que o fluxo de tokens é idêntico ao do
-#  original; se não for (algum caso não previsto), devolve o texto
-#  original sem alterações — nunca muda o significado do programa.
+#  Security: the formatter ONLY changes whitespace. After
+#  formatting, it checks that the token stream is identical to the
+#  original; if not (some unforeseen case), it returns the original
+#  text unchanged — never changes the meaning of the program.
 # ============================================================
 import sys
 
@@ -20,10 +20,10 @@ _INDENT = "    "
 
 
 def _scan(line, in_comment):
-    """Analisa uma linha (fora de comentário de bloco): devolve
-    (net, starts_closer, still_in_comment, foreign_delta), pulando
-    strings e comentários. `net` = variação de profundidade; `foreign`
-    detecta abertura de >Lang( que não fecha na linha."""
+    """Analyzes a line (outside block comment): returns
+    (net, starts_closer, still_in_comment, foreign_delta), skipping
+    strings and comments. `net` = depth variation; `foreign`
+    detects opening of >Lang( that doesn't close on the line."""
     i, n = 0, len(line)
     net = 0
     lstr = line.lstrip()
@@ -39,7 +39,7 @@ def _scan(line, in_comment):
             i += 1
             continue
         if c == '/' and i + 1 < n and line[i + 1] == '/':
-            break                                   # comentário de linha
+            break                                   # line comment
         if c == '/' and i + 1 < n and line[i + 1] == '*':
             in_comment = True
             i += 2
@@ -56,7 +56,7 @@ def _scan(line, in_comment):
                     break
                 i += 1
             continue
-        # bloco estrangeiro: >Lang(
+        # foreign block: >Lang(
         if c == '>' and i + 1 < n and (line[i + 1].isalpha() or line[i + 1] == '_'):
             j = i + 1
             while j < n and (line[j].isalnum() or line[j] == '_'):
@@ -78,14 +78,14 @@ def format_source(text: str) -> str:
     out = []
     depth = 0
     in_comment = False
-    in_foreign = 0          # profundidade de parênteses dentro de >Lang( ... )
+    in_foreign = 0          # depth of parentheses inside >Lang( ... )
     prev_blank = False
 
     for raw in lines:
         line = raw.rstrip()
         s = line.strip()
 
-        # dentro de bloco estrangeiro: verbatim até fechar os parênteses
+        # inside foreign block: verbatim until parentheses close
         if in_foreign:
             out.append(line)
             for c in line:
@@ -98,7 +98,7 @@ def format_source(text: str) -> str:
             prev_blank = False
             continue
 
-        # dentro de comentário de bloco: verbatim
+        # inside block comment: verbatim
         if in_comment:
             out.append(line)
             _, _, in_comment, _ = _scan(line, True)
@@ -120,9 +120,9 @@ def format_source(text: str) -> str:
         depth = max(0, depth + net)
         in_comment = next_comment
         if foreign > 0:
-            in_foreign = foreign   # abriu um bloco estrangeiro multi-linha
+            in_foreign = foreign   # opened a multi-line foreign block
 
-    # colapsa linhas em branco finais e garante uma quebra ao fim
+    # collapses trailing blank lines and ensures a newline at the end
     while out and out[-1] == '':
         out.pop()
     return '\n'.join(out) + '\n'
@@ -134,8 +134,8 @@ def _tokens(text):
 
 
 def _safe_format(text: str):
-    """Formata; devolve (texto_formatado, ok). Se a formatação mudaria
-    os tokens (caso não previsto), devolve o original e ok=False."""
+    """Formats; returns (formatted_text, ok). If formatting would change
+    the tokens (unforeseen case), returns the original and ok=False."""
     try:
         formatted = format_source(text)
         if _tokens(text) == _tokens(formatted):
@@ -159,27 +159,27 @@ def main(argv=None):
         elif a == '--check':
             check = True
         elif a in ('-h', '--help'):
-            print("uso: cryoc fmt <arquivo.cryo>... [--write] [--check]")
+            print("usage: cryoc fmt <file.cryo>... [--write] [--check]")
             return 0
         else:
             files.append(a)
     if not files:
-        print("cryoc fmt: nenhum arquivo informado", file=sys.stderr)
+        print("cryoc fmt: no file provided", file=sys.stderr)
         return 2
 
     import os
     rc = 0
     for f in files:
         if not os.path.isfile(f):
-            print(f"cryoc fmt: arquivo não encontrado: {f}", file=sys.stderr)
+            print(f"cryoc fmt: file not found: {f}", file=sys.stderr)
             rc = 2
             continue
         with open(f, 'r', encoding='utf-8') as fh:
             src = fh.read()
         formatted, ok = _safe_format(src)
         if not ok:
-            print(f"cryoc fmt: {f} não foi formatado com segurança "
-                  f"(sintaxe inválida ou caso não suportado); mantido intacto",
+            print(f"cryoc fmt: {f} was not safely formatted "
+                  f"(invalid syntax or unsupported case); kept intact",
                   file=sys.stderr)
             rc = max(rc, 1)
             if not (write or check):
@@ -187,13 +187,13 @@ def main(argv=None):
             continue
         if check:
             if formatted != src:
-                print(f"cryoc fmt: {f} não está formatado", file=sys.stderr)
+                print(f"cryoc fmt: {f} is not formatted", file=sys.stderr)
                 rc = max(rc, 1)
         elif write:
             if formatted != src:
                 with open(f, 'w', encoding='utf-8') as fh:
                     fh.write(formatted)
-                print(f"formatado: {f}")
+                print(f"formatted: {f}")
         else:
             sys.stdout.write(formatted)
     return rc

@@ -23,7 +23,7 @@ tool fn buscar_preco(string sku) -> number ={
     return 19.90;
 }
 
-tool fn registrar_pagamento(string cliente, number valor) -> bool ={
+tool fn registrar_pagamento(string cliente, number value) -> bool ={
     return true;
 }
 
@@ -44,7 +44,7 @@ print("== Fatura extraida (vazia sem CRYO_LLM_URL) ==");
 print("cliente:"); print(f.cliente);
 print("total:");   print(f.total);
 
-// Raw call (simple completion), no schema
-string resposta = llm("gpt-x", "Resuma em uma frase: Cryo compila para Pyro");
+// Raw call (simple completion), in the schema
+string resposta = llm("gpt-x", "Resuma in uma frase: Cryo compila for Pyro");
 print("== Completion cru (len) ==");
 print(len(resposta) >= 0);
