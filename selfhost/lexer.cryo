@@ -1,0 +1,201 @@
+// ============================================================
+//  Cryo self-hosting — Lexer escrito em Cryo (Fase 9.3, estágio 1)
+//
+//  Tokeniza um subconjunto de Cryo e imprime um token por linha no
+//  formato "TIPO valor", espelhando os nomes de TokenType do lexer
+//  de referência (cryo/lexer.py). Compila para .pyro (via burnout)
+//  e roda na VM Pyro — o primeiro estágio do compilador Cryo→Pyro
+//  escrito na própria linguagem.
+//
+//  Subconjunto coberto: espaços, comentários // e /* */, palavras-
+//  chave e tipos, identificadores, inteiros e floats decimais,
+//  strings ("..."), e os operadores/pontuação mais comuns.
+// ============================================================
+
+// classificação de caracteres (via NATIVE contains, sem depender de
+// comparação relacional de strings)
+fn isDigit(string c) -> bool ={
+    if (c == "") { return false; }
+    return contains("0123456789", c);
+}
+
+fn isAlpha(string c) -> bool ={
+    if (c == "") { return false; }
+    return contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c);
+}
+
+fn isAlnum(string c) -> bool ={
+    return isAlpha(c) || isDigit(c);
+}
+
+fn isSpace(string c) -> bool ={
+    return c == " " || c == "\t" || c == "\n";
+}
+
+// palavra -> nome do TokenType (ou "IDENT")
+fn kw(string s) -> string ={
+    if (s == "fn")       { return "FN"; }
+    if (s == "return")   { return "RETURN"; }
+    if (s == "import")   { return "IMPORT"; }
+    if (s == "library")  { return "LIBRARY"; }
+    if (s == "if")       { return "IF"; }
+    if (s == "else")     { return "ELSE"; }
+    if (s == "for")      { return "FOR"; }
+    if (s == "while")    { return "WHILE"; }
+    if (s == "null")     { return "NULL"; }
+    if (s == "struct")   { return "STRUCT"; }
+    if (s == "enum")     { return "ENUM"; }
+    if (s == "const")    { return "CONST"; }
+    if (s == "new")      { return "NEW"; }
+    if (s == "try")      { return "TRY"; }
+    if (s == "catch")    { return "CATCH"; }
+    if (s == "finally")  { return "FINALLY"; }
+    if (s == "break")    { return "BREAK"; }
+    if (s == "continue") { return "CONTINUE"; }
+    if (s == "switch")   { return "SWITCH"; }
+    if (s == "case")     { return "CASE"; }
+    if (s == "default")  { return "DEFAULT"; }
+    if (s == "assert")   { return "ASSERT"; }
+    if (s == "safe")     { return "SAFE"; }
+    if (s == "unsafe")   { return "UNSAFE"; }
+    if (s == "do")       { return "DO"; }
+    if (s == "in")       { return "IN"; }
+    if (s == "map")      { return "MAP"; }
+    if (s == "as")       { return "AS"; }
+    if (s == "skill")    { return "SKILL"; }
+    if (s == "spawn")    { return "SPAWN"; }
+    if (s == "await")    { return "AWAIT"; }
+    if (s == "future")   { return "FUTURE"; }
+    if (s == "schema")   { return "SCHEMA"; }
+    if (s == "tool")     { return "TOOL"; }
+    if (s == "match")    { return "MATCH"; }
+    if (s == "int")      { return "TYPE_INT"; }
+    if (s == "number")   { return "TYPE_NUMBER"; }
+    if (s == "string")   { return "TYPE_STRING"; }
+    if (s == "bool")     { return "TYPE_BOOL"; }
+    if (s == "void")     { return "TYPE_VOID"; }
+    if (s == "true")     { return "BOOL_LIT"; }
+    if (s == "false")    { return "BOOL_LIT"; }
+    return "IDENT";
+}
+
+fn emit(string typ, string val) -> void ={
+    print(typ + " " + val);
+}
+
+// tokeniza src e imprime "TIPO valor" por linha, terminando em "EOF "
+fn tokenize(string src) -> void ={
+    int n = len(src);
+    int i = 0;
+    while (i < n) {
+        string c = src[i];
+
+        // espaços em branco
+        if (isSpace(c)) { i = i + 1; continue; }
+
+        // caractere seguinte (lookahead)
+        string d = "";
+        if (i + 1 < n) { d = src[i + 1]; }
+
+        // comentário de linha
+        if (c == "/" && d == "/") {
+            i = i + 2;
+            while (i < n && src[i] != "\n") { i = i + 1; }
+            continue;
+        }
+        // comentário de bloco
+        if (c == "/" && d == "*") {
+            i = i + 2;
+            while (i + 1 < n && !(src[i] == "*" && src[i + 1] == "/")) { i = i + 1; }
+            i = i + 2;
+            continue;
+        }
+
+        // string literal
+        if (c == "\"") {
+            i = i + 1;
+            string s = "";
+            while (i < n && src[i] != "\"") {
+                if (src[i] == "\\" && i + 1 < n) {
+                    string e = src[i + 1];
+                    if (e == "n")       { s = s + "\n"; }
+                    else if (e == "t")  { s = s + "\t"; }
+                    else if (e == "\"") { s = s + "\""; }
+                    else if (e == "\\") { s = s + "\\"; }
+                    else                { s = s + e; }
+                    i = i + 2;
+                } else {
+                    s = s + src[i];
+                    i = i + 1;
+                }
+            }
+            i = i + 1;   // aspa final
+            emit("STR_LIT", s);
+            continue;
+        }
+
+        // número (int ou float decimal)
+        if (isDigit(c)) {
+            int start = i;
+            while (i < n && isDigit(src[i])) { i = i + 1; }
+            bool isFloat = false;
+            if (i < n && src[i] == ".") {
+                if (i + 1 < n && isDigit(src[i + 1])) {
+                    isFloat = true;
+                    i = i + 1;
+                    while (i < n && isDigit(src[i])) { i = i + 1; }
+                }
+            }
+            string num = substr(src, start, i - start);
+            if (isFloat) { emit("FLOAT_LIT", num); }
+            else         { emit("INT_LIT", num); }
+            continue;
+        }
+
+        // identificador / palavra-chave
+        if (isAlpha(c)) {
+            int start = i;
+            while (i < n && isAlnum(src[i])) { i = i + 1; }
+            string word = substr(src, start, i - start);
+            emit(kw(word), word);
+            continue;
+        }
+
+        // operadores de dois caracteres
+        if (c == "=" && d == "{") { emit("BODY_ASSIGN", "={"); i = i + 2; continue; }
+        if (c == "-" && d == ">") { emit("ARROW", "->");       i = i + 2; continue; }
+        if (c == "=" && d == "=") { emit("EQ", "==");          i = i + 2; continue; }
+        if (c == "!" && d == "=") { emit("NEQ", "!=");         i = i + 2; continue; }
+        if (c == "<" && d == "=") { emit("LEQ", "<=");         i = i + 2; continue; }
+        if (c == ">" && d == "=") { emit("GEQ", ">=");         i = i + 2; continue; }
+        if (c == "&" && d == "&") { emit("AND", "&&");         i = i + 2; continue; }
+        if (c == "|" && d == "|") { emit("OR", "||");          i = i + 2; continue; }
+        if (c == "+" && d == "+") { emit("PLUS_PLUS", "++");   i = i + 2; continue; }
+        if (c == "-" && d == "-") { emit("MINUS_MINUS", "--"); i = i + 2; continue; }
+
+        // operadores/pontuação de um caractere
+        if (c == "+") { emit("PLUS", "+");       i = i + 1; continue; }
+        if (c == "-") { emit("MINUS", "-");      i = i + 1; continue; }
+        if (c == "*") { emit("STAR", "*");       i = i + 1; continue; }
+        if (c == "/") { emit("SLASH", "/");      i = i + 1; continue; }
+        if (c == "%") { emit("PERCENT", "%");    i = i + 1; continue; }
+        if (c == "=") { emit("ASSIGN", "=");     i = i + 1; continue; }
+        if (c == "<") { emit("LT", "<");         i = i + 1; continue; }
+        if (c == ">") { emit("GT", ">");         i = i + 1; continue; }
+        if (c == "!") { emit("NOT", "!");        i = i + 1; continue; }
+        if (c == "(") { emit("LPAREN", "(");     i = i + 1; continue; }
+        if (c == ")") { emit("RPAREN", ")");     i = i + 1; continue; }
+        if (c == "{") { emit("LBRACE", "{");     i = i + 1; continue; }
+        if (c == "}") { emit("RBRACE", "}");     i = i + 1; continue; }
+        if (c == "[") { emit("LBRACKET", "[");   i = i + 1; continue; }
+        if (c == "]") { emit("RBRACKET", "]");   i = i + 1; continue; }
+        if (c == ";") { emit("SEMICOLON", ";");  i = i + 1; continue; }
+        if (c == ",") { emit("COMMA", ",");      i = i + 1; continue; }
+        if (c == ":") { emit("COLON", ":");      i = i + 1; continue; }
+        if (c == ".") { emit("DOT", ".");        i = i + 1; continue; }
+
+        // desconhecido: ignora
+        i = i + 1;
+    }
+    emit("EOF", "");
+}
