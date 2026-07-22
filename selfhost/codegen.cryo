@@ -130,9 +130,43 @@ fn funcIndexOf(string[] fns, string name) -> int ={
 }
 
 // ── expression codegen (leaves the value on the VM stack) ────
-//  precedence: ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
+//  precedence: || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
 fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgOr(tt, tv, pos, code, cp, sl, fns);
+}
+// logical OR with short-circuit (mirrors reference codegen_pyro):
+//   <a> JMPT T; <b> JMPT T; FALSE; JMP E; T: TRUE; E:
+fn cgOr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgAnd(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "OR") {
+        cadv(pos);
+        int jT1 = emJmp(code, 50);          // JMPT -> l_true (consumes left)
+        cgAnd(tt, tv, pos, code, cp, sl, fns);
+        int jT2 = emJmp(code, 50);          // JMPT -> l_true (consumes right)
+        code.push(3);                       // FALSE
+        int jEnd = emJmp(code, 48);         // JMP -> l_end
+        patchI32(code, jT1, len(code) - (jT1 + 4));
+        patchI32(code, jT2, len(code) - (jT2 + 4));
+        code.push(2);                       // l_true: TRUE
+        patchI32(code, jEnd, len(code) - (jEnd + 4));   // l_end:
+    }
+}
+// logical AND with short-circuit:
+//   <a> JMPF F; <b> JMPF F; TRUE; JMP E; F: FALSE; E:
+fn cgAnd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     cgEq(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "AND") {
+        cadv(pos);
+        int jF1 = emJmp(code, 49);          // JMPF -> l_false (consumes left)
+        cgEq(tt, tv, pos, code, cp, sl, fns);
+        int jF2 = emJmp(code, 49);          // JMPF -> l_false (consumes right)
+        code.push(2);                       // TRUE
+        int jEnd = emJmp(code, 48);         // JMP -> l_end
+        patchI32(code, jF1, len(code) - (jF1 + 4));
+        patchI32(code, jF2, len(code) - (jF2 + 4));
+        code.push(3);                       // l_false: FALSE
+        patchI32(code, jEnd, len(code) - (jEnd + 4));   // l_end:
+    }
 }
 fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     cgCmp(tt, tv, pos, code, cp, sl, fns);
@@ -186,6 +220,17 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
     if (t == "INT_LIT") {
         int v = to_int(cpv(tv, pos)); cadv(pos);
         emConst(code, addInt(cp, v));
+        return;
+    }
+    if (t == "STR_LIT") {
+        string sv = cpv(tv, pos); cadv(pos);
+        emConst(code, addStr(cp, sv));         // TAG_STR pool constant
+        return;
+    }
+    if (t == "BOOL_LIT") {
+        string bv = cpv(tv, pos); cadv(pos);
+        if (bv == "true") { code.push(2); }    // OP_TRUE
+        else              { code.push(3); }    // OP_FALSE
         return;
     }
     if (t == "IDENT") {
@@ -279,15 +324,17 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
-    // int x = expr;   (subset: only 'int')
-    if (t == "TYPE_INT") {
+    // T x = expr;   (T = int | string | bool | number — value is dynamic in the VM)
+    if (t == "TYPE_INT" || t == "TYPE_STRING" || t == "TYPE_BOOL" || t == "TYPE_NUMBER") {
         cadv(pos);
         string name = cpv(tv, pos); cadv(pos);
         if (cpt(tt, pos) == "ASSIGN") {
             cadv(pos);
             cgExpr(tt, tv, pos, code, cp, sl, fns);
+        } else if (t == "TYPE_INT") {
+            emConst(code, addInt(cp, 0));      // default int 0
         } else {
-            emConst(code, addInt(cp, 0));
+            code.push(4);                      // default OP_NULL
         }
         emStore(code, slotOf(sl, name));
         if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
