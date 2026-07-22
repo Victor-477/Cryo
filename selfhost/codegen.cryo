@@ -225,6 +225,62 @@ fn skipType(string[] tt, int[] pos) -> void ={
     }
     if (cpt(tt, pos) == "QUESTION") { cadv(pos); }   // optional ?
 }
+// short variant name: the segment after the last '_' (mirrors split('_')[-1])
+fn lastSeg(string s) -> string ={
+    int i = len(s) - 1;
+    while (i >= 0) {
+        if (s[i] == "_") { return substr(s, i + 1, len(s) - i - 1); }
+        i = i - 1;
+    }
+    return s;
+}
+// scans enum declarations; appends each variant's short name, prefixed name
+// (Enum_Variant) and arity (number of data fields) to the parallel arrays.
+fn scanEnums(string[] tt, string[] tv, string[] vShort, string[] vPref, int[] vArity) -> void ={
+    int i = 0;
+    while (i < len(tt)) {
+        if (tt[i] == "ENUM" && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
+            string ename = tv[i + 1];
+            int j = i + 2;
+            if (j < len(tt) && tt[j] == "LBRACE") {
+                j = j + 1;
+                while (j < len(tt) && tt[j] != "RBRACE") {
+                    if (tt[j] == "IDENT") {
+                        string vname = tv[j];
+                        j = j + 1;
+                        int arity = 0;
+                        if (j < len(tt) && tt[j] == "LPAREN") {
+                            j = j + 1;
+                            if (j < len(tt) && tt[j] == "RPAREN") {
+                                arity = 0; j = j + 1;
+                            } else {
+                                int depth = 1;
+                                int topCommas = 0;
+                                while (j < len(tt) && depth > 0) {
+                                    string x = tt[j];
+                                    if (x == "LPAREN" || x == "LT" || x == "LBRACKET") { depth = depth + 1; }
+                                    else if (x == "RPAREN" || x == "GT" || x == "RBRACKET") { depth = depth - 1; }
+                                    else if (x == "COMMA" && depth == 1) { topCommas = topCommas + 1; }
+                                    j = j + 1;
+                                }
+                                arity = topCommas + 1;
+                            }
+                        }
+                        vShort.push(vname);
+                        vPref.push(ename + "_" + vname);
+                        vArity.push(arity);
+                        if (j < len(tt) && tt[j] == "COMMA") { j = j + 1; }
+                    } else {
+                        j = j + 1;
+                    }
+                }
+            }
+            i = j;
+        } else {
+            i = i + 1;
+        }
+    }
+}
 
 // ── expression codegen (leaves the value on the VM stack) ────
 //  precedence: || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
@@ -650,6 +706,67 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         }
         return;
     }
+    // match subj { Pattern(vars) => body   ...   _ => body }
+    // enum value = map { tag: "Variant", val0: ..., ... }; arms check tag then destructure.
+    if (t == "MATCH") {
+        cadv(pos);                                  // 'match'
+        cgExpr(tt, tv, pos, code, cp, sl, fns);     // subject (no parens)
+        int mSlot = slotOf(sl, "__match" + to_string(len(code)));
+        emStore(code, mSlot);
+        if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
+        int[] endJ = [];
+        int prevMiss = -1;                          // position of prev arm's JMPF (-1 = none)
+        while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+            if (prevMiss >= 0) {
+                patchI32(code, prevMiss, len(code) - (prevMiss + 4));   // prev arm miss -> here
+                prevMiss = -1;
+            }
+            string pat = cpv(tv, pos); cadv(pos);   // pattern name (or '_')
+            string[] pvars = [];
+            if (cpt(tt, pos) == "LPAREN") {
+                cadv(pos);
+                while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
+                    pvars.push(cpv(tv, pos)); cadv(pos);
+                    if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+                }
+                if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            }
+            if (cpt(tt, pos) == "FAT_ARROW") { cadv(pos); }
+            if (pat != "_") {                       // '_' matches unconditionally
+                emLoad(code, mSlot);
+                emConst(code, addStr(cp, "tag"));
+                code.push(98);                      // INDEX  -> subj["tag"]
+                emConst(code, addStr(cp, lastSeg(pat)));
+                code.push(32);                      // EQ
+                prevMiss = emJmp(code, 49);         // JMPF -> next arm
+                int vi = 0;
+                while (vi < len(pvars)) {           // destructure: var = subj["val{i}"]
+                    emLoad(code, mSlot);
+                    emConst(code, addStr(cp, "val" + to_string(vi)));
+                    code.push(98);                  // INDEX
+                    emStore(code, slotOf(sl, pvars[vi]));
+                    vi = vi + 1;
+                }
+            }
+            if (cpt(tt, pos) == "LBRACE") {
+                cgBlock(tt, tv, pos, code, cp, sl, fns);
+            } else {
+                cgStmt(tt, tv, pos, code, cp, sl, fns);
+            }
+            int je = emJmp(code, 48);               // JMP -> match end
+            endJ.push(je);
+        }
+        if (prevMiss >= 0) {                         // last arm miss -> end
+            patchI32(code, prevMiss, len(code) - (prevMiss + 4));
+        }
+        if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+        int ej = 0;
+        while (ej < len(endJ)) {
+            patchI32(code, endJ[ej], len(code) - (endJ[ej] + 4));
+            ej = ej + 1;
+        }
+        return;
+    }
     // struct/enum declarations are types only (structs are dynamic maps) — skip the body
     if (t == "STRUCT" || t == "ENUM") {
         cadv(pos);                              // STRUCT/ENUM
@@ -795,7 +912,8 @@ fn compile(string src, string outPath) -> bool ={
     string[] tv = [];
     lex(src, tt, tv);
 
-    // pre-scan: function names (source order) + 'main' last
+    // pre-scan: user function names (source order), then enum variant
+    // constructors (short + prefixed per variant), then 'main' last.
     string[] fns = [];
     int i = 0;
     while (i < len(tt)) {
@@ -803,6 +921,16 @@ fn compile(string src, string outPath) -> bool ={
             fns.push(tv[i + 1]);
         }
         i = i + 1;
+    }
+    string[] vShort = [];
+    string[] vPref = [];
+    int[] vArity = [];
+    scanEnums(tt, tv, vShort, vPref, vArity);
+    int vn = 0;
+    while (vn < len(vShort)) {
+        fns.push(vShort[vn]);
+        fns.push(vPref[vn]);
+        vn = vn + 1;
     }
     fns.push("main");
 
@@ -824,7 +952,28 @@ fn compile(string src, string outPath) -> bool ={
         }
     }
     mcode.push(4); mcode.push(65);          // NULL; RET (end of main)
-    int mainEntry = len(fcode);             // main comes after the user functions
+    // emit enum variant constructors after the user functions:
+    //   Variant(val0, ...) -> { tag: "Variant", val0: ..., ... }
+    int cv = 0;
+    while (cv < len(vShort)) {
+        int ar = vArity[cv];
+        int entry = len(fcode);
+        emConst(fcode, addStr(cp, "tag"));
+        emConst(fcode, addStr(cp, vShort[cv]));      // tag value = short variant name
+        int vp = 0;
+        while (vp < ar) {
+            emConst(fcode, addStr(cp, "val" + to_string(vp)));
+            emLoad(fcode, vp);                       // param slot vp
+            vp = vp + 1;
+        }
+        fcode.push(97); emU16(fcode, ar + 1);        // NEWMAP (tag + ar values)
+        fcode.push(65);                              // RET
+        // two table entries (short + prefixed) share the same code entry
+        fEntry.push(entry); fNParams.push(ar); fNLocals.push(ar); fNameIdx.push(addStr(cp, vShort[cv]));
+        fEntry.push(entry); fNParams.push(ar); fNLocals.push(ar); fNameIdx.push(addStr(cp, vPref[cv]));
+        cv = cv + 1;
+    }
+    int mainEntry = len(fcode);             // main comes after user fns + enum ctors
     int mainName = addStr(cp, "main");
     int nf = len(fns);                       // user functions + main
 

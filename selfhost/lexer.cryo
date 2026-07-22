@@ -179,6 +179,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "=" && d == "{") { pushTok(tt, tv, "BODY_ASSIGN", "={"); i = i + 2; continue; }
         if (c == "-" && d == ">") { pushTok(tt, tv, "ARROW", "->");       i = i + 2; continue; }
         if (c == "=" && d == "=") { pushTok(tt, tv, "EQ", "==");          i = i + 2; continue; }
+        if (c == "=" && d == ">") { pushTok(tt, tv, "FAT_ARROW", "=>");   i = i + 2; continue; }
         if (c == "!" && d == "=") { pushTok(tt, tv, "NEQ", "!=");         i = i + 2; continue; }
         if (c == "<" && d == "=") { pushTok(tt, tv, "LEQ", "<=");         i = i + 2; continue; }
         if (c == ">" && d == "=") { pushTok(tt, tv, "GEQ", ">=");         i = i + 2; continue; }
