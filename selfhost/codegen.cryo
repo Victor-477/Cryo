@@ -135,6 +135,10 @@ fn patchI32(int[] code, int at, int rel) -> void ={
     code[at + 2] = (rel >> 16) & 255;
     code[at + 3] = (rel >> 24) & 255;
 }
+fn patchU16(int[] code, int at, int v) -> void ={
+    code[at]     = v & 255;
+    code[at + 1] = (v >> 8) & 255;
+}
 
 // ── constant pool (tagged: "s"+string | "i"+integer) ───
 fn addStr(string[] cpool, string s) -> int ={
@@ -224,6 +228,15 @@ fn skipType(string[] tt, int[] pos) -> void ={
         cadv(pos); cadv(pos);                   // array suffix []
     }
     if (cpt(tt, pos) == "QUESTION") { cadv(pos); }   // optional ?
+}
+// index of "${" in s at or after `from` (-1 if none) — for string interpolation
+fn findInterp(string s, int from) -> int ={
+    int i = from;
+    while (i + 1 < len(s)) {
+        if (s[i] == "$" && s[i + 1] == "{") { return i; }
+        i = i + 1;
+    }
+    return -1;
 }
 // short variant name: the segment after the last '_' (mirrors split('_')[-1])
 fn lastSeg(string s) -> string ={
@@ -322,11 +335,11 @@ fn cgOr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] s
 // logical AND with short-circuit:
 //   <a> JMPF F; <b> JMPF F; TRUE; JMP E; F: FALSE; E:
 fn cgAnd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
-    cgEq(tt, tv, pos, code, cp, sl, fns);
+    cgCoalesce(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "AND") {
         cadv(pos);
         int jF1 = emJmp(code, 49);          // JMPF -> l_false (consumes left)
-        cgEq(tt, tv, pos, code, cp, sl, fns);
+        cgCoalesce(tt, tv, pos, code, cp, sl, fns);
         int jF2 = emJmp(code, 49);          // JMPF -> l_false (consumes right)
         code.push(2);                       // TRUE
         int jEnd = emJmp(code, 48);         // JMP -> l_end
@@ -334,6 +347,15 @@ fn cgAnd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] 
         patchI32(code, jF2, len(code) - (jF2 + 4));
         code.push(3);                       // l_false: FALSE
         patchI32(code, jEnd, len(code) - (jEnd + 4));   // l_end:
+    }
+}
+// null-coalescing  a ?? b  (binds tighter than && , looser than ==)
+fn cgCoalesce(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgEq(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "NULL_COAL") {
+        cadv(pos);
+        cgEq(tt, tv, pos, code, cp, sl, fns);
+        code.push(116);                     // OP_COALESCE (pop b,a -> a if a!=null else b)
     }
 }
 fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
@@ -386,8 +408,11 @@ fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[
 // postfix chain: index a[i] (OP_INDEX), field a.f (INDEX by name), method a.push(x)
 fn cgPostfix(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     cgPrimary(tt, tv, pos, code, cp, sl, fns);
-    while (cpt(tt, pos) == "LBRACKET" || cpt(tt, pos) == "DOT") {
-        if (cpt(tt, pos) == "LBRACKET") {
+    while (cpt(tt, pos) == "LBRACKET" || cpt(tt, pos) == "DOT" || cpt(tt, pos) == "NOT") {
+        if (cpt(tt, pos) == "NOT") {
+            cadv(pos);
+            code.push(117);                               // OP_UNWRAP (x! : abort if null, else value)
+        } else if (cpt(tt, pos) == "LBRACKET") {
             cadv(pos);
             cgExpr(tt, tv, pos, code, cp, sl, fns);       // index
             if (cpt(tt, pos) == "RBRACKET") { cadv(pos); }
@@ -429,13 +454,54 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
     }
     if (t == "STR_LIT") {
         string sv = cpv(tv, pos); cadv(pos);
-        emConst(code, addStr(cp, sv));         // TAG_STR pool constant
+        int first = findInterp(sv, 0);
+        if (first < 0) {
+            emConst(code, addStr(cp, sv));      // plain string constant
+            return;
+        }
+        // interpolation "a ${e} b" -> lit0 + to_string(e0) + lit1 + ...
+        emConst(code, addStr(cp, substr(sv, 0, first)));   // leading literal (may be "")
+        int j = first;
+        while (j >= 0) {
+            // matching '}' for this "${" (respecting nested braces)
+            int depth = 1;
+            int k = j + 2;
+            while (k < len(sv) && depth > 0) {
+                string ch = sv[k];
+                if (ch == "{")      { depth = depth + 1; }
+                else if (ch == "}") { depth = depth - 1; }
+                k = k + 1;
+            }
+            int fragLen = (k - 1) - (j + 2);
+            if (fragLen < 0) { fragLen = 0; }
+            string frag = substr(sv, j + 2, fragLen);      // expression text
+            string[] ftt = [];
+            string[] ftv = [];
+            lex(frag, ftt, ftv);
+            int[] fp = [0];
+            cgExpr(ftt, ftv, fp, code, cp, sl, fns);        // embedded expression
+            code.push(112); code.push(8); code.push(1);     // NATIVE to_string (id 8, argc 1)
+            code.push(16);                                  // ADD (concat)
+            int j2 = findInterp(sv, k);
+            int litEnd = len(sv);
+            if (j2 >= 0) { litEnd = j2; }
+            int litLen = litEnd - k;
+            if (litLen < 0) { litLen = 0; }
+            emConst(code, addStr(cp, substr(sv, k, litLen)));   // literal after the expr
+            code.push(16);                                  // ADD
+            j = j2;
+        }
         return;
     }
     if (t == "BOOL_LIT") {
         string bv = cpv(tv, pos); cadv(pos);
         if (bv == "true") { code.push(2); }    // OP_TRUE
         else              { code.push(3); }    // OP_FALSE
+        return;
+    }
+    if (t == "NULL") {
+        cadv(pos);
+        code.push(4);                          // OP_NULL
         return;
     }
     if (t == "LBRACKET") {                      // array literal [e, ...]
@@ -767,6 +833,35 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         }
         return;
     }
+    // try { ... } catch (T e) { ... } [finally { ... }]
+    // TRYPUSH(catch, slot); <try>; TRYPOP; JMP finally; catch:<catch>; finally:<finally>
+    if (t == "TRY") {
+        cadv(pos);                                  // 'try'
+        code.push(113);                             // OP_TRYPUSH
+        int relAt = len(code);
+        code.push(0); code.push(0); code.push(0); code.push(0);   // i32 rel (to catch)
+        int slotAt = len(code);
+        code.push(255); code.push(255);             // u16 catch slot (0xFFFF placeholder)
+        cgBlock(tt, tv, pos, code, cp, sl, fns);    // try body
+        code.push(114);                             // OP_TRYPOP
+        int jFin = emJmp(code, 48);                 // JMP -> finally (normal path)
+        patchI32(code, relAt, len(code) - (relAt + 6));   // catch target (after 6-byte operand)
+        if (cpt(tt, pos) == "CATCH") { cadv(pos); }
+        if (cpt(tt, pos) == "LPAREN") {
+            cadv(pos);
+            skipType(tt, pos);                      // catch var type
+            string cname = cpv(tv, pos); cadv(pos); // catch var name
+            if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            patchU16(code, slotAt, slotOf(sl, cname));   // VM stores the thrown value here
+        }
+        cgBlock(tt, tv, pos, code, cp, sl, fns);    // catch body
+        patchI32(code, jFin, len(code) - (jFin + 4));    // finally target
+        if (cpt(tt, pos) == "FINALLY") {
+            cadv(pos);
+            cgBlock(tt, tv, pos, code, cp, sl, fns);
+        }
+        return;
+    }
     // struct/enum declarations are types only (structs are dynamic maps) — skip the body
     if (t == "STRUCT" || t == "ENUM") {
         cadv(pos);                              // STRUCT/ENUM
@@ -807,6 +902,15 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             cgExpr(tt, tv, pos, code, cp, sl, fns);
             if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
             code.push(80);                 // OP_PRINT
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+        // throw(expr);
+        if (name == "throw" && cpt2(tt, pos) == "LPAREN") {
+            cadv(pos); cadv(pos);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
+            if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            code.push(115);                // OP_THROW
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }

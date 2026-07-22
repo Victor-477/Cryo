@@ -185,6 +185,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == ">" && d == "=") { pushTok(tt, tv, "GEQ", ">=");         i = i + 2; continue; }
         if (c == "&" && d == "&") { pushTok(tt, tv, "AND", "&&");         i = i + 2; continue; }
         if (c == "|" && d == "|") { pushTok(tt, tv, "OR", "||");          i = i + 2; continue; }
+        if (c == "?" && d == "?") { pushTok(tt, tv, "NULL_COAL", "??");   i = i + 2; continue; }
         if (c == "+" && d == "+") { pushTok(tt, tv, "PLUS_PLUS", "++");   i = i + 2; continue; }
         if (c == "-" && d == "-") { pushTok(tt, tv, "MINUS_MINUS", "--"); i = i + 2; continue; }
         if (c == "+" && d == "=") { pushTok(tt, tv, "PLUS_ASSIGN", "+=");    i = i + 2; continue; }
