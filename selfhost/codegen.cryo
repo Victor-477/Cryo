@@ -85,6 +85,42 @@ fn emStrConst(int[] out, string s) -> void ={
         i = i + 1;
     }
 }
+// writes a float const to the output buffer: TAG_FLT + 8 bytes IEEE-754 (LE).
+// The VM subset has no bit-level access to a double, so we reconstruct the
+// representation by hand: normalize to [1,2), read the biased exponent, and
+// extract the 52 mantissa bits one at a time. Each step (scale by 2, subtract
+// 1.0) is exact in binary FP, so for any stored double this yields the exact
+// bytes that struct.pack('<d', v) would (matches the reference codegen_pyro).
+fn emFloatConst(int[] out, string numStr) -> void ={
+    out.push(2);                        // TAG_FLT
+    number x = to_number(numStr);
+    int sign = 0;
+    if (x < 0.0) { sign = 1; x = 0.0 - x; }
+    if (x == 0.0) {                     // +0.0 / -0.0
+        int z = 0;
+        while (z < 7) { out.push(0); z = z + 1; }
+        out.push(sign * 128);
+        return;
+    }
+    int exp = 0;
+    while (x >= 2.0) { x = x / 2.0; exp = exp + 1; }
+    while (x < 1.0)  { x = x * 2.0; exp = exp - 1; }
+    int biased = exp + 1023;
+    number frac = x - 1.0;
+    int mant = 0;
+    int bit = 0;
+    while (bit < 52) {
+        frac = frac * 2.0;
+        mant = mant << 1;
+        if (frac >= 1.0) { mant = mant + 1; frac = frac - 1.0; }
+        bit = bit + 1;
+    }
+    // biased (<= 2046) occupies bits 52..62; mant occupies bits 0..51; bit63 = 0.
+    int bits = (biased << 52) + mant;
+    int k = 0;
+    while (k < 7) { out.push((bits >> (8 * k)) & 255); k = k + 1; }
+    out.push(((bits >> 56) & 255) + (sign * 128));   // top byte carries the sign bit
+}
 
 // ── jumps (i32) with backpatching ───────────────────────────
 fn emJmp(int[] code, int op) -> int ={
@@ -107,6 +143,10 @@ fn addStr(string[] cpool, string s) -> int ={
 }
 fn addInt(string[] cpool, int v) -> int ={
     cpool.push("i" + to_string(v));
+    return len(cpool) - 1;
+}
+fn addFloat(string[] cpool, string numStr) -> int ={
+    cpool.push("f" + numStr);          // keep the raw lexeme; decoded at assembly
     return len(cpool) - 1;
 }
 // slot of variable 'name' in the current function (allocated in first-seen order)
@@ -220,6 +260,11 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
     if (t == "INT_LIT") {
         int v = to_int(cpv(tv, pos)); cadv(pos);
         emConst(code, addInt(cp, v));
+        return;
+    }
+    if (t == "FLOAT_LIT") {
+        string fv = cpv(tv, pos); cadv(pos);
+        emConst(code, addFloat(cp, fv));       // TAG_FLT pool constant
         return;
     }
     if (t == "STR_LIT") {
@@ -451,6 +496,7 @@ fn compile(string src, string outPath) -> bool ={
         string e = cp[c];
         string rest = substr(e, 1, len(e) - 1);
         if (e[0] == "s") { emStrConst(out, rest); }
+        else if (e[0] == "f") { emFloatConst(out, rest); }
         else { out.push(1); emI64(out, to_int(rest)); }
         c = c + 1;
     }
