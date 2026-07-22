@@ -594,6 +594,62 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
+    // switch (subj) { case v: ...  case a: case b: ...  default: ... }
+    // No fall-through (each matched body jumps to the end); cases may stack.
+    if (t == "SWITCH") {
+        cadv(pos);                                  // 'switch'
+        if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
+        cgExpr(tt, tv, pos, code, cp, sl, fns);     // subject
+        if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+        int subjSlot = slotOf(sl, "__sw" + to_string(len(code)));
+        emStore(code, subjSlot);
+        if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
+        int[] endJumps = [];                        // body ends -> l_end
+        while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+            if (cpt(tt, pos) == "CASE") {
+                int[] bodyJumps = [];               // stacked `case v:` -> shared body
+                while (cpt(tt, pos) == "CASE") {
+                    cadv(pos);                      // 'case'
+                    emLoad(code, subjSlot);
+                    cgExpr(tt, tv, pos, code, cp, sl, fns);   // value
+                    code.push(32);                  // EQ
+                    int jb = emJmp(code, 50);       // JMPT -> body
+                    bodyJumps.push(jb);
+                    if (cpt(tt, pos) == "COLON") { cadv(pos); }
+                }
+                int jNext = emJmp(code, 48);        // no value matched -> next group
+                int bodyAt = len(code);
+                int bi = 0;
+                while (bi < len(bodyJumps)) {
+                    patchI32(code, bodyJumps[bi], bodyAt - (bodyJumps[bi] + 4));
+                    bi = bi + 1;
+                }
+                while (cpt(tt, pos) != "CASE" && cpt(tt, pos) != "DEFAULT"
+                    && cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+                    cgStmt(tt, tv, pos, code, cp, sl, fns);
+                }
+                int je = emJmp(code, 48);           // JMP -> l_end (break)
+                endJumps.push(je);
+                patchI32(code, jNext, len(code) - (jNext + 4));
+            } else if (cpt(tt, pos) == "DEFAULT") {
+                cadv(pos);                          // 'default'
+                if (cpt(tt, pos) == "COLON") { cadv(pos); }
+                while (cpt(tt, pos) != "CASE" && cpt(tt, pos) != "DEFAULT"
+                    && cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+                    cgStmt(tt, tv, pos, code, cp, sl, fns);   // reached by fall-through
+                }
+            } else {
+                cadv(pos);                          // safety
+            }
+        }
+        if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+        int ei = 0;
+        while (ei < len(endJumps)) {
+            patchI32(code, endJumps[ei], len(code) - (endJumps[ei] + 4));
+            ei = ei + 1;
+        }
+        return;
+    }
     // struct/enum declarations are types only (structs are dynamic maps) — skip the body
     if (t == "STRUCT" || t == "ENUM") {
         cadv(pos);                              // STRUCT/ENUM
