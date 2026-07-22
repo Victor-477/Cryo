@@ -183,6 +183,8 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "!" && d == "=") { pushTok(tt, tv, "NEQ", "!=");         i = i + 2; continue; }
         if (c == "<" && d == "=") { pushTok(tt, tv, "LEQ", "<=");         i = i + 2; continue; }
         if (c == ">" && d == "=") { pushTok(tt, tv, "GEQ", ">=");         i = i + 2; continue; }
+        if (c == "<" && d == "<") { pushTok(tt, tv, "SHL", "<<");         i = i + 2; continue; }
+        if (c == ">" && d == ">") { pushTok(tt, tv, "SHR", ">>");         i = i + 2; continue; }
         if (c == "&" && d == "&") { pushTok(tt, tv, "AND", "&&");         i = i + 2; continue; }
         if (c == "|" && d == "|") { pushTok(tt, tv, "OR", "||");          i = i + 2; continue; }
         if (c == "?" && d == "?") { pushTok(tt, tv, "NULL_COAL", "??");   i = i + 2; continue; }
@@ -200,6 +202,9 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "*") { pushTok(tt, tv, "STAR", "*");       i = i + 1; continue; }
         if (c == "/") { pushTok(tt, tv, "SLASH", "/");      i = i + 1; continue; }
         if (c == "%") { pushTok(tt, tv, "PERCENT", "%");    i = i + 1; continue; }
+        if (c == "&") { pushTok(tt, tv, "AMP", "&");        i = i + 1; continue; }
+        if (c == "|") { pushTok(tt, tv, "PIPE", "|");       i = i + 1; continue; }
+        if (c == "^") { pushTok(tt, tv, "CARET", "^");      i = i + 1; continue; }
         if (c == "=") { pushTok(tt, tv, "ASSIGN", "=");     i = i + 1; continue; }
         if (c == "<") { pushTok(tt, tv, "LT", "<");         i = i + 1; continue; }
         if (c == ">") { pushTok(tt, tv, "GT", ">");         i = i + 1; continue; }

@@ -37,8 +37,14 @@ fn cadv(int[] pos) -> void ={
     pos[0] = pos[0] + 1;
 }
 
-// ── ASCII character code (32..126), via NATIVE find ────
+// ── ASCII character code, via NATIVE find ────
+// Control chars (tab/newline/CR) are OUTSIDE the printable table (32..126),
+// so they must be handled explicitly — otherwise emitting a string constant
+// containing '\t'/'\n' (e.g. isSpace's "\t"/"\n") would fall back to '?' and
+// silently corrupt the constant. This bit self-compilation (the bootstrap).
 fn charCode(string c) -> int ={
+    if (c == "\t") { return 9; }
+    if (c == "\n") { return 10; }
     string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
     int idx = find(tbl, c);
     if (idx < 0) { return 63; }   // '?' for a character outside the table
@@ -349,13 +355,32 @@ fn cgAnd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] 
         patchI32(code, jEnd, len(code) - (jEnd + 4));   // l_end:
     }
 }
-// null-coalescing  a ?? b  (binds tighter than && , looser than ==)
+// null-coalescing  a ?? b  (binds tighter than && , looser than |)
 fn cgCoalesce(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
-    cgEq(tt, tv, pos, code, cp, sl, fns);
+    cgBitOr(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "NULL_COAL") {
         cadv(pos);
-        cgEq(tt, tv, pos, code, cp, sl, fns);
+        cgBitOr(tt, tv, pos, code, cp, sl, fns);
         code.push(116);                     // OP_COALESCE (pop b,a -> a if a!=null else b)
+    }
+}
+// bitwise |, ^, & (precedence: | < ^ < & , all below ?? and above ==)
+fn cgBitOr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgBitXor(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "PIPE") {
+        cadv(pos); cgBitXor(tt, tv, pos, code, cp, sl, fns); code.push(23);   // OP_BOR
+    }
+}
+fn cgBitXor(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgBitAnd(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "CARET") {
+        cadv(pos); cgBitAnd(tt, tv, pos, code, cp, sl, fns); code.push(24);   // OP_BXOR
+    }
+}
+fn cgBitAnd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgEq(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "AMP") {
+        cadv(pos); cgEq(tt, tv, pos, code, cp, sl, fns); code.push(22);       // OP_BAND
     }
 }
 fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
@@ -367,15 +392,24 @@ fn cgEq(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] s
     }
 }
 fn cgCmp(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
-    cgAdd(tt, tv, pos, code, cp, sl, fns);
+    cgShift(tt, tv, pos, code, cp, sl, fns);
     while (cpt(tt, pos) == "LT" || cpt(tt, pos) == "GT"
         || cpt(tt, pos) == "LEQ" || cpt(tt, pos) == "GEQ") {
         string op = cpt(tt, pos); cadv(pos);
-        cgAdd(tt, tv, pos, code, cp, sl, fns);
+        cgShift(tt, tv, pos, code, cp, sl, fns);
         if (op == "LT")       { code.push(34); }
         else if (op == "GT")  { code.push(35); }
         else if (op == "LEQ") { code.push(36); }
         else                  { code.push(37); }
+    }
+}
+// bit shifts <<, >>  (precedence: below comparison, above +)
+fn cgShift(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgAdd(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "SHL" || cpt(tt, pos) == "SHR") {
+        string op = cpt(tt, pos); cadv(pos);
+        cgAdd(tt, tv, pos, code, cp, sl, fns);
+        if (op == "SHL") { code.push(25); } else { code.push(26); }   // OP_SHL / OP_SHR
     }
 }
 fn cgAdd(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
@@ -588,17 +622,30 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
 }
 
 // block '{ ... }' -> statements (consumes '{' and '}')
-fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+fn cgBlock(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns, int[] brk, int[] cont) -> void ={
     if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
-        cgStmt(tt, tv, pos, code, cp, sl, fns);
+        cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);
     }
     if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
 }
 
 // ── statement codegen (inside functions and main) ─────
-fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns, int[] brk, int[] cont) -> void ={
     string t = cpt(tt, pos);
+    // break; / continue;  -> jump to innermost loop end / continue-point (patched by the loop)
+    if (t == "BREAK") {
+        cadv(pos);
+        if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+        int jb = emJmp(code, 48); brk.push(jb);
+        return;
+    }
+    if (t == "CONTINUE") {
+        cadv(pos);
+        if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+        int jc = emJmp(code, 48); cont.push(jc);
+        return;
+    }
     // return [expr] ;
     if (t == "RETURN") {
         cadv(pos);
@@ -619,15 +666,15 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         cgExpr(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
         int jElse = emJmp(code, 49);       // JMPF
-        cgBlock(tt, tv, pos, code, cp, sl, fns);
+        cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);
         if (cpt(tt, pos) == "ELSE") {
             cadv(pos);
             int jEnd = emJmp(code, 48);     // JMP
             patchI32(code, jElse, len(code) - (jElse + 4));
             if (cpt(tt, pos) == "IF") {
-                cgStmt(tt, tv, pos, code, cp, sl, fns);
+                cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);
             } else {
-                cgBlock(tt, tv, pos, code, cp, sl, fns);
+                cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);
             }
             patchI32(code, jEnd, len(code) - (jEnd + 4));
         } else {
@@ -643,10 +690,16 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         cgExpr(tt, tv, pos, code, cp, sl, fns);
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
         int jExit = emJmp(code, 49);       // JMPF
-        cgBlock(tt, tv, pos, code, cp, sl, fns);
+        int[] wbrk = [];
+        int[] wcont = [];
+        cgBlock(tt, tv, pos, code, cp, sl, fns, wbrk, wcont);
         int jBack = emJmp(code, 48);       // JMP
         patchI32(code, jBack, loopStart - (jBack + 4));
         patchI32(code, jExit, len(code) - (jExit + 4));
+        int wi = 0;                                        // continue -> loopStart (re-test)
+        while (wi < len(wcont)) { patchI32(code, wcont[wi], loopStart - (wcont[wi] + 4)); wi = wi + 1; }
+        wi = 0;                                            // break -> here (loop end)
+        while (wi < len(wbrk)) { patchI32(code, wbrk[wi], len(code) - (wbrk[wi] + 4)); wi = wi + 1; }
         return;
     }
     // for (init; cond; upd) { ... }   OR   for (T x in coll) { ... }
@@ -685,16 +738,23 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             int jExit = emJmp(code, 49);                   // JMPF exit
             emLoad(code, itSlot); emLoad(code, ixSlot); code.push(98);   // INDEX
             emStore(code, xSlot);                          // x = __it[__i]
-            cgBlock(tt, tv, pos, code, cp, sl, fns);       // body
+            int[] fbrk = [];
+            int[] fcont = [];
+            cgBlock(tt, tv, pos, code, cp, sl, fns, fbrk, fcont);       // body
+            int contTarget = len(code);                    // increment = continue target
             emLoad(code, ixSlot); emConst(code, addInt(cp, 1)); code.push(16);   // __i + 1
             emStore(code, ixSlot);                         // __i = __i + 1
             int jBack = emJmp(code, 48);                   // JMP loopStart
             patchI32(code, jBack, loopStart - (jBack + 4));
             patchI32(code, jExit, len(code) - (jExit + 4));
+            int fq = 0;
+            while (fq < len(fcont)) { patchI32(code, fcont[fq], contTarget - (fcont[fq] + 4)); fq = fq + 1; }
+            fq = 0;
+            while (fq < len(fbrk)) { patchI32(code, fbrk[fq], len(code) - (fbrk[fq] + 4)); fq = fq + 1; }
             return;
         }
         // C-style: for (init; cond; upd) { body }
-        cgStmt(tt, tv, pos, code, cp, sl, fns);            // init (consumes its ';')
+        cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);            // init (consumes its ';')
         int loopStart = len(code);
         if (cpt(tt, pos) != "SEMICOLON") {
             cgExpr(tt, tv, pos, code, cp, sl, fns);        // cond
@@ -705,15 +765,22 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         int jExit = emJmp(code, 49);                       // JMPF exit
         int[] upd = [];                                    // update emitted AFTER body
         if (cpt(tt, pos) != "RPAREN") {
-            cgStmt(tt, tv, pos, upd, cp, sl, fns);         // e.g. i = i + 1  (no ';')
+            cgStmt(tt, tv, pos, upd, cp, sl, fns, brk, cont);         // e.g. i = i + 1  (no ';')
         }
         if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-        cgBlock(tt, tv, pos, code, cp, sl, fns);           // body
+        int[] cbrk = [];
+        int[] ccont = [];
+        cgBlock(tt, tv, pos, code, cp, sl, fns, cbrk, ccont);         // body
+        int contTarget = len(code);                        // update runs here = continue target
         int u = 0;
         while (u < len(upd)) { code.push(upd[u]); u = u + 1; }
         int jBack = emJmp(code, 48);                       // JMP loopStart
         patchI32(code, jBack, loopStart - (jBack + 4));
         patchI32(code, jExit, len(code) - (jExit + 4));
+        int cq = 0;
+        while (cq < len(ccont)) { patchI32(code, ccont[cq], contTarget - (ccont[cq] + 4)); cq = cq + 1; }
+        cq = 0;
+        while (cq < len(cbrk)) { patchI32(code, cbrk[cq], len(code) - (cbrk[cq] + 4)); cq = cq + 1; }
         return;
     }
     // switch (subj) { case v: ...  case a: case b: ...  default: ... }
@@ -748,7 +815,7 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
                 }
                 while (cpt(tt, pos) != "CASE" && cpt(tt, pos) != "DEFAULT"
                     && cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
-                    cgStmt(tt, tv, pos, code, cp, sl, fns);
+                    cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);
                 }
                 int je = emJmp(code, 48);           // JMP -> l_end (break)
                 endJumps.push(je);
@@ -758,7 +825,7 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
                 if (cpt(tt, pos) == "COLON") { cadv(pos); }
                 while (cpt(tt, pos) != "CASE" && cpt(tt, pos) != "DEFAULT"
                     && cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
-                    cgStmt(tt, tv, pos, code, cp, sl, fns);   // reached by fall-through
+                    cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);   // reached by fall-through
                 }
             } else {
                 cadv(pos);                          // safety
@@ -815,9 +882,9 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
                 }
             }
             if (cpt(tt, pos) == "LBRACE") {
-                cgBlock(tt, tv, pos, code, cp, sl, fns);
+                cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);
             } else {
-                cgStmt(tt, tv, pos, code, cp, sl, fns);
+                cgStmt(tt, tv, pos, code, cp, sl, fns, brk, cont);
             }
             int je = emJmp(code, 48);               // JMP -> match end
             endJ.push(je);
@@ -842,7 +909,7 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         code.push(0); code.push(0); code.push(0); code.push(0);   // i32 rel (to catch)
         int slotAt = len(code);
         code.push(255); code.push(255);             // u16 catch slot (0xFFFF placeholder)
-        cgBlock(tt, tv, pos, code, cp, sl, fns);    // try body
+        cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);    // try body
         code.push(114);                             // OP_TRYPOP
         int jFin = emJmp(code, 48);                 // JMP -> finally (normal path)
         patchI32(code, relAt, len(code) - (relAt + 6));   // catch target (after 6-byte operand)
@@ -854,11 +921,11 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
             patchU16(code, slotAt, slotOf(sl, cname));   // VM stores the thrown value here
         }
-        cgBlock(tt, tv, pos, code, cp, sl, fns);    // catch body
+        cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);    // catch body
         patchI32(code, jFin, len(code) - (jFin + 4));    // finally target
         if (cpt(tt, pos) == "FINALLY") {
             cadv(pos);
-            cgBlock(tt, tv, pos, code, cp, sl, fns);
+            cgBlock(tt, tv, pos, code, cp, sl, fns, brk, cont);
         }
         return;
     }
@@ -999,8 +1066,10 @@ fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp
     if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
     if (cpt(tt, pos) == "ARROW") { cadv(pos); cadv(pos); }   // -> type
     if (cpt(tt, pos) == "BODY_ASSIGN") { cadv(pos); }
+    int[] fnBrk = [];                       // function top level: no enclosing loop
+    int[] fnCont = [];
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
-        cgStmt(tt, tv, pos, fcode, cp, sl, fns);
+        cgStmt(tt, tv, pos, fcode, cp, sl, fns, fnBrk, fnCont);
     }
     if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
     fcode.push(4); fcode.push(65);          // NULL; RET (implicit return)
@@ -1047,12 +1116,14 @@ fn compile(string src, string outPath) -> bool ={
     int[] fNameIdx = [];
     string[] mainSl = [];
 
+    int[] mBrk = [];                        // top level: no enclosing loop
+    int[] mCont = [];
     int[] pos = [0];
     while (cpt(tt, pos) != "EOF") {
         if (cpt(tt, pos) == "FN") {
             compileFunction(tt, tv, pos, fcode, cp, fns, fEntry, fNParams, fNLocals, fNameIdx);
         } else {
-            cgStmt(tt, tv, pos, mcode, cp, mainSl, fns);
+            cgStmt(tt, tv, pos, mcode, cp, mainSl, fns, mBrk, mCont);
         }
     }
     mcode.push(4); mcode.push(65);          // NULL; RET (end of main)
