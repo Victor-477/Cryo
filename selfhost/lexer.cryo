@@ -186,6 +186,11 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "|" && d == "|") { pushTok(tt, tv, "OR", "||");          i = i + 2; continue; }
         if (c == "+" && d == "+") { pushTok(tt, tv, "PLUS_PLUS", "++");   i = i + 2; continue; }
         if (c == "-" && d == "-") { pushTok(tt, tv, "MINUS_MINUS", "--"); i = i + 2; continue; }
+        if (c == "+" && d == "=") { pushTok(tt, tv, "PLUS_ASSIGN", "+=");    i = i + 2; continue; }
+        if (c == "-" && d == "=") { pushTok(tt, tv, "MINUS_ASSIGN", "-=");   i = i + 2; continue; }
+        if (c == "*" && d == "=") { pushTok(tt, tv, "STAR_ASSIGN", "*=");    i = i + 2; continue; }
+        if (c == "/" && d == "=") { pushTok(tt, tv, "SLASH_ASSIGN", "/=");   i = i + 2; continue; }
+        if (c == "%" && d == "=") { pushTok(tt, tv, "PERCENT_ASSIGN", "%="); i = i + 2; continue; }
 
         // single-character operators/punctuation
         if (c == "+") { pushTok(tt, tv, "PLUS", "+");       i = i + 1; continue; }

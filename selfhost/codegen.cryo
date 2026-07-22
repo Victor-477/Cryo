@@ -630,6 +630,32 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
+        // compound assignment:  x += e;  ->  x = x <op> e;
+        string co = cpt2(tt, pos);
+        if (co == "PLUS_ASSIGN" || co == "MINUS_ASSIGN" || co == "STAR_ASSIGN"
+            || co == "SLASH_ASSIGN" || co == "PERCENT_ASSIGN") {
+            cadv(pos); cadv(pos);               // name, op
+            emLoad(code, slotOf(sl, name));     // x
+            cgExpr(tt, tv, pos, code, cp, sl, fns);   // rhs
+            if (co == "PLUS_ASSIGN")        { code.push(16); }   // ADD
+            else if (co == "MINUS_ASSIGN")  { code.push(17); }   // SUB
+            else if (co == "STAR_ASSIGN")   { code.push(18); }   // MUL
+            else if (co == "SLASH_ASSIGN")  { code.push(19); }   // DIV
+            else                            { code.push(20); }   // MOD
+            emStore(code, slotOf(sl, name));
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+        // increment / decrement:  x++;  x--;   ->  x = x +/- 1;
+        if (co == "PLUS_PLUS" || co == "MINUS_MINUS") {
+            cadv(pos); cadv(pos);               // name, ++/--
+            emLoad(code, slotOf(sl, name));
+            emConst(code, addInt(cp, 1));
+            if (co == "PLUS_PLUS") { code.push(16); } else { code.push(17); }   // ADD/SUB
+            emStore(code, slotOf(sl, name));
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
         // index assignment:  name[index] = value;   (single level)
         if (cpt2(tt, pos) == "LBRACKET") {
             cadv(pos);                          // name
