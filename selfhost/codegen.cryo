@@ -229,7 +229,22 @@ fn skipType(string[] tt, int[] pos) -> void ={
 // ── expression codegen (leaves the value on the VM stack) ────
 //  precedence: || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
 fn cgExpr(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
-    cgOr(tt, tv, pos, code, cp, sl, fns);
+    cgTernary(tt, tv, pos, code, cp, sl, fns);
+}
+// ternary  cond ? a : b   (binds looser than ||; right-associative)
+//   <cond> JMPF else; <then> JMP end; else: <else>; end:
+fn cgTernary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
+    cgOr(tt, tv, pos, code, cp, sl, fns);                // condition
+    if (cpt(tt, pos) == "QUESTION") {
+        cadv(pos);
+        int jElse = emJmp(code, 49);                     // JMPF -> else
+        cgExpr(tt, tv, pos, code, cp, sl, fns);          // then-value
+        int jEnd = emJmp(code, 48);                      // JMP -> end
+        patchI32(code, jElse, len(code) - (jElse + 4));  // else:
+        if (cpt(tt, pos) == "COLON") { cadv(pos); }
+        cgTernary(tt, tv, pos, code, cp, sl, fns);       // else-value (right-assoc)
+        patchI32(code, jEnd, len(code) - (jEnd + 4));    // end:
+    }
 }
 // logical OR with short-circuit (mirrors reference codegen_pyro):
 //   <a> JMPT T; <b> JMPT T; FALSE; JMP E; T: TRUE; E:

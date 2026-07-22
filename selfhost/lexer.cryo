@@ -202,6 +202,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "<") { pushTok(tt, tv, "LT", "<");         i = i + 1; continue; }
         if (c == ">") { pushTok(tt, tv, "GT", ">");         i = i + 1; continue; }
         if (c == "!") { pushTok(tt, tv, "NOT", "!");        i = i + 1; continue; }
+        if (c == "?") { pushTok(tt, tv, "QUESTION", "?");   i = i + 1; continue; }
         if (c == "(") { pushTok(tt, tv, "LPAREN", "(");     i = i + 1; continue; }
         if (c == ")") { pushTok(tt, tv, "RPAREN", ")");     i = i + 1; continue; }
         if (c == "{") { pushTok(tt, tv, "LBRACE", "{");     i = i + 1; continue; }
