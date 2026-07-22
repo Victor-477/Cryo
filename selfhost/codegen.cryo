@@ -512,6 +512,73 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
+    // for (init; cond; upd) { ... }   OR   for (T x in coll) { ... }
+    if (t == "FOR") {
+        cadv(pos);                              // 'for'
+        if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
+        // detect the form: for-each has 'in' before the first ';' in the header
+        int scan = pos[0];
+        int form = 0;                           // 1 = for-each, 2 = C-style
+        while (form == 0 && scan < len(tt)) {
+            string s = tt[scan];
+            if (s == "IN")             { form = 1; }
+            else if (s == "SEMICOLON") { form = 2; }
+            else if (s == "RPAREN" || s == "EOF") { form = 2; }
+            else { scan = scan + 1; }
+        }
+        if (form == 1) {
+            // for (T x in coll): iterate by index (arrays; maps -> use keys(m))
+            skipType(tt, pos);                  // element type T
+            string xname = cpv(tv, pos); cadv(pos);
+            if (cpt(tt, pos) == "IN") { cadv(pos); }
+            // unique hidden slots per loop (code offset never repeats)
+            string itName = "__it" + to_string(len(code));
+            string ixName = "__i" + to_string(len(code));
+            int itSlot = slotOf(sl, itName);
+            int ixSlot = slotOf(sl, ixName);
+            int xSlot  = slotOf(sl, xname);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);        // collection
+            emStore(code, itSlot);                         // __it = coll
+            emConst(code, addInt(cp, 0)); emStore(code, ixSlot);   // __i = 0
+            if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+            int loopStart = len(code);
+            emLoad(code, ixSlot);
+            emLoad(code, itSlot); code.push(100);          // LEN
+            code.push(34);                                 // LT  (__i < len(__it))
+            int jExit = emJmp(code, 49);                   // JMPF exit
+            emLoad(code, itSlot); emLoad(code, ixSlot); code.push(98);   // INDEX
+            emStore(code, xSlot);                          // x = __it[__i]
+            cgBlock(tt, tv, pos, code, cp, sl, fns);       // body
+            emLoad(code, ixSlot); emConst(code, addInt(cp, 1)); code.push(16);   // __i + 1
+            emStore(code, ixSlot);                         // __i = __i + 1
+            int jBack = emJmp(code, 48);                   // JMP loopStart
+            patchI32(code, jBack, loopStart - (jBack + 4));
+            patchI32(code, jExit, len(code) - (jExit + 4));
+            return;
+        }
+        // C-style: for (init; cond; upd) { body }
+        cgStmt(tt, tv, pos, code, cp, sl, fns);            // init (consumes its ';')
+        int loopStart = len(code);
+        if (cpt(tt, pos) != "SEMICOLON") {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);        // cond
+        } else {
+            code.push(2);                                  // empty cond -> TRUE
+        }
+        if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+        int jExit = emJmp(code, 49);                       // JMPF exit
+        int[] upd = [];                                    // update emitted AFTER body
+        if (cpt(tt, pos) != "RPAREN") {
+            cgStmt(tt, tv, pos, upd, cp, sl, fns);         // e.g. i = i + 1  (no ';')
+        }
+        if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+        cgBlock(tt, tv, pos, code, cp, sl, fns);           // body
+        int u = 0;
+        while (u < len(upd)) { code.push(upd[u]); u = u + 1; }
+        int jBack = emJmp(code, 48);                       // JMP loopStart
+        patchI32(code, jBack, loopStart - (jBack + 4));
+        patchI32(code, jExit, len(code) - (jExit + 4));
+        return;
+    }
     // struct/enum declarations are types only (structs are dynamic maps) — skip the body
     if (t == "STRUCT" || t == "ENUM") {
         cadv(pos);                              // STRUCT/ENUM
