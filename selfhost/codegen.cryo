@@ -201,6 +201,30 @@ fn nativeId(string name) -> int ={
     if (name == "write_bytes") { return 27; }
     return -1;
 }
+// consumes a type annotation at the cursor: primitive/custom IDENT, map<...> /
+// future<...> (balanced), array suffix [] and optional ?. Leaves the cursor on
+// the variable name that follows.
+fn skipType(string[] tt, int[] pos) -> void ={
+    string t = cpt(tt, pos);
+    if (t == "MAP" || t == "FUTURE") {
+        cadv(pos);
+        if (cpt(tt, pos) == "LT") {
+            cadv(pos);
+            int depth = 1;
+            while (depth > 0 && cpt(tt, pos) != "EOF") {
+                string x = cpt(tt, pos); cadv(pos);
+                if (x == "LT")      { depth = depth + 1; }
+                else if (x == "GT") { depth = depth - 1; }
+            }
+        }
+    } else {
+        cadv(pos);                              // primitive type or custom IDENT
+    }
+    while (cpt(tt, pos) == "LBRACKET" && cpt2(tt, pos) == "RBRACKET") {
+        cadv(pos); cadv(pos);                   // array suffix []
+    }
+    if (cpt(tt, pos) == "QUESTION") { cadv(pos); }   // optional ?
+}
 
 // ── expression codegen (leaves the value on the VM stack) ────
 //  precedence: || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
@@ -286,7 +310,39 @@ fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[
         code.push(21);   // OP_NEG
         return;
     }
+    cgPostfix(tt, tv, pos, code, cp, sl, fns);
+}
+// postfix chain: index a[i] (OP_INDEX), field a.f (INDEX by name), method a.push(x)
+fn cgPostfix(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     cgPrimary(tt, tv, pos, code, cp, sl, fns);
+    while (cpt(tt, pos) == "LBRACKET" || cpt(tt, pos) == "DOT") {
+        if (cpt(tt, pos) == "LBRACKET") {
+            cadv(pos);
+            cgExpr(tt, tv, pos, code, cp, sl, fns);       // index
+            if (cpt(tt, pos) == "RBRACKET") { cadv(pos); }
+            code.push(98);                                // OP_INDEX
+        } else {
+            cadv(pos);                                    // '.'
+            string fld = cpv(tv, pos); cadv(pos);         // field/method name
+            if (cpt(tt, pos) == "LPAREN") {               // method call
+                cadv(pos);
+                int margc = 0;
+                while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
+                    cgExpr(tt, tv, pos, code, cp, sl, fns);
+                    margc = margc + 1;
+                    if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+                }
+                if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+                if (fld == "push") { code.push(101); }    // OP_APPEND (obj + arg on stack)
+                else               { code.push(100); }    // .length()/.size() -> OP_LEN
+            } else if (fld == "length") {
+                code.push(100);                           // .length -> OP_LEN
+            } else {
+                emConst(code, addStr(cp, fld));           // field name as string key
+                code.push(98);                            // OP_INDEX
+            }
+        }
+    }
 }
 fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[] sl, string[] fns) -> void ={
     string t = cpt(tt, pos);
@@ -309,6 +365,49 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
         string bv = cpv(tv, pos); cadv(pos);
         if (bv == "true") { code.push(2); }    // OP_TRUE
         else              { code.push(3); }    // OP_FALSE
+        return;
+    }
+    if (t == "LBRACKET") {                      // array literal [e, ...]
+        cadv(pos);
+        int acnt = 0;
+        while (cpt(tt, pos) != "RBRACKET" && cpt(tt, pos) != "EOF") {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
+            acnt = acnt + 1;
+            if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+        }
+        if (cpt(tt, pos) == "RBRACKET") { cadv(pos); }
+        code.push(96); emU16(code, acnt);       // OP_NEWARR count
+        return;
+    }
+    if (t == "LBRACE") {                        // map literal {k: v, ...}
+        cadv(pos);
+        int mcnt = 0;
+        while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);      // key
+            if (cpt(tt, pos) == "COLON") { cadv(pos); }
+            cgExpr(tt, tv, pos, code, cp, sl, fns);      // value
+            mcnt = mcnt + 1;
+            if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+        }
+        if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+        code.push(97); emU16(code, mcnt);       // OP_NEWMAP count
+        return;
+    }
+    if (t == "NEW") {                           // new Struct{ field: val, ... } (struct = map)
+        cadv(pos);                              // 'new'
+        cadv(pos);                              // struct name (IDENT, ignored)
+        if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
+        int scnt = 0;
+        while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
+            string fld = cpv(tv, pos); cadv(pos);        // field name
+            if (cpt(tt, pos) == "COLON") { cadv(pos); }
+            emConst(code, addStr(cp, fld));              // key (string)
+            cgExpr(tt, tv, pos, code, cp, sl, fns);      // value
+            scnt = scnt + 1;
+            if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+        }
+        if (cpt(tt, pos) == "RBRACE") { cadv(pos); }
+        code.push(97); emU16(code, scnt);       // OP_NEWMAP count
         return;
     }
     if (t == "IDENT") {
@@ -413,10 +512,26 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         patchI32(code, jExit, len(code) - (jExit + 4));
         return;
     }
-    // T x = expr;   (T = int | string | bool | number — value is dynamic in the VM)
-    if (t == "TYPE_INT" || t == "TYPE_STRING" || t == "TYPE_BOOL" || t == "TYPE_NUMBER") {
-        cadv(pos);
-        string name = cpv(tv, pos); cadv(pos);
+    // struct/enum declarations are types only (structs are dynamic maps) — skip the body
+    if (t == "STRUCT" || t == "ENUM") {
+        cadv(pos);                              // STRUCT/ENUM
+        if (cpt(tt, pos) == "IDENT") { cadv(pos); }
+        if (cpt(tt, pos) == "LBRACE") {
+            cadv(pos);
+            int d = 1;
+            while (d > 0 && cpt(tt, pos) != "EOF") {
+                string x = cpt(tt, pos); cadv(pos);
+                if (x == "LBRACE")      { d = d + 1; }
+                else if (x == "RBRACE") { d = d - 1; }
+            }
+        }
+        return;
+    }
+    // declaration:  T name [= expr];  (T = primitive | map<> | future<> | custom IDENT, with [] / ?)
+    if (t == "TYPE_INT" || t == "TYPE_STRING" || t == "TYPE_BOOL" || t == "TYPE_NUMBER"
+        || t == "MAP" || t == "FUTURE" || (t == "IDENT" && cpt2(tt, pos) == "IDENT")) {
+        skipType(tt, pos);                      // consume the type annotation
+        string name = cpv(tv, pos); cadv(pos);  // variable name
         if (cpt(tt, pos) == "ASSIGN") {
             cadv(pos);
             cgExpr(tt, tv, pos, code, cp, sl, fns);
@@ -448,10 +563,30 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
+        // index assignment:  name[index] = value;   (single level)
+        if (cpt2(tt, pos) == "LBRACKET") {
+            cadv(pos);                          // name
+            emLoad(code, slotOf(sl, name));     // container
+            cadv(pos);                          // '['
+            cgExpr(tt, tv, pos, code, cp, sl, fns);   // index
+            if (cpt(tt, pos) == "RBRACKET") { cadv(pos); }
+            if (cpt(tt, pos) == "ASSIGN") { cadv(pos); }
+            cgExpr(tt, tv, pos, code, cp, sl, fns);   // value
+            code.push(99);                      // OP_SETIDX
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
         // function call as a statement: name(args);  (discards the return)
         if (cpt2(tt, pos) == "LPAREN") {
             cgExpr(tt, tv, pos, code, cp, sl, fns);
             code.push(5);                  // OP_POP
+            if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
+            return;
+        }
+        // method-call statement:  name.method(args);  (e.g. arr.push(x))
+        if (cpt2(tt, pos) == "DOT") {
+            cgExpr(tt, tv, pos, code, cp, sl, fns);
+            code.push(5);                  // OP_POP (discard result)
             if (cpt(tt, pos) == "SEMICOLON") { cadv(pos); }
             return;
         }
@@ -470,7 +605,7 @@ fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp
     if (cpt(tt, pos) == "LPAREN") { cadv(pos); }
     int np = 0;
     while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
-        cadv(pos);                          // parameter type (treated as int)
+        skipType(tt, pos);                  // parameter type (values are dynamic in the VM)
         string pname = cpv(tv, pos); cadv(pos);
         slotOf(sl, pname);                  // param -> slots 0,1,...
         np = np + 1;
