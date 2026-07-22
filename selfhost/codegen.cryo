@@ -168,6 +168,39 @@ fn funcIndexOf(string[] fns, string name) -> int ={
     }
     return -1;
 }
+// VM native builtin id by name (mirrors NATIVES in codegen_pyro); -1 if none.
+// len/has/keys are NOT here — they use dedicated opcodes.
+fn nativeId(string name) -> int ={
+    if (name == "sqrt")        { return 0; }
+    if (name == "pow")         { return 1; }
+    if (name == "abs")         { return 2; }
+    if (name == "min")         { return 3; }
+    if (name == "max")         { return 4; }
+    if (name == "floor")       { return 5; }
+    if (name == "ceil")        { return 6; }
+    if (name == "round")       { return 7; }
+    if (name == "to_string")   { return 8; }
+    if (name == "to_int")      { return 9; }
+    if (name == "to_number")   { return 10; }
+    if (name == "remove")      { return 11; }
+    if (name == "upper")       { return 12; }
+    if (name == "lower")       { return 13; }
+    if (name == "trim")        { return 14; }
+    if (name == "contains")    { return 15; }
+    if (name == "find")        { return 16; }
+    if (name == "replace")     { return 17; }
+    if (name == "substr")      { return 18; }
+    if (name == "split")       { return 19; }
+    if (name == "join")        { return 20; }
+    if (name == "input")       { return 21; }
+    if (name == "json_encode") { return 22; }
+    if (name == "json_decode") { return 23; }
+    if (name == "http_get")    { return 24; }
+    if (name == "http_post")   { return 25; }
+    if (name == "sleep")       { return 26; }
+    if (name == "write_bytes") { return 27; }
+    return -1;
+}
 
 // ── expression codegen (leaves the value on the VM stack) ────
 //  precedence: || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary < primary
@@ -281,7 +314,7 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
     if (t == "IDENT") {
         string name = cpv(tv, pos); cadv(pos);
         if (cpt(tt, pos) == "LPAREN") {
-            // function call: push args and emit CALL
+            // call: evaluate args, then dispatch by name
             cadv(pos);
             int argc = 0;
             while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
@@ -290,7 +323,18 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
                 if (cpt(tt, pos) == "COMMA") { cadv(pos); }
             }
             if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-            code.push(64);                 // OP_CALL
+            // len/has/keys use dedicated container opcodes
+            if (name == "len" && argc == 1)  { code.push(100); return; }   // OP_LEN
+            if (name == "has" && argc == 2)  { code.push(102); return; }   // OP_HAS
+            if (name == "keys" && argc == 1) { code.push(103); return; }   // OP_KEYS
+            int nid = nativeId(name);
+            if (nid >= 0) {                // VM native builtin
+                code.push(112);            // OP_NATIVE
+                code.push(nid & 255);
+                code.push(argc & 255);
+                return;
+            }
+            code.push(64);                 // OP_CALL (user function)
             emU16(code, funcIndexOf(fns, name));
             code.push(argc & 255);
             return;
