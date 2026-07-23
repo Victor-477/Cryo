@@ -29,7 +29,9 @@
 | 📄 [`semantic.py`](semantic.py) | **Semantic Analyzer** | Resolves scoping, verifies symbol declarations, arity, and type signatures, and ensures exhaustiveness of match patterns. |
 | 📄 [`security.py`](security.py) | **Security Auditor** | Analyzes the AST using data-flow (taint) algorithms to detect security threats and sensitive operation leaks. |
 | 📄 [`format.py`](format.py) | **Formatter** | Implements an idempotent, safe, and customizable source code formatter (`cryoc fmt`). |
+| 📁 [`selfhost/`](selfhost/) | **The Compiler, in Cryo** | `lexer.cryo`, `parser.cryo`, `codegen.cryo` and the `pyroc.cryo` CLI — a Cryo→Pyro compiler written in Cryo. It runs on the Pyro VM (no Python) and reaches a fixed point: the bytecode it emits is byte-identical whether it was built by the Python front-end or by itself. |
 | 📁 [`examples/`](examples/) | **Examples & Demos** | Interactive examples illustrating enums, networking, calculators, Windows update simulations, and real-time graphics. |
+| 📁 [`examples/fullstack/`](examples/fullstack/) | **Full-Stack Demo** | One app, Cryo on both ends: a server using the `http_serve` builtin and a browser client compiled to WebAssembly. |
 
 ---
 
@@ -91,9 +93,17 @@ Cryo serves as the ergonomic entry point. It has no dependencies on the backend 
    │   Burnout    │  ──► (Orchestrates CodeGen backends)
    └──────────────┘
           │
-  ┌───────┼───────┐
-  ▼       ▼       ▼
-[ Go ] [ Node ] [ C / ASM ] ──► (Native targets)
+  ┌───────┼───────┬────────┬────────┐
+  ▼       ▼       ▼        ▼        ▼
+[ Go ] [ Node ] [ C/ASM ] [ WASM ] [ .pyro ] ──► VM, or AOT to a native binary
+```
+
+There is a second, Python-free route to the same `.pyro`: the compiler in
+[`selfhost/`](selfhost/), written in Cryo and running on the Pyro VM (or built
+into a native `pyroc` binary). Both routes agree byte-for-byte.
+
+```bash
+build/pyrovm.exe build/pyroc.pyro app.cryo app.pyro
 ```
 
 ---
