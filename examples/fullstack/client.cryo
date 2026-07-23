@@ -1,0 +1,28 @@
+// ============================================================
+//  Full-stack demo — CLIENT (compiled to WebAssembly)
+//
+//  Compiled with `--backend wasm` to app.wasm and loaded in the browser.
+//  Every function is exported; the page's glue.js calls them and shows the
+//  results in the DOM. This is Cryo running client-side, in the browser.
+// ============================================================
+fn fib(int n) -> int ={
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn square(int n) -> int ={
+    return n * n;
+}
+
+fn factorial(int n) -> int ={
+    int f = 1;
+    int i = 1;
+    while (i <= n) { f = f * i; i = i + 1; }
+    return f;
+}
+
+fn sum_to(int n) -> int ={
+    int s = 0;
+    for (int i = 1; i <= n; i++) { s += i; }
+    return s;
+}

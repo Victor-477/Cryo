@@ -42,7 +42,7 @@ BUILTINS: Set[str] = {
     'upper', 'lower', 'trim', 'contains', 'find', 'replace', 'substr',
     'split', 'join',
     'json_encode', 'json_decode',
-    'http_get', 'http_post', 'sleep', 'write_bytes', 'read_file', 'args',
+    'http_get', 'http_post', 'sleep', 'write_bytes', 'read_file', 'args', 'http_serve',
     'schema_of', 'llm', 'tools', 'tools_json', 'tool_get', 'agent',
     'skills', 'skill_get', 'skill_has', 'skills_json',
     'pyro_exec', 'pyro_env', 'pyro_args', 'pyro_time', 'pyro_read',
