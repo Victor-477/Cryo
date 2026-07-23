@@ -1,0 +1,21 @@
+// ============================================================
+//  pyroc — the self-hosted Cryo->Pyro compiler entry point (Phase 9.6)
+//
+//  This is the Cryo-written compiler as a runnable program: it reads a
+//  source file and an output path from argv (via the args() native), reads
+//  the source (read_file), compiles it with the Cryo-written codegen, and
+//  writes the .pyro (write_bytes, inside compile()).
+//
+//  Bootstrapped ONCE by burnout (Python) into pyroc.pyro; thereafter it
+//  compiles .cryo -> .pyro on the Pyro VM with NO Python involved:
+//      pyrovm pyroc.pyro <input.cryo> <output.pyro>
+// ============================================================
+import "codegen.cryo"
+
+string[] a = args();
+if (len(a) < 2) {
+    print("usage: pyrovm pyroc.pyro <input.cryo> <output.pyro>");
+} else {
+    bool ok = compile(read_file(a[0]), a[1]);
+    if (!ok) { print("[pyroc] compile failed for " + a[0]); }
+}

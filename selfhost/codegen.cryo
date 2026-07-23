@@ -209,6 +209,8 @@ fn nativeId(string name) -> int ={
     if (name == "http_post")   { return 25; }
     if (name == "sleep")       { return 26; }
     if (name == "write_bytes") { return 27; }
+    if (name == "read_file")   { return 28; }
+    if (name == "args")        { return 29; }
     return -1;
 }
 // consumes a type annotation at the cursor: primitive/custom IDENT, map<...> /
