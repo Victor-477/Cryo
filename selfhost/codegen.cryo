@@ -219,6 +219,10 @@ fn nativeId(string name) -> int ={
     if (name == "starts_with") { return 35; }
     if (name == "ends_with")   { return 36; }
     if (name == "repeat")      { return 37; }
+    if (name == "sort")        { return 38; }
+    if (name == "reverse")     { return 39; }
+    if (name == "slice")       { return 40; }
+    if (name == "index_of")    { return 41; }
     return -1;
 }
 // consumes a type annotation at the cursor: primitive/custom IDENT, map<...> /

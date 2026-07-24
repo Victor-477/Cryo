@@ -39,7 +39,7 @@ BUILTINS: Set[str] = {
     'to_string', 'to_int', 'to_number', 'throw',
     'sqrt', 'pow', 'abs', 'min', 'max', 'floor', 'ceil', 'round',
     'clamp', 'sign', 'gcd', 'hypot',
-    'has', 'keys', 'remove',
+    'has', 'keys', 'remove', 'sort', 'reverse', 'slice', 'index_of',
     'upper', 'lower', 'trim', 'contains', 'find', 'replace', 'substr',
     'split', 'join', 'starts_with', 'ends_with', 'repeat',
     'json_encode', 'json_decode',
