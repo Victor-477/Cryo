@@ -464,6 +464,13 @@ class Parser:
             vname = self._expect(TokenType.IDENT).value
             self._expect(TokenType.IN)
             iterable = self._expr()
+            # range form:  for (int i in start .. end)  /  .. = (inclusive)
+            if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                inclusive = self._advance().type == TokenType.RANGE_INCL
+                end = self._expr()
+                self._expect(TokenType.RPAREN)
+                body = self._block()
+                return self._desugar_range(vtype, vname, iterable, end, inclusive, body)
             self._expect(TokenType.RPAREN)
             return ForEach(vtype, vname, iterable, self._block())
 
@@ -497,6 +504,22 @@ class Parser:
 
         self._expect(TokenType.RPAREN)
         return For(init, cond, update, self._block())
+
+    def _desugar_range(self, vtype, vname, start, end, inclusive, body):
+        """Lower `for (int i in a .. b)` to the equivalent counted loop.
+
+        Exclusive `..` uses `i < b`; inclusive `..=` uses `i <= b`. The bound is
+        part of the loop condition (re-evaluated each iteration), exactly as if
+        the programmer had written the classic `for (int i = a; i < b; ...)`.
+        Range loops require an integer loop variable."""
+        if vtype != 'int':
+            raise ParseError(
+                f"range loop variable must be 'int', got '{vtype}' (line {self._peek().line})")
+        op = '<=' if inclusive else '<'
+        init   = VarDecl('int', vname, start)
+        cond   = BinaryExpr(op, Identifier(vname), end)
+        update = Assignment(vname, BinaryExpr('+', Identifier(vname), Literal('int', 1)))
+        return For(init, cond, update, body)
 
     # ── try ─────────────────────────────────────────────────
 

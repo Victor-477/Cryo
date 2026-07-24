@@ -112,6 +112,8 @@ class TokenType(Enum):
     COMMA     = auto()
     COLON     = auto()
     DOT       = auto()
+    RANGE      = auto()   # ..   (exclusive range, e.g. for i in 0..n)
+    RANGE_INCL = auto()   # ..=  (inclusive range, e.g. for i in 1..=n)
     # Foreign language
     LANG_TAG   = auto()
     LANG_BLOCK = auto()
@@ -261,7 +263,9 @@ class Lexer:
             c = self._peek()
             if c == '_':
                 self._advance(); continue
-            if c.isdigit() or (c == '.' and not is_float):
+            # a '.' is a decimal point only if it is not the start of a '..'
+            # range token — otherwise '0..n' would swallow the first dot as '0.'
+            if c.isdigit() or (c == '.' and not is_float and self._peek(1) != '.'):
                 if c == '.':
                     is_float = True
                 num += self._advance()
@@ -453,7 +457,14 @@ class Lexer:
             elif ch == ':':
                 self._advance(); tokens.append(Token(TokenType.COLON,     ':', sl, sc))
             elif ch == '.':
-                self._advance(); tokens.append(Token(TokenType.DOT,       '.', sl, sc))
+                if self._peek(1) == '.' and self._peek(2) == '=':
+                    self._advance(); self._advance(); self._advance()
+                    tokens.append(Token(TokenType.RANGE_INCL, '..=', sl, sc))
+                elif self._peek(1) == '.':
+                    self._advance(); self._advance()
+                    tokens.append(Token(TokenType.RANGE,      '..', sl, sc))
+                else:
+                    self._advance(); tokens.append(Token(TokenType.DOT,   '.', sl, sc))
             else:
                 self._error(f"Unexpected character '{ch}'")
         return tokens
