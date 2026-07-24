@@ -223,6 +223,11 @@ fn nativeId(string name) -> int ={
     if (name == "reverse")     { return 39; }
     if (name == "slice")       { return 40; }
     if (name == "index_of")    { return 41; }
+    if (name == "pad_start")   { return 42; }
+    if (name == "pad_end")     { return 43; }
+    if (name == "concat")      { return 44; }
+    if (name == "count")       { return 45; }
+    if (name == "sum")         { return 46; }
     return -1;
 }
 // consumes a type annotation at the cursor: primitive/custom IDENT, map<...> /
@@ -611,6 +616,14 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
             if (name == "len" && argc == 1)  { code.push(100); return; }   // OP_LEN
             if (name == "has" && argc == 2)  { code.push(102); return; }   // OP_HAS
             if (name == "keys" && argc == 1) { code.push(103); return; }   // OP_KEYS
+            // user-defined functions shadow the native builtins
+            int fidx = funcIndexOf(fns, name);
+            if (fidx >= 0) {
+                code.push(64);             // OP_CALL (user function)
+                emU16(code, fidx);
+                code.push(argc & 255);
+                return;
+            }
             int nid = nativeId(name);
             if (nid >= 0) {                // VM native builtin
                 code.push(112);            // OP_NATIVE
@@ -618,7 +631,7 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
                 code.push(argc & 255);
                 return;
             }
-            code.push(64);                 // OP_CALL (user function)
+            code.push(64);                 // OP_CALL (last resort; unknown name)
             emU16(code, funcIndexOf(fns, name));
             code.push(argc & 255);
             return;
