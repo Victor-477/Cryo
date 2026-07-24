@@ -212,6 +212,13 @@ fn nativeId(string name) -> int ={
     if (name == "read_file")   { return 28; }
     if (name == "args")        { return 29; }
     if (name == "http_serve")  { return 30; }
+    if (name == "clamp")       { return 31; }
+    if (name == "sign")        { return 32; }
+    if (name == "gcd")         { return 33; }
+    if (name == "hypot")       { return 34; }
+    if (name == "starts_with") { return 35; }
+    if (name == "ends_with")   { return 36; }
+    if (name == "repeat")      { return 37; }
     return -1;
 }
 // consumes a type annotation at the cursor: primitive/custom IDENT, map<...> /
