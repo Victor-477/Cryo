@@ -56,7 +56,27 @@ fn run3(bool useDouble) -> int ={
 print("run3(true)  = ${run3(true)}");             // 6
 print("run3(false) = ${run3(false)}");            // 4
 
-// NOTE: the pyro backend supports NON-capturing lambdas. A lambda that
-// closes over an enclosing variable (a true closure) is rejected with a
-// clear message — use --backend go or node for those. Arrays of function
-// values await a type-syntax decision (`fn(int)->int[]` is ambiguous).
+// ── closures (Phase 10.6) ────────────────────────────────
+// A lambda may capture variables from the enclosing function; each closure
+// keeps its own copy of what it captured.
+fn adder(int base) -> fn(int)->int ={
+    return (int x) => x + base;        // captures `base`
+}
+fn(int)->int add10  = adder(10);
+fn(int)->int add100 = adder(100);
+print("add10(5)  = ${add10(5)}");                 // 15
+print("add100(5) = ${add100(5)}");                // 105
+
+// capturing more than one value, of different types
+fn labeller(int mult, string tag) -> fn(int)->string ={
+    return (int v) => tag + to_string(v * mult);
+}
+fn(int)->string lab = labeller(3, "n=");
+print("lab(4) = ${lab(4)}");                       // n=12
+
+// NOTE: capture is BY VALUE, so a captured variable must be *effectively
+// final* — never reassigned in the enclosing function. That restriction is
+// exactly what keeps pyro identical to go/node (which capture by reference):
+// the compiler reports it clearly instead of silently diverging. Arrays of
+// function values still await a type-syntax decision (`fn(int)->int[]` is
+// ambiguous).

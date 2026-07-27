@@ -21,7 +21,7 @@ from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
-    Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
+    Continue, Assert, SafetyBlock, Block, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr,
     MapLiteral, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr, FieldAccess, IndexAccess,
     ArrayLiteral, StructInit, Identifier, Literal, Lambda, MatchCase, MatchStatement,
@@ -304,6 +304,8 @@ class _Checker:
             if n.message is not None:
                 self.check_expr(n.message, scope)
         elif isinstance(n, SafetyBlock):
+            self.check_block(n.body, scope)
+        elif isinstance(n, Block):
             self.check_block(n.body, scope)
         elif isinstance(n, (CallExpr, MethodCallExpr)):
             self.check_expr(n, scope)
