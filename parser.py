@@ -7,6 +7,7 @@ from lexer import Token, TokenType, TYPE_TOKENS
 from ast_nodes import (
     Node, Program,
     StructField, StructDecl, EnumMember, EnumDecl, SkillDecl,
+    TraitMethodSig, TraitDecl, ImplDecl,
     FunctionDecl, VarDecl, ConstDecl, Assignment,
     CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, TryCatch, Block,
@@ -157,6 +158,12 @@ class Parser:
                 self._advance()
                 ret = self._parse_type()
             base = f"fn({','.join(ptypes)})->{ret}"
+        # (T) parenthesized type
+        elif self._match(TokenType.LPAREN):
+            self._advance()
+            inner = self._parse_type()
+            self._expect(TokenType.RPAREN)
+            base = f"({inner})"
         else:
             valid = set(TYPE_TOKENS) | {TokenType.IDENT}
             tok = self._cur()
@@ -165,6 +172,10 @@ class Parser:
                     f"[Syntax Error] Line {tok.line}: Expected type, got {tok.type.name} ({tok.value!r})"
                 )
             base = self._advance().value
+            if self._match(TokenType.COLON_COLON):
+                self._advance()
+                member = self._expect(TokenType.IDENT).value
+                base = f"{base}::{member}"
             if self._match(TokenType.LT):
                 self._advance()
                 targs = []
@@ -210,17 +221,25 @@ class Parser:
         return node
 
     def _stmt_inner(self, tok):
+        is_pub = False
+        if tok.type == TokenType.PUB:
+            self._advance()
+            is_pub = True
+            tok = self._cur()
+
         if tok.type == TokenType.FN:
             # `fn name(...)` = declaration; `fn(...)->R var` = function type var
             if self._peek().type == TokenType.LPAREN:
                 return self._var_decl()
-            return self._fn()
-        if tok.type == TokenType.TOOL:    return self._tool()
-        if tok.type == TokenType.STRUCT:  return self._struct()
-        if tok.type == TokenType.SCHEMA:  return self._struct()   # schema = struct
-        if tok.type == TokenType.ENUM:    return self._enum()
+            return self._fn(is_pub=is_pub)
+        if tok.type == TokenType.TOOL:    return self._tool(is_pub=is_pub)
+        if tok.type == TokenType.STRUCT:  return self._struct(is_pub=is_pub)
+        if tok.type == TokenType.SCHEMA:  return self._struct(is_pub=is_pub)   # schema = struct
+        if tok.type == TokenType.ENUM:    return self._enum(is_pub=is_pub)
+        if tok.type == TokenType.TRAIT:   return self._trait()
+        if tok.type == TokenType.IMPL:    return self._impl()
         if tok.type == TokenType.SKILL:   return self._skill()
-        if tok.type == TokenType.CONST:   return self._const()
+        if tok.type == TokenType.CONST:   return self._const(is_pub=is_pub)
         if tok.type == TokenType.IMPORT:  return self._import()
         if tok.type == TokenType.LIBRARY: return self._library()
         if tok.type == TokenType.RETURN:  return self._return()
@@ -239,8 +258,8 @@ class Parser:
             self._advance(); self._opt_semi(); return Continue()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
-        # primitive type, map or future -> var decl
-        if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE):
+        # primitive type, map, future or (type) -> var decl
+        if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE, TokenType.LPAREN):
             return self._var_decl()
 
         # identifier -> multiple possibilities
@@ -248,6 +267,10 @@ class Parser:
             if self._is_generic_var_decl_ahead():
                 return self._var_decl()
             nt = self._peek()
+            if nt.type == TokenType.COLON_COLON:
+                p3 = self._peek(3)
+                if p3.type in (TokenType.IDENT, TokenType.LBRACKET, TokenType.QUESTION):
+                    return self._var_decl()
             # CustomType varName  or  CustomType[] varName  or  CustomType? varName
             if nt.type == TokenType.IDENT:
                 return self._var_decl()
@@ -277,16 +300,21 @@ class Parser:
 
     # ── struct ──────────────────────────────────────────────
 
-    def _struct(self):
+    def _struct(self, is_pub=False):
         sline = self._cur().line
         self._expect(TokenType.STRUCT, TokenType.SCHEMA)   # 'schema' = struct
         name = self._expect(TokenType.IDENT).value
         type_params = []
+        type_bounds = {}
         if self._match(TokenType.LT):
             self._advance()
             while not self._match(TokenType.GT, TokenType.EOF):
                 tp = self._expect(TokenType.IDENT).value
                 type_params.append(tp)
+                if self._match(TokenType.COLON):
+                    self._advance()
+                    bound = self._expect(TokenType.IDENT).value
+                    type_bounds[tp] = bound
                 if self._match(TokenType.COMMA):
                     self._advance()
             self._expect(TokenType.GT)
@@ -298,7 +326,52 @@ class Parser:
             self._opt_semi()
             fields.append(StructField(ftype, fname))
         self._expect(TokenType.RBRACE)
-        return StructDecl(name, fields, line=sline, type_params=type_params)
+        return StructDecl(name, fields, line=sline, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
+
+    # ── trait / impl ────────────────────────────────────────
+
+    def _trait(self):
+        tline = self._cur().line
+        self._expect(TokenType.TRAIT)
+        name = self._expect(TokenType.IDENT).value
+        self._expect(TokenType.LBRACE)
+        methods = []
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            self._expect(TokenType.FN)
+            mname = self._expect(TokenType.IDENT).value
+            self._expect(TokenType.LPAREN)
+            params = []
+            while not self._match(TokenType.RPAREN):
+                ptype = self._parse_type()
+                pname = self._expect(TokenType.IDENT).value
+                params.append((ptype, pname))
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            self._expect(TokenType.RPAREN)
+            ret = None
+            if self._match(TokenType.ARROW):
+                self._advance()
+                ret = self._parse_type()
+            self._opt_semi()
+            methods.append(TraitMethodSig(mname, params, ret))
+        self._expect(TokenType.RBRACE)
+        return TraitDecl(name, methods, line=tline)
+
+    def _impl(self):
+        iline = self._cur().line
+        self._expect(TokenType.IMPL)
+        trait_name = self._expect(TokenType.IDENT).value
+        self._expect(TokenType.FOR)
+        target_type = self._parse_type()
+        self._expect(TokenType.LBRACE)
+        methods = []
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            if self._match(TokenType.FN):
+                methods.append(self._fn())
+            else:
+                self._advance()
+        self._expect(TokenType.RBRACE)
+        return ImplDecl(trait_name, target_type, methods, line=iline)
 
     # ── skill (LLM nativa) ──────────────────────────────────
 
@@ -320,7 +393,7 @@ class Parser:
 
     # ── enum ────────────────────────────────────────────────
 
-    def _enum(self):
+    def _enum(self, is_pub=False):
         self._expect(TokenType.ENUM)
         name = self._expect(TokenType.IDENT).value
         self._expect(TokenType.LBRACE)
@@ -341,24 +414,29 @@ class Parser:
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RBRACE)
-        return EnumDecl(name, members)
+        return EnumDecl(name, members, is_pub=is_pub)
 
     # ── function ────────────────────────────────────────────
 
-    def _tool(self):
+    def _tool(self, is_pub=False):
         self._expect(TokenType.TOOL)      # 'tool fn ...' — exposed to LLMs
-        return self._fn(is_tool=True)
+        return self._fn(is_tool=True, is_pub=is_pub)
 
-    def _fn(self, is_tool=False):
+    def _fn(self, is_tool=False, is_pub=False):
         fn_line = self._cur().line
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
         type_params = []
+        type_bounds = {}
         if self._match(TokenType.LT):
             self._advance()
             while not self._match(TokenType.GT, TokenType.EOF):
                 tp = self._expect(TokenType.IDENT).value
                 type_params.append(tp)
+                if self._match(TokenType.COLON):
+                    self._advance()
+                    bound = self._expect(TokenType.IDENT).value
+                    type_bounds[tp] = bound
                 if self._match(TokenType.COMMA):
                     self._advance()
             self._expect(TokenType.GT)
@@ -378,7 +456,7 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line, type_params=type_params)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 
     def _body(self):
         stmts = []
@@ -393,14 +471,14 @@ class Parser:
 
     # ── const ───────────────────────────────────────────────
 
-    def _const(self):
+    def _const(self, is_pub=False):
         self._expect(TokenType.CONST)
         vtype = self._parse_type()
         name  = self._expect(TokenType.IDENT).value
         self._expect(TokenType.ASSIGN)
         val   = self._expr()
         self._opt_semi()
-        return ConstDecl(vtype, name, val)
+        return ConstDecl(vtype, name, val, is_pub=is_pub)
 
     # ── import / library / foreign ──────────────────────────
 
@@ -410,8 +488,12 @@ class Parser:
         # import "file.cryo"  -> Cryo module (resolved by the compiler)
         if tok.type == TokenType.STR_LIT:
             self._advance()
+            alias = None
+            if self._match(TokenType.AS):
+                self._advance()
+                alias = self._expect(TokenType.IDENT).value
             self._opt_semi()
-            return ModuleImport(tok.value)
+            return ModuleImport(tok.value, alias=alias)
         # import >Lang<          -> enables foreign language
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
@@ -479,7 +561,6 @@ class Parser:
                 )
         self._expect(TokenType.GT)
         return params
-
 
     # ── string interpolation: "total: ${x}" ──────────────
 
@@ -952,7 +1033,6 @@ class Parser:
                              'int[]', body))
         return name
 
-
     def _ternary(self):
         cond = self._cast()
         if self._match(TokenType.QUESTION):
@@ -1283,6 +1363,10 @@ class Parser:
         if tok.type in (TokenType.IDENT, TokenType.MAP):
             id_line = tok.line
             name = self._advance().value
+            if self._match(TokenType.COLON_COLON):
+                self._advance()
+                member = self._expect(TokenType.IDENT).value
+                name = f"{name}::{member}"
             type_args = []
             if self._type_args_ahead():
                 self._expect(TokenType.LT)
@@ -1303,6 +1387,18 @@ class Parser:
                             self._advance()
                     self._expect(TokenType.RBRACE)
                     return StructInit(name, fields, type_args=type_args)
+            if self._match(TokenType.LBRACE) and (self._peek().type == TokenType.RBRACE or (self._peek().type == TokenType.IDENT and self._peek(2).type == TokenType.COLON)):
+                self._advance()
+                fields = []
+                while not self._match(TokenType.RBRACE):
+                    fname = self._expect(TokenType.IDENT).value
+                    self._expect(TokenType.COLON)
+                    fval  = self._expr()
+                    fields.append((fname, fval))
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.RBRACE)
+                return StructInit(name, fields)
             if self._match(TokenType.LPAREN):
                 self._advance()
                 args = self._call_args()

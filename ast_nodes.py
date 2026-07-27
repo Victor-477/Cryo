@@ -2,7 +2,7 @@
 #  Cryo Compiler - AST Nodes  (v0.2)
 # ============================================================
 from dataclasses import dataclass, field
-from typing import Optional, List, Any, Tuple
+from typing import Optional, List, Any, Tuple, Dict
 
 
 @dataclass
@@ -26,6 +26,27 @@ class StructDecl(Node):
     fields:      List[StructField]
     line:        int = 0
     type_params: List[str] = field(default_factory=list)
+    type_bounds: Dict[str, str] = field(default_factory=dict)
+    is_pub:      bool = False
+
+@dataclass
+class TraitMethodSig(Node):
+    name:        str
+    params:      List[Tuple[str, str]]
+    return_type: Optional[str]
+
+@dataclass
+class TraitDecl(Node):
+    name:    str
+    methods: List[TraitMethodSig]
+    line:    int = 0
+
+@dataclass
+class ImplDecl(Node):
+    trait_name:  str
+    target_type: str
+    methods:     List['FunctionDecl']
+    line:        int = 0
 
 @dataclass
 class EnumMember:
@@ -38,6 +59,7 @@ class EnumDecl(Node):
     name:    str
     members: List[EnumMember]
     line:    int = 0
+    is_pub:  bool = False
 
 @dataclass
 class MatchCase(Node):
@@ -72,6 +94,7 @@ class ConstDecl(Node):
     var_type: str
     name:     str
     value:    Node
+    is_pub:   bool = False
 
 @dataclass
 class Assignment(Node):
@@ -106,6 +129,8 @@ class FunctionDecl(Node):
     is_tool:     bool = False   # 'tool fn' — exposed to LLMs (Phase 3)
     line:        int = 0
     type_params: List[str] = field(default_factory=list)
+    type_bounds: Dict[str, str] = field(default_factory=dict)
+    is_pub:      bool = False
 
 @dataclass
 class Block(Node):
@@ -194,8 +219,15 @@ class Import(Node):
 
 @dataclass
 class ModuleImport(Node):
-    """Import of another Cryo file: import "utils.cryo" (resolved by the compiler)."""
-    path: str
+    """Import of another Cryo file: import "utils.cryo" as utils (resolved by compiler)."""
+    path:  str
+    alias: Optional[str] = None
+
+@dataclass
+class QualifiedIdentifier(Node):
+    namespace: str
+    name:      str
+    line:      int = 0
 
 @dataclass
 class Library(Node):

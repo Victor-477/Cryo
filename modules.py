@@ -1,33 +1,21 @@
 # ============================================================
-#  Cryo — Module resolution (import "file.cryo")
-#
-#  A Cryo program can import other .cryo files. The
-#  resolver runs after parsing and BEFORE checking and
-#  codegen: loads each module (relative to the file that
-#  imports it), recursively, and produces a single flattened Program.
-#
-#  Rules (v1):
-#  - A module contributes its DECLARATIONS: functions, structs,
-#    enums, consts, schemas/tools, skills, `import >Lang<` and
-#    `library >...<`. Top-level executable statements of an imported
-#    module are ignored (only the entry program "runs").
-#  - The same imported file multiple times enters ONCE
-#    (deduplication by absolute path).
-#  - Import cycles are detected and rejected.
-#  - Name collision (two declarations with the same name coming from
-#    different files) is an error, with both paths in the message.
+#  Cryo — Module resolution (import "file.cryo" [as alias])
 # ============================================================
 import os
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from ast_nodes import (
-    Program, Node, ModuleImport, Import, Library,
-    FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl,
+    Program, Node, ModuleImport, Import, Library, QualifiedIdentifier,
+    FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl, VarDecl, Assignment,
+    CompoundAssignment, IndexAssignment, Increment, Return, If, While, For, DoWhile,
+    ForEach, TryCatch, Block, Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
+    BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr,
+    FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier
 )
 
 
 class ModuleError(Exception):
-    """Module resolution error (missing file, cycle, collision)."""
+    """Module resolution error (missing file, cycle, collision, visibility)."""
     pass
 
 
@@ -53,52 +41,67 @@ def _parse_file(path: str) -> Program:
 
 
 def resolve_modules(program: Program, base_dir: str) -> Program:
-    """Resolves all `import "file.cryo"` of a Program.
-
-    Returns a new Program with the declarations of the imported modules
-    (in import order, depth-first) followed by the statements
-    of the entry program. Without ModuleImport in the result.
-    """
     loaded: Set[str] = set()            # abspaths already incorporated
     loading: List[str] = []             # stack for cycle detection
     origem: Dict[str, str] = {}         # declaration name -> file
     decls: List[Node] = []
 
-    def load(path: str, importer_dir: str):
+    # (alias, symbol_name) -> (mangled_name, is_pub)
+    aliased_exports: Dict[Tuple[str, str], Tuple[str, bool]] = {}
+
+    def load(path: str, importer_dir: str, alias: Optional[str] = None):
         full = os.path.normpath(os.path.join(importer_dir, path))
         full = os.path.abspath(full)
         if full in loaded:
-            return                       # dedup: already incorporated
+            return                       # dedup
         if full in loading:
             cadeia = ' -> '.join(os.path.basename(p) for p in loading + [full])
             raise ModuleError(f"[Module Error] import cycle detected: {cadeia}")
         if not os.path.isfile(full):
-            raise ModuleError(
-                f"[Module Error] module not found: '{path}' (looked in {full})")
+            raise ModuleError(f"[Module Error] module not found: '{path}' (looked in {full})")
+
         loading.append(full)
         mod = _parse_file(full)
         mod_dir = os.path.dirname(full)
+
         for n in mod.statements:
             if isinstance(n, ModuleImport):
-                load(n.path, mod_dir)    # nested imports, relative to the module
+                load(n.path, mod_dir, n.alias)
             elif isinstance(n, _DECLS):
                 name = _decl_name(n)
                 if name:
-                    if name in origem and origem[name] != full:
-                        raise ModuleError(
-                            f"[Module Error] duplicate declaration '{name}': defined in "
-                            f"{origem[name]} and in {full}")
-                    origem.setdefault(name, full)
-                decls.append(n)
-            # executable statements of imported module: ignored
+                    if alias:
+                        mangled = f"{alias}__{name}"
+                        is_pub = getattr(n, 'is_pub', False)
+                        aliased_exports[(alias, name)] = (mangled, is_pub)
+                        if is_pub:
+                            if isinstance(n, FunctionDecl):
+                                mangled_node = FunctionDecl(mangled, n.params, n.return_type, n.body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+                            elif isinstance(n, StructDecl):
+                                mangled_node = StructDecl(mangled, n.fields, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+                            elif isinstance(n, EnumDecl):
+                                mangled_node = EnumDecl(mangled, n.members, line=n.line, is_pub=n.is_pub)
+                            elif isinstance(n, ConstDecl):
+                                mangled_node = ConstDecl(n.var_type, mangled, n.value, is_pub=n.is_pub)
+                            else:
+                                mangled_node = n
+                            decls.append(mangled_node)
+                    else:
+                        if name in origem and origem[name] != full:
+                            raise ModuleError(
+                                f"[Module Error] duplicate declaration '{name}': defined in "
+                                f"{origem[name]} and in {full}")
+                        origem.setdefault(name, full)
+                        decls.append(n)
+
         loading.pop()
         loaded.add(full)
 
-    # scan the entry program
+    # scan entry program
     rest: List[Node] = []
     for n in program.statements:
         if isinstance(n, ModuleImport):
-            load(n.path, base_dir)
+            load(n.path, base_dir, n.alias)
         else:
             name = _decl_name(n)
             if name and name in origem:
@@ -107,6 +110,167 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                     f"{origem[name]} and in the main program")
             rest.append(n)
 
-    if not decls:
-        return Program(rest) if rest is not program.statements else program
-    return Program(decls + rest)
+    # Transform qualified names ns::member -> mangled name ns__member
+    def transform_node(n: Node) -> Node:
+        if n is None:
+            return None
+
+        if isinstance(n, QualifiedIdentifier):
+            key = (n.namespace, n.name)
+            if key in aliased_exports:
+                mangled, is_pub = aliased_exports[key]
+                if not is_pub:
+                    raise ModuleError(f"[Module Error] '{n.name}' is not pub in module '{n.namespace}'")
+                return Identifier(mangled, line=n.line)
+            raise ModuleError(f"[Module Error] unknown symbol '{n.name}' in module '{n.namespace}'")
+
+        if isinstance(n, CallExpr) and '::' in n.callee:
+            parts = n.callee.split('::', 1)
+            ns, mname = parts[0], parts[1]
+            key = (ns, mname)
+            if key in aliased_exports:
+                mangled, is_pub = aliased_exports[key]
+                if not is_pub:
+                    raise ModuleError(f"[Module Error] '{mname}' is not pub in module '{ns}'")
+                new_args = [transform_node(a) for a in n.args]
+                return CallExpr(mangled, new_args, line=n.line, type_args=n.type_args)
+            raise ModuleError(f"[Module Error] unknown function '{mname}' in module '{ns}'")
+
+        if isinstance(n, StructInit) and '::' in n.struct_name:
+            parts = n.struct_name.split('::', 1)
+            ns, sname = parts[0], parts[1]
+            key = (ns, sname)
+            if key in aliased_exports:
+                mangled, is_pub = aliased_exports[key]
+                if not is_pub:
+                    raise ModuleError(f"[Module Error] '{sname}' is not pub in module '{ns}'")
+                new_fields = [(fn, transform_node(fv)) for fn, fv in n.fields]
+                return StructInit(mangled, new_fields, type_args=n.type_args)
+            raise ModuleError(f"[Module Error] unknown struct '{sname}' in module '{ns}'")
+
+        if isinstance(n, VarDecl):
+            vtype = n.var_type
+            if '::' in vtype:
+                parts = vtype.split('::', 1)
+                ns, tname = parts[0], parts[1]
+                key = (ns, tname)
+                if key in aliased_exports:
+                    mangled, is_pub = aliased_exports[key]
+                    if not is_pub:
+                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+                    vtype = mangled
+            return VarDecl(vtype, n.name, transform_node(n.value))
+
+        if isinstance(n, ConstDecl):
+            vtype = n.var_type
+            if '::' in vtype:
+                parts = vtype.split('::', 1)
+                ns, tname = parts[0], parts[1]
+                key = (ns, tname)
+                if key in aliased_exports:
+                    mangled, is_pub = aliased_exports[key]
+                    if not is_pub:
+                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+                    vtype = mangled
+            return ConstDecl(vtype, n.name, transform_node(n.value), is_pub=n.is_pub)
+
+        if isinstance(n, FunctionDecl):
+            new_params = []
+            for pt, pn in n.params:
+                if '::' in pt:
+                    parts = pt.split('::', 1)
+                    ns, tname = parts[0], parts[1]
+                    key = (ns, tname)
+                    if key in aliased_exports:
+                        mangled, is_pub = aliased_exports[key]
+                        if not is_pub:
+                            raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+                        pt = mangled
+                new_params.append((pt, pn))
+            ret_type = n.return_type
+            if ret_type and '::' in ret_type:
+                parts = ret_type.split('::', 1)
+                ns, tname = parts[0], parts[1]
+                key = (ns, tname)
+                if key in aliased_exports:
+                    mangled, is_pub = aliased_exports[key]
+                    if not is_pub:
+                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+                    ret_type = mangled
+            new_body = [transform_node(s) for s in n.body]
+            return FunctionDecl(n.name, new_params, ret_type, new_body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+
+        if isinstance(n, Assignment):
+            return Assignment(n.name, transform_node(n.value))
+
+        if isinstance(n, CompoundAssignment):
+            return CompoundAssignment(n.op, n.name, transform_node(n.value))
+
+        if isinstance(n, IndexAssignment):
+            return IndexAssignment(transform_node(n.obj), transform_node(n.index), transform_node(n.value))
+
+        if isinstance(n, Return):
+            return Return(transform_node(n.value))
+
+        if isinstance(n, If):
+            return If(transform_node(n.condition),
+                      [transform_node(s) for s in n.then_body],
+                      [transform_node(s) for s in n.else_body] if n.else_body else None)
+
+        if isinstance(n, While):
+            return While(transform_node(n.condition), [transform_node(s) for s in n.body])
+
+        if isinstance(n, For):
+            return For(transform_node(n.init), transform_node(n.condition), transform_node(n.update), [transform_node(s) for s in n.body])
+
+        if isinstance(n, DoWhile):
+            return DoWhile([transform_node(s) for s in n.body], transform_node(n.condition))
+
+        if isinstance(n, ForEach):
+            return ForEach(n.var_type, n.var_name, transform_node(n.iterable), [transform_node(s) for s in n.body])
+
+        if isinstance(n, Block):
+            return Block([transform_node(s) for s in n.body])
+
+        if isinstance(n, BinaryExpr):
+            return BinaryExpr(n.op, transform_node(n.left), transform_node(n.right))
+
+        if isinstance(n, TernaryExpr):
+            return TernaryExpr(transform_node(n.condition), transform_node(n.then_value), transform_node(n.else_value))
+
+        if isinstance(n, UnaryExpr):
+            return UnaryExpr(n.op, transform_node(n.operand))
+
+        if isinstance(n, CallExpr):
+            new_args = [transform_node(a) for a in n.args]
+            return CallExpr(n.callee, new_args, line=n.line, type_args=n.type_args)
+
+        if isinstance(n, MethodCallExpr):
+            return MethodCallExpr(transform_node(n.obj), n.method, [transform_node(a) for a in n.args])
+
+        if isinstance(n, FieldAccess):
+            return FieldAccess(transform_node(n.obj), n.field)
+
+        if isinstance(n, IndexAccess):
+            return IndexAccess(transform_node(n.obj), transform_node(n.index))
+
+        if isinstance(n, ArrayLiteral):
+            return ArrayLiteral([transform_node(e) for e in n.elements])
+
+        if isinstance(n, MapLiteral):
+            return MapLiteral([(transform_node(k), transform_node(v)) for k, v in n.pairs])
+
+        if isinstance(n, StructInit):
+            new_fields = [(fn, transform_node(fv)) for fn, fv in n.fields]
+            return StructInit(n.struct_name, new_fields, type_args=n.type_args)
+
+        if isinstance(n, Lambda):
+            return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
+
+        return n
+
+    transformed_decls = [transform_node(d) for d in decls]
+    transformed_rest = [transform_node(r) for r in rest]
+
+    final_statements = transformed_decls + transformed_rest
+    return Program(final_statements)
