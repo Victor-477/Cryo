@@ -206,6 +206,13 @@ class Library(Node):
 class ForeignBlock(Node):
     lang: str
     code: str
+    # Roadmap 10.12 — structure parameters: `>Lang( ... )<k = v, ...>`.
+    # Each entry wires this block to something outside it: another foreign
+    # block (named by the Cryo function wrapping it), a Cryo function, or a
+    # Cryo variable. Empty list = the plain `>Lang( ... )` form; `<>` is also
+    # legal and means "declares a parameter list, currently empty".
+    params: List[Tuple[str, str]] = field(default_factory=list)
+    name:   str = ""     # set by the frontend pass to the enclosing fn, if any
 
 # -- expressions ------------------------------------------
 

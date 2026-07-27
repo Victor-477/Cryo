@@ -1,0 +1,66 @@
+// ============================================================
+//  Cryo front-end — roadmap 10.11 / 10.12 / 10.13
+//
+//  A web page written entirely in Cryo. Three foreign languages
+//  live side by side, each wrapped in a Cryo function so it has a
+//  NAME, and the html block composes them by name:
+//
+//      >html( ... )<script = behavior, style = styles>
+//
+//  Build it either way — the page looks the same, the logic differs:
+//
+//    python Burnout/cryoc.py Cryo/examples/frontend/app.cryo \
+//        --backend frontend --emit html -o build/web/index.html
+//        -> ONE self-contained .html file. No fetch, no build step;
+//           opens straight from disk. The javascript block runs as-is.
+//
+//    python Burnout/cryoc.py Cryo/examples/frontend/app.cryo \
+//        --backend frontend --emit pyro -o build/web/index.html
+//        -> index.html + app.wasm. The Cryo functions below are
+//           compiled to a binary the browser executes; the page waits
+//           for `cryo:ready`, then calls them through `cryo`.
+//           Serve over http (fetch cannot read file://).
+// ============================================================
+
+import >html<
+import >javascript<
+import >CSS<
+
+// ── ordinary Cryo. Under --emit pyro this becomes app.wasm; the
+//    front-end blocks below are stripped out before it is compiled,
+//    because they describe the document, not the program. ──
+fn fib(int n) -> int ={
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+// ── a named CSS block ──
+fn styles() ={
+  >CSS(
+    body { font-family: system-ui, sans-serif; background: #0b0b0d;
+           color: #e8e8ea; margin: 0; padding: 3rem 1.5rem; }
+    h1   { font-size: 1.5rem; font-weight: 600; }
+    #out { font-size: 2.5rem; font-variant-numeric: tabular-nums; }
+    .hint { color: #8a8a92; font-size: .875rem; }
+  )
+}
+
+// ── a named javascript block. Under --emit pyro it is wrapped in a
+//    `cryo:ready` listener, so `cryo` is guaranteed to be loaded.
+//    i64 crosses into JS as BigInt, hence the `20n`. ──
+fn behavior() ={
+  >javascript(
+    document.getElementById("out").textContent = cryo.fib(20n).toString();
+  )
+}
+
+// ── the page. `script=` must name a javascript block and `style=` a
+//    CSS block; getting them backwards is a compile error, not a
+//    silently broken page. ──
+fn page() ={
+  >html(
+    <h1>fib(20), computed by Cryo</h1>
+    <p id="out">loading...</p>
+    <p class="hint">The number above came from a Cryo function.</p>
+  )<script = behavior, style = styles>
+}

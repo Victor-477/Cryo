@@ -73,6 +73,51 @@ fn process(Result r) -> string? ={
 
 ---
 
+## 🌐 Front-end pages
+
+A `.cryo` file can *be* a web page. Wrap a foreign block in a function — that
+is what gives the block a **name** — then compose the named blocks with a
+structure-parameter tail:
+
+```cryo
+import >html<
+import >javascript<
+import >CSS<
+
+fn fib(int n) -> int ={ if (n < 2) { return n; } return fib(n-1) + fib(n-2); }
+
+fn styles()   ={ >CSS( body { background: #0b0b0d; color: #e8e8ea; } ) }
+fn behavior() ={ >javascript( out.textContent = cryo.fib(20n).toString(); ) }
+
+fn page() ={
+  >html( <h1>Cryo</h1><p id="out">…</p> )<script = behavior, style = styles>
+}
+```
+
+`script=` must name a `>javascript(` block and `style=` a `>CSS(` block —
+swapping them is a compile error, not a blank page.
+
+Two outputs, same document structure:
+
+```bash
+python Burnout/cryoc.py app.cryo --backend frontend --emit html -o web/index.html
+```
+
+- **`--emit html`** — one self-contained vanilla file. CSS and JS inlined, no
+  subresource requests, opens straight from `file://`.
+- **`--emit pyro`** — `index.html` **plus `app.wasm`**: the Cryo functions in
+  the file, compiled to a binary the browser executes. The author's javascript
+  is deferred behind a `cryo:ready` event, so `cryo.fib(…)` is always ready.
+  `int` crosses into JS as `BigInt` (hence `20n`). Serve over http — `fetch`
+  cannot read `file://`.
+
+The `<k = v>` tail is not HTML-specific: it works on any foreign language
+(`>Java( ... )<util = helper>`), and every `v` must name a real declaration.
+
+Full example: [`examples/frontend/app.cryo`](examples/frontend/app.cryo).
+
+---
+
 ## ⚙️ Architecture Integration
 
 Cryo serves as the ergonomic entry point. It has no dependencies on the backend VM or compiler orchestration modules:

@@ -436,7 +436,50 @@ class Parser:
     def _foreign(self):
         tok = self._expect(TokenType.LANG_BLOCK)
         lang, _, code = tok.value.partition(':')
-        return ForeignBlock(lang, code)
+        return ForeignBlock(lang, code, params=self._struct_params())
+
+    def _struct_params(self):
+        """Roadmap 10.12 — the optional `<k = v, ...>` tail of a foreign block.
+
+        The lexer has already consumed the block's `( ... )`, so the tail
+        arrives as ordinary tokens. `<` is ALSO the less-than operator, so this
+        only commits when the lookahead is unambiguous: `<>` (empty list) or
+        `<IDENT =`. Anything else leaves the `<` alone for the expression
+        parser, because `>C( ... )` followed by a comparison is still valid.
+        """
+        if not self._match(TokenType.LT):
+            return []
+        nxt, after = self._peek(1), self._peek(2)
+        empty = nxt.type == TokenType.GT
+        pair  = nxt.type == TokenType.IDENT and after.type == TokenType.ASSIGN
+        if not (empty or pair):
+            return []
+
+        self._advance()                     # '<'
+        params = []
+        seen = set()
+        while not self._match(TokenType.GT, TokenType.EOF):
+            key = self._expect(TokenType.IDENT)
+            self._expect(TokenType.ASSIGN)
+            val = self._expect(TokenType.IDENT).value
+            if key.value in seen:
+                raise ParseError(
+                    f"[Syntax Error] Line {key.line}: structure parameter "
+                    f"'{key.value}' given twice in the same block"
+                )
+            seen.add(key.value)
+            params.append((key.value, val))
+            if self._match(TokenType.COMMA):
+                self._advance()
+            elif not self._match(TokenType.GT):
+                t = self._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {t.line}: expected ',' or '>' in the "
+                    f"structure parameter list, got {t.type.name} ({t.value!r})"
+                )
+        self._expect(TokenType.GT)
+        return params
+
 
     # ── string interpolation: "total: ${x}" ──────────────
 
