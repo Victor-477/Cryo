@@ -971,12 +971,54 @@ class Parser:
         self._expect(TokenType.RPAREN)
         return args
 
+    def _slice_expr(self, obj, start, lb):
+        """Roadmap 10.9 — `xs[a..b]`, `xs[a..=b]`, `xs[a..]`, `xs[..b]`.
+
+        Lowered here in the front end so all six backends get slicing for free
+        (architecture rule 2). The result is always `slice(obj, start, end)`;
+        the `slice` native is polymorphic over array|string because the parser
+        cannot know which one `obj` is.
+        """
+        tok = self._advance()                       # RANGE or RANGE_INCL
+        inclusive = tok.type == TokenType.RANGE_INCL
+
+        if self._match(TokenType.RBRACKET):
+            # Open end: `xs[a..]` means "through the last element", which needs
+            # len(obj) — so obj is evaluated TWICE. Only safe for a plain name;
+            # anything else could have side effects or be expensive.
+            if not isinstance(obj, Identifier):
+                raise ParseError(
+                    f"[Syntax Error] Line {lb.line}: an open-ended slice `[a..]` "
+                    "requires a simple variable on the left, because the value is "
+                    "needed twice (once to slice, once for its length); assign it "
+                    "to a variable first")
+            if inclusive:
+                raise ParseError(
+                    f"[Syntax Error] Line {tok.line}: `..=` needs an end index; "
+                    "write `[a..]` for an open-ended slice")
+            end = CallExpr('len', [Identifier(obj.name)], line=lb.line)
+        else:
+            end = self._expr()
+            if inclusive:
+                # `a..=b` includes b, and slice()'s end is exclusive.
+                end = BinaryExpr('+', end, Literal('int', 1))
+        self._expect(TokenType.RBRACKET)
+        return CallExpr('slice', [obj, start, end], line=lb.line)
+
     def _postfix(self):
         expr = self._primary()
         while True:
             if self._match(TokenType.LBRACKET):
-                self._advance()
+                lb = self._advance()
+                # `x[..b]` — open start. Checked before parsing an index so the
+                # leading `..` is not mistaken for a malformed expression.
+                if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                    expr = self._slice_expr(expr, Literal('int', 0), lb)
+                    continue
                 idx = self._expr()
+                if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                    expr = self._slice_expr(expr, idx, lb)
+                    continue
                 self._expect(TokenType.RBRACKET)
                 expr = IndexAccess(expr, idx)
             elif self._match(TokenType.LPAREN):

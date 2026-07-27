@@ -1,0 +1,41 @@
+// ============================================================
+//  Roadmap 10.9 — ranges & slices as values
+//  Slice syntax lowers in the front end to slice(x, start, end),
+//  so every backend gets it without a VM change. The `slice`
+//  native is polymorphic over array|string because the parser
+//  cannot know which one the operand is.
+// ============================================================
+
+int[] xs = [10, 20, 30, 40, 50];
+string s = "hello world";
+
+// --- half-open `a..b` (end excluded) ---
+print(xs[1..3]);        // [20, 30]
+print(s[0..5]);         // hello
+
+// --- inclusive `a..=b` (end included) ---
+print(xs[1..=3]);       // [20, 30, 40]
+print(s[0..=4]);        // hello
+
+// --- open ends ---
+print(xs[2..]);         // [30, 40, 50]
+print(xs[..2]);         // [10, 20]
+print(s[6..]);          // world
+print(s[..5]);          // hello
+
+// --- bounds are clamped, never an error ---
+print(xs[3..99]);       // [40, 50]   end past the tail
+print(xs[0..0]);        // []         empty slice
+print(s[3..99]);        // lo world
+
+// --- slices are values: they compose like any other expression ---
+print(len(xs[1..4]));           // 3
+print(sum(xs[0..2]));           // 30
+print(upper(s[0..5]));          // HELLO
+print(xs[1..4][0]);             // 20   index straight into a slice
+
+// --- a slice is a COPY: mutating it leaves the source alone ---
+int[] part = xs[0..2];
+part[0] = 999;
+print(part[0]);         // 999
+print(xs[0]);           // 10
