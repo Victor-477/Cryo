@@ -692,14 +692,14 @@ class Parser:
         if self._is_foreach():
             vars_list = self._parse_for_vars()
             self._expect(TokenType.IN)
-            iterable = self._expr()
+            iterable = self._no_range()
             # range form:  for (int i in start .. end)  /  .. = (inclusive)
             if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
                 if len(vars_list) != 1:
                     raise ParseError(f"[Syntax Error] Line {self._cur().line}: range loop requires a single variable")
                 vtype, vname = vars_list[0]
                 inclusive = self._advance().type == TokenType.RANGE_INCL
-                end = self._expr()
+                end = self._no_range()
                 self._expect(TokenType.RPAREN)
                 body = self._block()
                 return self._desugar_range(vtype, vname, iterable, end, inclusive, body)
@@ -902,7 +902,56 @@ class Parser:
 
     # ── expressoes (precedencia crescente) ──────────────────
 
-    def _expr(self):  return self._ternary()
+    def _expr(self):  return self._range()
+
+    def _no_range(self):
+        """An expression that stops before `..`.
+
+        Four constructs consume the range tokens THEMSELVES — the range `for`
+        (10.1), which lowers to a counted loop rather than building an array,
+        and slice syntax (10.9). They must parse their operands with this, or
+        `_range` below would swallow the `..` first and `for (int i in 0..n)`
+        would silently start allocating an array per loop.
+        """
+        return self._ternary()
+
+    def _range(self):
+        """Roadmap 10.9 — `a..b` as a value: the array [a, a+1, ..., b-1].
+
+        Binds looser than everything else, so `0..n+1` reads as `0..(n+1)`.
+        Lowered to a synthetic function rather than a new native, so all six
+        backends get it with no VM change (architecture rule 2), matching how
+        10.1 and the comprehensions are done.
+        """
+        left = self._ternary()
+        if not self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+            return left
+        tok = self._advance()
+        right = self._ternary()
+        if tok.type == TokenType.RANGE_INCL:
+            right = BinaryExpr('+', right, Literal('int', 1))
+        return CallExpr(self._range_helper(), [left, right], line=tok.line)
+
+    def _range_helper(self) -> str:
+        """Declare (once) the function a range value expands to."""
+        name = '__cryo_range'
+        if name not in self.user_defined_fns:
+            self.user_defined_fns.add(name)
+            i = '__r_i'
+            body = [
+                VarDecl('int[]', '__r_out', ArrayLiteral([])),
+                For(VarDecl('int', i, Identifier('lo')),
+                    BinaryExpr('<', Identifier(i), Identifier('hi')),
+                    Increment('++', i),
+                    [MethodCallExpr(Identifier('__r_out'), 'push',
+                                    [Identifier(i)])]),
+                Return(Identifier('__r_out')),
+            ]
+            self.synthetic_fns.append(
+                FunctionDecl(name, [('int', 'lo'), ('int', 'hi')],
+                             'int[]', body))
+        return name
+
 
     def _ternary(self):
         cond = self._cast()
@@ -1041,7 +1090,7 @@ class Parser:
                     "write `[a..]` for an open-ended slice")
             end = CallExpr('len', [Identifier(obj.name)], line=lb.line)
         else:
-            end = self._expr()
+            end = self._no_range()
             if inclusive:
                 # `a..=b` includes b, and slice()'s end is exclusive.
                 end = BinaryExpr('+', end, Literal('int', 1))
@@ -1058,7 +1107,7 @@ class Parser:
                 if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
                     expr = self._slice_expr(expr, Literal('int', 0), lb)
                     continue
-                idx = self._expr()
+                idx = self._no_range()
                 if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
                     expr = self._slice_expr(expr, idx, lb)
                     continue
@@ -1286,7 +1335,7 @@ class Parser:
 
         vars_list = self._parse_for_vars()
         self._expect(TokenType.IN)
-        iterable = self._expr()
+        iterable = self._no_range()
 
         is_range = False
         inclusive = False
@@ -1294,7 +1343,7 @@ class Parser:
         if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
             is_range = True
             inclusive = self._advance().type == TokenType.RANGE_INCL
-            range_end = self._expr()
+            range_end = self._no_range()
 
         if has_paren:
             self._expect(TokenType.RPAREN)
@@ -1351,7 +1400,7 @@ class Parser:
 
         vars_list = self._parse_for_vars()
         self._expect(TokenType.IN)
-        iterable = self._expr()
+        iterable = self._no_range()
 
         is_range = False
         inclusive = False
@@ -1359,7 +1408,7 @@ class Parser:
         if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
             is_range = True
             inclusive = self._advance().type == TokenType.RANGE_INCL
-            range_end = self._expr()
+            range_end = self._no_range()
 
         if has_paren:
             self._expect(TokenType.RPAREN)

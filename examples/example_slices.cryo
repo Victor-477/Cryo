@@ -39,3 +39,27 @@ int[] part = xs[0..2];
 part[0] = 999;
 print(part[0]);         // 999
 print(xs[0]);           // 10
+
+// ============================================================
+//  Ranges as values — the second half of 10.9.
+//  Outside a `for`, `a..b` IS the array [a, a+1, ..., b-1].
+//  Inside a `for` it still lowers to a counted loop and allocates
+//  nothing, so the ergonomic form costs nothing in the hot path.
+// ============================================================
+int[] r = 0..5;
+print(r);               // [0, 1, 2, 3, 4]
+print(len(r));          // 5
+print(1..=4);           // [1, 2, 3, 4]   inclusive end
+
+// binds looser than arithmetic, so this is 0..(n+1), not (0..n)+1
+int n = 3;
+print(0..n+1);          // [0, 1, 2, 3]
+
+// a range is an ordinary value: it composes and can be indexed
+print(sum(0..5));       // 10
+print((2..6)[1]);       // 3
+print(len(0..0));       // 0    empty range
+print(len(5..2));       // 0    reversed bounds are empty, not an error
+
+// and it still drives a plain loop
+for (int i in 0..3) { print(i); }   // 0 1 2
