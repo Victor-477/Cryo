@@ -14,7 +14,7 @@ from ast_nodes import (
     Import, ModuleImport, Library, ForeignBlock,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
-    SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
+    SpawnExpr, AwaitExpr, CallExpr, CallValueExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
     Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
@@ -514,7 +514,8 @@ class Parser:
         Range loops require an integer loop variable."""
         if vtype != 'int':
             raise ParseError(
-                f"range loop variable must be 'int', got '{vtype}' (line {self._peek().line})")
+                f"[Syntax Error] Line {self._cur().line}: range loop variable must be "
+                f"'int', got '{vtype}'")
         op = '<=' if inclusive else '<'
         init   = VarDecl('int', vname, start)
         cond   = BinaryExpr(op, Identifier(vname), end)
@@ -762,6 +763,24 @@ class Parser:
             self._advance(); return AwaitExpr(self._unary())
         return self._postfix()
 
+    def _call_args(self):
+        """Parse `expr, expr, ...)` after an already-consumed '(' — the ')' is
+        consumed too. Arguments MUST be separated by commas: a missing comma
+        used to be accepted silently, so `f(a)(b)` parsed as `f(a, b)` and
+        `f(1 2)` as `f(1, 2)` — wrong code with no diagnostic."""
+        args = []
+        while not self._match(TokenType.RPAREN):
+            args.append(self._expr())
+            if self._match(TokenType.COMMA):
+                self._advance()
+            elif not self._match(TokenType.RPAREN):
+                tok = self._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {tok.line}: expected ',' or ')' between call "
+                    f"arguments, got {tok.type.name} ({tok.value!r})")
+        self._expect(TokenType.RPAREN)
+        return args
+
     def _postfix(self):
         expr = self._primary()
         while True:
@@ -770,18 +789,17 @@ class Parser:
                 idx = self._expr()
                 self._expect(TokenType.RBRACKET)
                 expr = IndexAccess(expr, idx)
+            elif self._match(TokenType.LPAREN):
+                # calling the RESULT of an expression: `f(a)(b)`, `pick(x)(y)`.
+                # `name(args)` is handled in _primary; this is the chained form.
+                lp = self._advance()
+                expr = CallValueExpr(expr, self._call_args(), line=lp.line)
             elif self._match(TokenType.DOT):
                 self._advance()
                 member = self._expect(TokenType.IDENT).value
                 if self._match(TokenType.LPAREN):
                     self._advance()
-                    args = []
-                    while not self._match(TokenType.RPAREN):
-                        args.append(self._expr())
-                        if self._match(TokenType.COMMA):
-                            self._advance()
-                    self._expect(TokenType.RPAREN)
-                    expr = MethodCallExpr(expr, member, args)
+                    expr = MethodCallExpr(expr, member, self._call_args())
                 else:
                     expr = FieldAccess(expr, member)
             elif self._match(TokenType.NOT):
@@ -871,13 +889,7 @@ class Parser:
             name = self._advance().value
             if self._match(TokenType.LPAREN):
                 self._advance()
-                args = []
-                while not self._match(TokenType.RPAREN):
-                    args.append(self._expr())
-                    if self._match(TokenType.COMMA):
-                        self._advance()
-                self._expect(TokenType.RPAREN)
-                return CallExpr(name, args, line=id_line)
+                return CallExpr(name, self._call_args(), line=id_line)
             return Identifier(name, line=id_line)
 
         if tok.type == TokenType.LPAREN:

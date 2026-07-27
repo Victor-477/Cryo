@@ -43,8 +43,10 @@ fn pick(bool useDouble) -> fn(int)->int ={
 }
 fn(int)->int chosen = pick(true);
 print("pick(true) then call(10)  = ${chosen(10)}");    // 20
-chosen = pick(false);
-print("pick(false) then call(10) = ${chosen(10)}");    // 11
+
+// ...or call the returned function directly (a chained call)
+print("pick(true)(10)  = ${pick(true)(10)}");          // 20
+print("pick(false)(10) = ${pick(false)(10)}");         // 11
 
 // a tiny dispatch table, chosen at runtime
 fn run3(bool useDouble) -> int ={
@@ -57,4 +59,4 @@ print("run3(false) = ${run3(false)}");            // 4
 // NOTE: the pyro backend supports NON-capturing lambdas. A lambda that
 // closes over an enclosing variable (a true closure) is rejected with a
 // clear message — use --backend go or node for those. Arrays of function
-// values also await a type-syntax decision (`fn(int)->int[]` is ambiguous).
+// values await a type-syntax decision (`fn(int)->int[]` is ambiguous).

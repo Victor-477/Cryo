@@ -23,7 +23,7 @@ from ast_nodes import (
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
     Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr,
-    MapLiteral, UnaryExpr, CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
+    MapLiteral, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr, FieldAccess, IndexAccess,
     ArrayLiteral, StructInit, Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
 
@@ -338,6 +338,11 @@ class _Checker:
                 scope.declare(pn)
             self.check_block(n.body, scope)
             scope.pop()
+        elif isinstance(n, CallValueExpr):
+            # `f(a)(b)`: the callee is an expression, so just walk both sides
+            self.check_expr(n.callee, scope)
+            for a in n.args:
+                self.check_expr(a, scope)
         elif isinstance(n, MethodCallExpr):
             self.check_expr(n.obj, scope)
             for a in n.args:

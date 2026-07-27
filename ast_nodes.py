@@ -261,6 +261,15 @@ class CallExpr(Node):
     line:   int = 0
 
 @dataclass
+class CallValueExpr(Node):
+    """Call whose callee is an arbitrary expression, e.g. `f(a)(b)` or
+    `pick(true)(10)`. CallExpr covers the common `name(args)` case; this covers
+    calling the *result* of an expression (a function value)."""
+    callee: Node
+    args:   List[Node]
+    line:   int = 0
+
+@dataclass
 class MethodCallExpr(Node):
     obj:    Node
     method: str
