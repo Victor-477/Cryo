@@ -84,7 +84,7 @@ fn emStore(int[] code, int slot) -> void ={
 // writes a string const to the output buffer: TAG_STR + u16 len + bytes
 fn emStrConst(int[] out, string s) -> void ={
     out.push(3);
-    emU16(out, len(s));
+    emU32(out, len(s));                 // v3: u32 length (v2 used u16)
     int i = 0;
     while (i < len(s)) {
         out.push(charCode(s[i]));
@@ -1244,7 +1244,7 @@ fn compile(string src, string outPath) -> bool ={
     // ── .pyro assembly ──
     int[] out = [];
     out.push(80); out.push(89); out.push(82); out.push(79);   // "PYRO"
-    out.push(2); out.push(0);               // version 2, flags 0
+    out.push(3); out.push(0);               // version 3 (u32 string lengths), flags 0
     // constants
     emU16(out, len(cp));
     int c = 0;
