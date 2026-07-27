@@ -1,0 +1,60 @@
+// ============================================================
+//  Phase 10.6 example — first-class function values on the Pyro VM
+//
+//  Functions are values: pass them as arguments, store them in variables,
+//  return them from functions, and call them through a variable.
+//
+//  Two new opcodes back this: PUSHFN (push a function value) and
+//  CALL_VALUE (call the function value beneath the arguments). Both the
+//  Go VM and the C VM implement them, and the AOT lowers CALL_VALUE to a
+//  C function-pointer table — so this works on the native route too.
+//
+//    python burnout/cryoc.py cryo/examples/example_funcvalues.cryo --backend pyro --run
+//    (same output with --backend go / node)
+// ============================================================
+
+fn dbl(int x) -> int ={ return x * 2; }
+fn inc(int x) -> int ={ return x + 1; }
+
+// a function taking another function as a parameter
+fn apply(fn(int)->int f, int v) -> int ={
+    return f(v);
+}
+fn twice(fn(int)->int f, int v) -> int ={
+    return f(f(v));
+}
+
+print("apply(dbl, 21) = ${apply(dbl, 21)}");     // 42
+print("twice(inc, 5)  = ${twice(inc, 5)}");      // 7
+
+// a lambda passed inline (non-capturing)
+print("twice(x=>x*3, 2) = ${twice((int x) => x * 3, 2)}");   // 18
+
+// a function value stored in a variable, then reassigned
+fn(int)->int g = dbl;
+print("g(50) = ${g(50)}");                        // 100
+g = (int x) => x - 1;
+print("g(50) = ${g(50)}");                        // 49
+
+// returning a function from a function
+fn pick(bool useDouble) -> fn(int)->int ={
+    if (useDouble) { return dbl; }
+    return inc;
+}
+fn(int)->int chosen = pick(true);
+print("pick(true) then call(10)  = ${chosen(10)}");    // 20
+chosen = pick(false);
+print("pick(false) then call(10) = ${chosen(10)}");    // 11
+
+// a tiny dispatch table, chosen at runtime
+fn run3(bool useDouble) -> int ={
+    fn(int)->int op = pick(useDouble);
+    return op(3);
+}
+print("run3(true)  = ${run3(true)}");             // 6
+print("run3(false) = ${run3(false)}");            // 4
+
+// NOTE: the pyro backend supports NON-capturing lambdas. A lambda that
+// closes over an enclosing variable (a true closure) is rejected with a
+// clear message — use --backend go or node for those. Arrays of function
+// values also await a type-syntax decision (`fn(int)->int[]` is ambiguous).
