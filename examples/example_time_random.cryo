@@ -1,0 +1,16 @@
+// Test time and random builtins (now_ms, monotonic_ms, seed, random_int, random)
+
+// 1. Reproducible PRNG sequence with seed(42)
+seed(42);
+int r1 = random_int(1, 100);
+int r2 = random_int(1, 100);
+print(r1);
+print(r2);
+
+// 2. Property checks for clocks
+int t1 = now_ms();
+int m1 = monotonic_ms();
+bool valid_now = t1 > 1600000000000;  // Plausible epoch time (after 2020)
+bool valid_mono = m1 >= 0;
+print(valid_now);
+print(valid_mono);

@@ -1,0 +1,24 @@
+// Test Phase 10.3: enumerate, pairs, list and map comprehensions
+
+// 1. enumerate loop
+for (i, v in enumerate(["alpha", "beta", "gamma"])) {
+    print(i);
+    print(v);
+}
+
+// 2. pairs loop
+for (k, v in pairs({"a": 100, "b": 200})) {
+    print(k);
+    print(v);
+}
+
+// 3. List comprehension
+int[] evens = [ x * 2 for x in [1, 2, 3, 4] if x % 2 == 0 ];
+for (v in evens) {
+    print(v);
+}
+
+// 4. Map comprehension
+map<string, int> doubled = { k: v * 2 for (k, v in pairs({"x": 10, "y": 20})) };
+print(doubled["x"]);
+print(doubled["y"]);

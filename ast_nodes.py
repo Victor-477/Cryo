@@ -22,9 +22,10 @@ class StructField(Node):
 
 @dataclass
 class StructDecl(Node):
-    name:   str
-    fields: List[StructField]
-    line:   int = 0
+    name:        str
+    fields:      List[StructField]
+    line:        int = 0
+    type_params: List[str] = field(default_factory=list)
 
 @dataclass
 class EnumMember:
@@ -104,8 +105,11 @@ class FunctionDecl(Node):
     body:        List[Node]
     is_tool:     bool = False   # 'tool fn' — exposed to LLMs (Phase 3)
     line:        int = 0
+    type_params: List[str] = field(default_factory=list)
 
-# -- flow control -----------------------------------
+@dataclass
+class Block(Node):
+    body: List[Node]
 
 @dataclass
 class Return(Node):
@@ -256,9 +260,10 @@ class UnaryExpr(Node):
 
 @dataclass
 class CallExpr(Node):
-    callee: str
-    args:   List[Node]
-    line:   int = 0
+    callee:    str
+    args:      List[Node]
+    line:      int = 0
+    type_args: List[str] = field(default_factory=list)
 
 @dataclass
 class CallValueExpr(Node):
@@ -293,6 +298,7 @@ class ArrayLiteral(Node):
 class StructInit(Node):
     struct_name: str
     fields:      List[Tuple[str, Node]]
+    type_args:   List[str] = field(default_factory=list)
 
 @dataclass
 class Lambda(Node):
