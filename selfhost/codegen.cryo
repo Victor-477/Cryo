@@ -170,6 +170,16 @@ fn slotOf(string[] sl, string name) -> int ={
     return len(sl) - 1;
 }
 // global index of a function by name (funcNames: user fns.. + 'main')
+// like slotOf but WITHOUT creating the slot: -1 when the name is not a local.
+// Needed to tell a local variable from a top-level function name (10.6).
+fn slotIndexOf(string[] sl, string name) -> int ={
+    int i = 0;
+    while (i < len(sl)) {
+        if (sl[i] == name) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
 fn funcIndexOf(string[] fns, string name) -> int ={
     int i = 0;
     while (i < len(fns)) {
@@ -235,6 +245,24 @@ fn nativeId(string name) -> int ={
 // the variable name that follows.
 fn skipType(string[] tt, int[] pos) -> void ={
     string t = cpt(tt, pos);
+    if (t == "FN") {
+        // function type: fn(T1, T2) -> R   (the return type is optional)
+        cadv(pos);
+        if (cpt(tt, pos) == "LPAREN") {
+            cadv(pos);
+            int d = 1;
+            while (d > 0 && cpt(tt, pos) != "EOF") {
+                string x = cpt(tt, pos); cadv(pos);
+                if (x == "LPAREN")      { d = d + 1; }
+                else if (x == "RPAREN") { d = d - 1; }
+            }
+        }
+        if (cpt(tt, pos) == "ARROW") {
+            cadv(pos);
+            skipType(tt, pos);
+        }
+        return;
+    }
     if (t == "MAP" || t == "FUTURE") {
         cadv(pos);
         if (cpt(tt, pos) == "LT") {
@@ -605,6 +633,26 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
         if (cpt(tt, pos) == "LPAREN") {
             // call: evaluate args, then dispatch by name
             cadv(pos);
+            // Calling a function-valued LOCAL: the fn value must be pushed
+            // BEFORE the args, then CALL_VALUE (10.6).
+            // Guarded by "not a known function/native" because slotOf() creates
+            // a slot for any unseen name, so a bare slot hit would hijack
+            // ordinary calls. Verified: this never fires while the self-host
+            // compiles its own source.
+            if (slotIndexOf(sl, name) >= 0 && funcIndexOf(fns, name) < 0
+                && nativeId(name) < 0) {
+                emLoad(code, slotIndexOf(sl, name));
+                int vargc = 0;
+                while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
+                    cgExpr(tt, tv, pos, code, cp, sl, fns);
+                    vargc = vargc + 1;
+                    if (cpt(tt, pos) == "COMMA") { cadv(pos); }
+                }
+                if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+                code.push(67);                 // OP_CALL_VALUE
+                code.push(vargc & 255);
+                return;
+            }
             int argc = 0;
             while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
                 cgExpr(tt, tv, pos, code, cp, sl, fns);
@@ -634,6 +682,13 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
             code.push(64);                 // OP_CALL (last resort; unknown name)
             emU16(code, funcIndexOf(fns, name));
             code.push(argc & 255);
+            return;
+        }
+        // a top-level function name used as a VALUE -> function value (10.6).
+        // Checked before slotOf() so it does not create a spurious slot.
+        if (slotIndexOf(sl, name) < 0 && funcIndexOf(fns, name) >= 0) {
+            code.push(66);                 // OP_PUSHFN
+            emU16(code, funcIndexOf(fns, name));
             return;
         }
         emLoad(code, slotOf(sl, name));    // variable
@@ -972,8 +1027,11 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
         return;
     }
     // declaration:  T name [= expr];  (T = primitive | map<> | future<> | custom IDENT, with [] / ?)
+    // `fn` starts a TYPE here only when followed by '(' — `fn name(` is a
+    // function declaration, handled by the caller (10.6 function values).
     if (t == "TYPE_INT" || t == "TYPE_STRING" || t == "TYPE_BOOL" || t == "TYPE_NUMBER"
-        || t == "MAP" || t == "FUTURE" || (t == "IDENT" && cpt2(tt, pos) == "IDENT")) {
+        || t == "MAP" || t == "FUTURE" || (t == "FN" && cpt2(tt, pos) == "LPAREN")
+        || (t == "IDENT" && cpt2(tt, pos) == "IDENT")) {
         skipType(tt, pos);                      // consume the type annotation
         string name = cpv(tv, pos); cadv(pos);  // variable name
         if (cpt(tt, pos) == "ASSIGN") {
@@ -1091,7 +1149,9 @@ fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp
         if (cpt(tt, pos) == "COMMA") { cadv(pos); }
     }
     if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
-    if (cpt(tt, pos) == "ARROW") { cadv(pos); cadv(pos); }   // -> type
+    // -> type. skipType (not a fixed 2 tokens) so a function RETURN type such
+    // as `-> fn(int)->int` is consumed whole (10.6 function values).
+    if (cpt(tt, pos) == "ARROW") { cadv(pos); skipType(tt, pos); }
     if (cpt(tt, pos) == "BODY_ASSIGN") { cadv(pos); }
     int[] fnBrk = [];                       // function top level: no enclosing loop
     int[] fnCont = [];
@@ -1147,7 +1207,9 @@ fn compile(string src, string outPath) -> bool ={
     int[] mCont = [];
     int[] pos = [0];
     while (cpt(tt, pos) != "EOF") {
-        if (cpt(tt, pos) == "FN") {
+        // `fn name(` declares a function; `fn(` is a function TYPE starting a
+        // variable declaration, which cgStmt handles (10.6 function values).
+        if (cpt(tt, pos) == "FN" && cpt2(tt, pos) == "IDENT") {
             compileFunction(tt, tv, pos, fcode, cp, fns, fEntry, fNParams, fNLocals, fNameIdx);
         } else {
             cgStmt(tt, tv, pos, mcode, cp, mainSl, fns, mBrk, mCont);
