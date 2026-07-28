@@ -1,0 +1,45 @@
+// ============================================================
+//  Phase 10 example — range-based for loops
+//
+//  `for (int i in a..b)`  iterates a <= i < b   (exclusive, like Python range)
+//  `for (int i in a..=b)` iterates a <= i <= b  (inclusive, like Rust/Swift)
+//
+//  Ranges are lowered to an ordinary counted loop at parse time, so they run
+//  on every executable backend (pyro, go, node, c, asm, wasm) with no runtime
+//  support needed.
+//
+//    python burnout/cryoc.py cryo/examples/example_ranges.cryo --backend pyro --run
+//    (same output with --backend go / node)
+// ============================================================
+
+// exclusive range: 0, 1, 2, 3, 4
+int sum = 0;
+for (int i in 0..5) { sum += i; }
+print("sum 0..5 (exclusive) = ${sum}");        // 10
+
+// inclusive range: 1, 2, 3, 4, 5
+int fact = 1;
+for (int i in 1..=5) { fact = fact * i; }
+print("5! via 1..=5 (inclusive) = ${fact}");    // 120
+
+// the bound can be any int expression
+fn triangular(int n) -> int ={
+    int t = 0;
+    for (int i in 0..=n) { t += i; }
+    return t;
+}
+print("triangular(10) = ${triangular(10)}");    // 55
+
+// ranges compose with the rest of the language
+string[] rows = [];
+for (int r in 1..=3) {
+    string line = "";
+    for (int c in 0..r) { line = line + "*"; }
+    rows.push(line);
+}
+for (string line in rows) { print(line); }      // *  / **  / ***
+
+// an empty range simply does not iterate
+int touched = 0;
+for (int i in 4..4) { touched += 1; }
+print("empty range iterations = ${touched}");   // 0

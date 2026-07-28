@@ -1,0 +1,15 @@
+// Example: Arrays of function values (Issue 10)
+
+fn dbl(int x) -> int ={
+    return x * 2;
+}
+
+fn inc(int x) -> int ={
+    return x + 1;
+}
+
+(fn(int)->int)[] ops = [dbl, inc];
+
+for (int i in 0..len(ops)) {
+    print(ops[i](7));
+}

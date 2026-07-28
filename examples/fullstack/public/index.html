@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cryo — Full-Stack Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem 1.2rem; }
+    #status { color: #666; }
+    #status.ok { color: #157f3b; font-weight: 600; }
+    label { display: inline-block; margin: .5rem 0; }
+    input { width: 6rem; padding: .3rem; }
+    button { padding: .4rem .9rem; cursor: pointer; }
+    ul { line-height: 1.9; }
+    b { font-variant-numeric: tabular-nums; }
+    footer { color: #888; font-size: .85rem; margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Cryo → WebAssembly · full-stack demo</h1>
+  <div class="card">
+    <p id="status">loading WebAssembly…</p>
+    <label>n = <input id="n" type="number" value="10" min="0" max="90"></label>
+    <button id="go" onclick="update()">Compute</button>
+    <ul>
+      <li>fib(n) = <b id="fib">?</b></li>
+      <li>square(n) = <b id="sq">?</b></li>
+      <li>factorial(n) = <b id="fact">?</b></li>
+      <li>sum_to(n) = <b id="sum">?</b></li>
+    </ul>
+  </div>
+  <footer>
+    Server: <b>Cryo</b> (<code>http_serve</code>, running on the Pyro VM). &nbsp;
+    Client: <b>Cryo</b> compiled to <b>WebAssembly</b> (<code>--backend wasm</code>).
+  </footer>
+  <script src="glue.js"></script>
+</body>
+</html>

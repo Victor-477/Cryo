@@ -44,6 +44,9 @@ class TokenType(Enum):
     SCHEMA   = auto()
     TOOL     = auto()
     MATCH    = auto()
+    TRAIT    = auto()
+    IMPL     = auto()
+    PUB      = auto()
     # Types
     TYPE_INT    = auto()
     TYPE_NUMBER = auto()
@@ -111,7 +114,10 @@ class TokenType(Enum):
     SEMICOLON = auto()
     COMMA     = auto()
     COLON     = auto()
+    COLON_COLON = auto()
     DOT       = auto()
+    RANGE      = auto()   # ..   (exclusive range, e.g. for i in 0..n)
+    RANGE_INCL = auto()   # ..=  (inclusive range, e.g. for i in 1..=n)
     # Foreign language
     LANG_TAG   = auto()
     LANG_BLOCK = auto()
@@ -155,6 +161,9 @@ KEYWORDS = {
     'schema':   TokenType.SCHEMA,
     'tool':     TokenType.TOOL,
     'match':    TokenType.MATCH,
+    'trait':    TokenType.TRAIT,
+    'impl':     TokenType.IMPL,
+    'pub':      TokenType.PUB,
     'int':     TokenType.TYPE_INT,
     'number':  TokenType.TYPE_NUMBER,
     'string':  TokenType.TYPE_STRING,
@@ -261,7 +270,9 @@ class Lexer:
             c = self._peek()
             if c == '_':
                 self._advance(); continue
-            if c.isdigit() or (c == '.' and not is_float):
+            # a '.' is a decimal point only if it is not the start of a '..'
+            # range token — otherwise '0..n' would swallow the first dot as '0.'
+            if c.isdigit() or (c == '.' and not is_float and self._peek(1) != '.'):
                 if c == '.':
                     is_float = True
                 num += self._advance()
@@ -451,9 +462,20 @@ class Lexer:
             elif ch == ',':
                 self._advance(); tokens.append(Token(TokenType.COMMA,     ',', sl, sc))
             elif ch == ':':
-                self._advance(); tokens.append(Token(TokenType.COLON,     ':', sl, sc))
+                self._advance()
+                if self._peek() == ':':
+                    self._advance(); tokens.append(Token(TokenType.COLON_COLON, '::', sl, sc))
+                else:
+                    tokens.append(Token(TokenType.COLON, ':', sl, sc))
             elif ch == '.':
-                self._advance(); tokens.append(Token(TokenType.DOT,       '.', sl, sc))
+                if self._peek(1) == '.' and self._peek(2) == '=':
+                    self._advance(); self._advance(); self._advance()
+                    tokens.append(Token(TokenType.RANGE_INCL, '..=', sl, sc))
+                elif self._peek(1) == '.':
+                    self._advance(); self._advance()
+                    tokens.append(Token(TokenType.RANGE,      '..', sl, sc))
+                else:
+                    self._advance(); tokens.append(Token(TokenType.DOT,   '.', sl, sc))
             else:
                 self._error(f"Unexpected character '{ch}'")
         return tokens

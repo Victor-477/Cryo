@@ -1,0 +1,14 @@
+// Example module with pub exports and private items (Phase 10.8)
+
+pub fn area(number width, number height) -> number ={
+    return width * height;
+}
+
+pub struct Point {
+    number x;
+    number y;
+}
+
+fn secret_constant() -> number ={
+    return 42.0;
+}

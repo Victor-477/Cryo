@@ -1,34 +1,10 @@
-// ============================================================
-//  Phase 4 example — MODULES + STRING INTERPOLATION
-//
-//  `import "file.cryo"` embeds the declarations of another
-//  file (functions, structs, enums, consts). The path is
-//  relative to the importing file; nested imports, cycles and
-//  duplicate names are handled by the compiler.
-//
-//  Interpolation: "text ${expr}" becomes typed concatenation.
-//
-//  Run (works on pyro, go and node):
-//    python burnout/cryoc.py cryo/examples/example_modules.cryo --backend pyro --run
-// ============================================================
+// Example Module Namespaces & pub visibility (Phase 10.8)
 
-import "lib_geometria.cryo"
+import "example_geo.cryo" as geo;
 
-number radius = 2.5;
-Circle c = new Circle { radius: radius };
+number a = geo::area(3.0, 4.0);
+print(a);
 
-// String interpolation: ${expr} inside the literal
-print("circle de radius ${c.radius}:");
-print("  area      = ${areaCircle(c.radius)}");
-print("  perimeter = ${perimetroCircle(c.radius)}");
-print("Shape: ${descreve(Forma_CIRCULO)} (PI do modulo = ${GEO_PI})");
-
-// Module constant visible inside local functions
-fn dobroDaArea(number r) -> number ={
-    return 2.0 * GEO_PI * r * r;
-}
-print("double da area: ${dobroDaArea(radius)}");
-
-assert(descreve(Forma_SQUARE) == "quadrado", "enum do modulo falhou");
-assert(areaCircle(1.0) > 3.14, "funcao do modulo falhou");
-print("modulos + interpolacao ok");
+geo::Point pt = geo::Point { x: 10.0, y: 20.0 };
+print(pt.x);
+print(pt.y);

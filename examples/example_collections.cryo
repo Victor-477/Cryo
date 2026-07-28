@@ -1,0 +1,39 @@
+// ============================================================
+//  Phase 10.2 example — stateless collection operations
+//
+//  All non-mutating (they return a NEW array; the original is untouched) and
+//  work with go/node/pyro parity:
+//    sort(arr)            -> new array, ascending
+//    reverse(arr)         -> new array, reversed
+//    slice(arr, a, b)     -> new subarray [a, b) with safe bounds
+//    index_of(arr, x)     -> first index of x, or -1
+//
+//    python burnout/cryoc.py cryo/examples/example_collections.cryo --backend pyro --run
+//    (same output with --backend go / node)
+// ============================================================
+
+fn show(int[] a) -> string ={
+    string out = "[";
+    for (int i in 0..len(a)) {
+        if (i > 0) { out = out + ", "; }
+        out = out + to_string(a[i]);
+    }
+    return out + "]";
+}
+
+int[] nums = [3, 1, 4, 1, 5, 9, 2, 6];
+
+print("original: ${show(nums)}");
+print("sorted:   ${show(sort(nums))}");        // ascending
+print("reversed: ${show(reverse(nums))}");
+print("slice2-5: ${show(slice(nums, 2, 5))}"); // [4, 1, 5]
+print("index 5:  ${index_of(nums, 5)}");        // 4
+print("index 7:  ${index_of(nums, 7)}");        // -1  (absent)
+print("original still: ${show(nums)}");          // unchanged
+
+// strings sort lexicographically
+string[] words = ["pear", "apple", "fig", "banana"];
+print("words: " + join(sort(words), ", "));      // apple, banana, fig, pear
+
+// slice bounds are clamped, never out of range
+print("safe slice: ${show(slice(nums, 5, 999))}"); // [9, 2, 6]

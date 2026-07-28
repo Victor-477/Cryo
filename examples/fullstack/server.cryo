@@ -1,0 +1,13 @@
+// ============================================================
+//  Full-stack demo — SERVER (Cryo, running on the Pyro VM)
+//
+//  Serves the static demo (index.html, glue.js, app.wasm) over HTTP using the
+//  built-in http_serve native. The directory to serve and the port can be
+//  overridden via CLI args:  pyrovm server.pyro <dir> <port>
+// ============================================================
+string[] a = args();
+string dir = "Cryo/examples/fullstack/public";
+int port = 8080;
+if (len(a) > 0) { dir = a[0]; }
+if (len(a) > 1) { port = to_int(a[1]); }
+http_serve(port, dir);

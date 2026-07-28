@@ -7,14 +7,15 @@ from lexer import Token, TokenType, TYPE_TOKENS
 from ast_nodes import (
     Node, Program,
     StructField, StructDecl, EnumMember, EnumDecl, SkillDecl,
+    TraitMethodSig, TraitDecl, ImplDecl,
     FunctionDecl, VarDecl, ConstDecl, Assignment,
     CompoundAssignment, Increment,
-    Return, If, While, For, DoWhile, ForEach, TryCatch,
+    Return, If, While, For, DoWhile, ForEach, TryCatch, Block,
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     Import, ModuleImport, Library, ForeignBlock,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
-    SpawnExpr, AwaitExpr, CallExpr, MethodCallExpr,
+    SpawnExpr, AwaitExpr, CallExpr, CallValueExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
     Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
@@ -27,6 +28,57 @@ COMPOUND_OPS = (
     TokenType.SHL_ASSIGN, TokenType.SHR_ASSIGN,
 )
 
+_BUILTIN_NAMES = {
+    'print', 'len', 'has', 'keys', 'sort', 'reverse', 'slice', 'index_of',
+    'map', 'filter', 'reduce', 'find', 'find_first', 'any', 'all',
+    'clamp', 'sign', 'gcd', 'hypot', 'starts_with', 'ends_with', 'repeat',
+    'pad_start', 'pad_end', 'concat', 'count', 'sum', 'enumerate', 'pairs',
+    'now_ms', 'monotonic_ms', 'random', 'random_int', 'seed',
+    'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
+    'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
+    'true', 'false', 'null'
+}
+
+
+def _extract_identifiers(node, found):
+    if node is None:
+        return
+    if isinstance(node, Identifier):
+        found.add(node.name)
+    elif isinstance(node, Literal):
+        pass
+    elif isinstance(node, BinaryExpr):
+        _extract_identifiers(node.left, found)
+        _extract_identifiers(node.right, found)
+    elif isinstance(node, UnaryExpr):
+        _extract_identifiers(node.expr, found)
+    elif isinstance(node, (SpawnExpr, AwaitExpr, UnwrapExpr, TryExpr)):
+        _extract_identifiers(node.expr, found)
+    elif isinstance(node, CallExpr):
+        if hasattr(node, 'callee') and isinstance(node.callee, Node):
+            _extract_identifiers(node.callee, found)
+        for a in node.args:
+            _extract_identifiers(a, found)
+    elif isinstance(node, MethodCallExpr):
+        _extract_identifiers(node.obj, found)
+        for a in node.args:
+            _extract_identifiers(a, found)
+    elif isinstance(node, FieldAccess):
+        _extract_identifiers(node.obj, found)
+    elif isinstance(node, IndexAccess):
+        _extract_identifiers(node.obj, found)
+        _extract_identifiers(node.index, found)
+    elif isinstance(node, ArrayLiteral):
+        for e in node.elements:
+            _extract_identifiers(e, found)
+    elif isinstance(node, MapLiteral):
+        for k, v in node.pairs:
+            _extract_identifiers(k, found)
+            _extract_identifiers(v, found)
+    elif isinstance(node, StructInit):
+        for fname, fval in node.fields:
+            _extract_identifiers(fval, found)
+
 
 class ParseError(Exception):
     pass
@@ -36,6 +88,13 @@ class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.pos    = 0
+        self.synthetic_fns = []
+        self.user_defined_fns = set()
+        self._gen_id_count = 0
+
+    def _gen_id(self):
+        self._gen_id_count += 1
+        return self._gen_id_count
 
     def _cur(self):
         return self.tokens[self.pos]
@@ -99,6 +158,12 @@ class Parser:
                 self._advance()
                 ret = self._parse_type()
             base = f"fn({','.join(ptypes)})->{ret}"
+        # (T) parenthesized type
+        elif self._match(TokenType.LPAREN):
+            self._advance()
+            inner = self._parse_type()
+            self._expect(TokenType.RPAREN)
+            base = f"({inner})"
         else:
             valid = set(TYPE_TOKENS) | {TokenType.IDENT}
             tok = self._cur()
@@ -107,6 +172,19 @@ class Parser:
                     f"[Syntax Error] Line {tok.line}: Expected type, got {tok.type.name} ({tok.value!r})"
                 )
             base = self._advance().value
+            if self._match(TokenType.COLON_COLON):
+                self._advance()
+                member = self._expect(TokenType.IDENT).value
+                base = f"{base}::{member}"
+            if self._match(TokenType.LT):
+                self._advance()
+                targs = []
+                while not self._match(TokenType.GT, TokenType.EOF):
+                    targs.append(self._parse_type())
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.GT)
+                base = f"{base}<{','.join(targs)}>"
         # array suffix [] (applies to any base: primitive, map, future)
         while self._match(TokenType.LBRACKET) and self._peek().type == TokenType.RBRACKET:
             self._advance()
@@ -124,6 +202,8 @@ class Parser:
         stmts = []
         while not self._match(TokenType.EOF):
             stmts.append(self._stmt())
+        if self.synthetic_fns:
+            stmts.extend(self.synthetic_fns)
         return Program(stmts)
 
     # ── statements ──────────────────────────────────────────
@@ -141,17 +221,25 @@ class Parser:
         return node
 
     def _stmt_inner(self, tok):
+        is_pub = False
+        if tok.type == TokenType.PUB:
+            self._advance()
+            is_pub = True
+            tok = self._cur()
+
         if tok.type == TokenType.FN:
             # `fn name(...)` = declaration; `fn(...)->R var` = function type var
             if self._peek().type == TokenType.LPAREN:
                 return self._var_decl()
-            return self._fn()
-        if tok.type == TokenType.TOOL:    return self._tool()
-        if tok.type == TokenType.STRUCT:  return self._struct()
-        if tok.type == TokenType.SCHEMA:  return self._struct()   # schema = struct
-        if tok.type == TokenType.ENUM:    return self._enum()
+            return self._fn(is_pub=is_pub)
+        if tok.type == TokenType.TOOL:    return self._tool(is_pub=is_pub)
+        if tok.type == TokenType.STRUCT:  return self._struct(is_pub=is_pub)
+        if tok.type == TokenType.SCHEMA:  return self._struct(is_pub=is_pub)   # schema = struct
+        if tok.type == TokenType.ENUM:    return self._enum(is_pub=is_pub)
+        if tok.type == TokenType.TRAIT:   return self._trait()
+        if tok.type == TokenType.IMPL:    return self._impl()
         if tok.type == TokenType.SKILL:   return self._skill()
-        if tok.type == TokenType.CONST:   return self._const()
+        if tok.type == TokenType.CONST:   return self._const(is_pub=is_pub)
         if tok.type == TokenType.IMPORT:  return self._import()
         if tok.type == TokenType.LIBRARY: return self._library()
         if tok.type == TokenType.RETURN:  return self._return()
@@ -170,13 +258,19 @@ class Parser:
             self._advance(); self._opt_semi(); return Continue()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
-        # primitive type, map or future -> var decl
-        if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE):
+        # primitive type, map, future or (type) -> var decl
+        if tok.type in TYPE_TOKENS or tok.type in (TokenType.MAP, TokenType.FUTURE, TokenType.LPAREN):
             return self._var_decl()
 
         # identifier -> multiple possibilities
         if tok.type == TokenType.IDENT:
+            if self._is_generic_var_decl_ahead():
+                return self._var_decl()
             nt = self._peek()
+            if nt.type == TokenType.COLON_COLON:
+                p3 = self._peek(3)
+                if p3.type in (TokenType.IDENT, TokenType.LBRACKET, TokenType.QUESTION):
+                    return self._var_decl()
             # CustomType varName  or  CustomType[] varName  or  CustomType? varName
             if nt.type == TokenType.IDENT:
                 return self._var_decl()
@@ -206,9 +300,24 @@ class Parser:
 
     # ── struct ──────────────────────────────────────────────
 
-    def _struct(self):
+    def _struct(self, is_pub=False):
+        sline = self._cur().line
         self._expect(TokenType.STRUCT, TokenType.SCHEMA)   # 'schema' = struct
         name = self._expect(TokenType.IDENT).value
+        type_params = []
+        type_bounds = {}
+        if self._match(TokenType.LT):
+            self._advance()
+            while not self._match(TokenType.GT, TokenType.EOF):
+                tp = self._expect(TokenType.IDENT).value
+                type_params.append(tp)
+                if self._match(TokenType.COLON):
+                    self._advance()
+                    bound = self._expect(TokenType.IDENT).value
+                    type_bounds[tp] = bound
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            self._expect(TokenType.GT)
         self._expect(TokenType.LBRACE)
         fields = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):
@@ -217,7 +326,52 @@ class Parser:
             self._opt_semi()
             fields.append(StructField(ftype, fname))
         self._expect(TokenType.RBRACE)
-        return StructDecl(name, fields)
+        return StructDecl(name, fields, line=sline, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
+
+    # ── trait / impl ────────────────────────────────────────
+
+    def _trait(self):
+        tline = self._cur().line
+        self._expect(TokenType.TRAIT)
+        name = self._expect(TokenType.IDENT).value
+        self._expect(TokenType.LBRACE)
+        methods = []
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            self._expect(TokenType.FN)
+            mname = self._expect(TokenType.IDENT).value
+            self._expect(TokenType.LPAREN)
+            params = []
+            while not self._match(TokenType.RPAREN):
+                ptype = self._parse_type()
+                pname = self._expect(TokenType.IDENT).value
+                params.append((ptype, pname))
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            self._expect(TokenType.RPAREN)
+            ret = None
+            if self._match(TokenType.ARROW):
+                self._advance()
+                ret = self._parse_type()
+            self._opt_semi()
+            methods.append(TraitMethodSig(mname, params, ret))
+        self._expect(TokenType.RBRACE)
+        return TraitDecl(name, methods, line=tline)
+
+    def _impl(self):
+        iline = self._cur().line
+        self._expect(TokenType.IMPL)
+        trait_name = self._expect(TokenType.IDENT).value
+        self._expect(TokenType.FOR)
+        target_type = self._parse_type()
+        self._expect(TokenType.LBRACE)
+        methods = []
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            if self._match(TokenType.FN):
+                methods.append(self._fn())
+            else:
+                self._advance()
+        self._expect(TokenType.RBRACE)
+        return ImplDecl(trait_name, target_type, methods, line=iline)
 
     # ── skill (LLM nativa) ──────────────────────────────────
 
@@ -239,7 +393,7 @@ class Parser:
 
     # ── enum ────────────────────────────────────────────────
 
-    def _enum(self):
+    def _enum(self, is_pub=False):
         self._expect(TokenType.ENUM)
         name = self._expect(TokenType.IDENT).value
         self._expect(TokenType.LBRACE)
@@ -260,18 +414,33 @@ class Parser:
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RBRACE)
-        return EnumDecl(name, members)
+        return EnumDecl(name, members, is_pub=is_pub)
 
     # ── function ────────────────────────────────────────────
 
-    def _tool(self):
+    def _tool(self, is_pub=False):
         self._expect(TokenType.TOOL)      # 'tool fn ...' — exposed to LLMs
-        return self._fn(is_tool=True)
+        return self._fn(is_tool=True, is_pub=is_pub)
 
-    def _fn(self, is_tool=False):
+    def _fn(self, is_tool=False, is_pub=False):
         fn_line = self._cur().line
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
+        type_params = []
+        type_bounds = {}
+        if self._match(TokenType.LT):
+            self._advance()
+            while not self._match(TokenType.GT, TokenType.EOF):
+                tp = self._expect(TokenType.IDENT).value
+                type_params.append(tp)
+                if self._match(TokenType.COLON):
+                    self._advance()
+                    bound = self._expect(TokenType.IDENT).value
+                    type_bounds[tp] = bound
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            self._expect(TokenType.GT)
+        self.user_defined_fns.add(name)
         self._expect(TokenType.LPAREN)
         params = []
         while not self._match(TokenType.RPAREN):
@@ -287,7 +456,7 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 
     def _body(self):
         stmts = []
@@ -302,14 +471,14 @@ class Parser:
 
     # ── const ───────────────────────────────────────────────
 
-    def _const(self):
+    def _const(self, is_pub=False):
         self._expect(TokenType.CONST)
         vtype = self._parse_type()
         name  = self._expect(TokenType.IDENT).value
         self._expect(TokenType.ASSIGN)
         val   = self._expr()
         self._opt_semi()
-        return ConstDecl(vtype, name, val)
+        return ConstDecl(vtype, name, val, is_pub=is_pub)
 
     # ── import / library / foreign ──────────────────────────
 
@@ -319,8 +488,12 @@ class Parser:
         # import "file.cryo"  -> Cryo module (resolved by the compiler)
         if tok.type == TokenType.STR_LIT:
             self._advance()
+            alias = None
+            if self._match(TokenType.AS):
+                self._advance()
+                alias = self._expect(TokenType.IDENT).value
             self._opt_semi()
-            return ModuleImport(tok.value)
+            return ModuleImport(tok.value, alias=alias)
         # import >Lang<          -> enables foreign language
         tag = self._expect(TokenType.LANG_TAG)
         self._opt_semi()
@@ -345,7 +518,49 @@ class Parser:
     def _foreign(self):
         tok = self._expect(TokenType.LANG_BLOCK)
         lang, _, code = tok.value.partition(':')
-        return ForeignBlock(lang, code)
+        return ForeignBlock(lang, code, params=self._struct_params())
+
+    def _struct_params(self):
+        """Roadmap 10.12 — the optional `<k = v, ...>` tail of a foreign block.
+
+        The lexer has already consumed the block's `( ... )`, so the tail
+        arrives as ordinary tokens. `<` is ALSO the less-than operator, so this
+        only commits when the lookahead is unambiguous: `<>` (empty list) or
+        `<IDENT =`. Anything else leaves the `<` alone for the expression
+        parser, because `>C( ... )` followed by a comparison is still valid.
+        """
+        if not self._match(TokenType.LT):
+            return []
+        nxt, after = self._peek(1), self._peek(2)
+        empty = nxt.type == TokenType.GT
+        pair  = nxt.type == TokenType.IDENT and after.type == TokenType.ASSIGN
+        if not (empty or pair):
+            return []
+
+        self._advance()                     # '<'
+        params = []
+        seen = set()
+        while not self._match(TokenType.GT, TokenType.EOF):
+            key = self._expect(TokenType.IDENT)
+            self._expect(TokenType.ASSIGN)
+            val = self._expect(TokenType.IDENT).value
+            if key.value in seen:
+                raise ParseError(
+                    f"[Syntax Error] Line {key.line}: structure parameter "
+                    f"'{key.value}' given twice in the same block"
+                )
+            seen.add(key.value)
+            params.append((key.value, val))
+            if self._match(TokenType.COMMA):
+                self._advance()
+            elif not self._match(TokenType.GT):
+                t = self._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {t.line}: expected ',' or '>' in the "
+                    f"structure parameter list, got {t.type.name} ({t.value!r})"
+                )
+        self._expect(TokenType.GT)
+        return params
 
     # ── string interpolation: "total: ${x}" ──────────────
 
@@ -441,31 +656,137 @@ class Parser:
     # ── for  (classic or for-each) ─────────────────────────
 
     def _is_foreach(self) -> bool:
-        """Detects 'for (TYPE name in expr)' — tries to parse a type + name + 'in'
-        without consuming (save/restore), covering map<>, future<>, arrays and optionals."""
+        """Returns True if the current for(...) loop header is a for-each / iterator loop (contains 'in' before ';' or header-closing ')')."""
         save = self.pos
-        result = False
-        try:
-            self._parse_type()
-            if self._match(TokenType.IDENT):
-                self._advance()
-                result = self._match(TokenType.IN)
-        except ParseError:
-            result = False
+        depth = 0
+        res = False
+        while self.pos < len(self.tokens):
+            t = self.tokens[self.pos].type
+            if t == TokenType.LPAREN:
+                depth += 1
+            elif t == TokenType.RPAREN:
+                depth -= 1
+                if depth < 0:
+                    break
+            elif t == TokenType.SEMICOLON:
+                if depth == 0:
+                    break
+            elif t == TokenType.IN:
+                if depth <= 1:
+                    res = True
+                    break
+            elif t == TokenType.EOF:
+                break
+            self.pos += 1
         self.pos = save
-        return result
+        return res
+
+    def _parse_for_vars(self):
+        """Parses loop variables before 'in':
+        (int i) or (int i, string v) or (i, v) or ((i, v)) etc."""
+        has_outer_paren = False
+        if self._match(TokenType.LPAREN):
+            self._advance()
+            has_outer_paren = True
+
+        vars_list = []
+        while True:
+            vtype = 'any'
+            save = self.pos
+            try:
+                parsed_t = self._parse_type()
+                if self._match(TokenType.IDENT):
+                    vtype = parsed_t
+                    vname = self._advance().value
+                else:
+                    self.pos = save
+                    vname = self._expect(TokenType.IDENT).value
+            except ParseError:
+                self.pos = save
+                vname = self._expect(TokenType.IDENT).value
+
+            vars_list.append((vtype, vname))
+            if self._match(TokenType.COMMA):
+                self._advance()
+            else:
+                break
+
+        if has_outer_paren and self._match(TokenType.RPAREN):
+            self._advance()
+        return vars_list
+
+    def _desugar_for_vars(self, vars_list, iterable, body):
+        if len(vars_list) == 1:
+            vtype, vname = vars_list[0]
+            return ForEach(vtype, vname, iterable, body)
+
+        t1, n1 = vars_list[0]
+        t2, n2 = vars_list[1]
+
+        # enumerate(coll)
+        if isinstance(iterable, CallExpr) and iterable.callee == 'enumerate' and len(iterable.args) == 1:
+            coll = iterable.args[0]
+            coll_var = f"__coll_{self._gen_id()}"
+            idx_var  = f"__i_{self._gen_id()}"
+            init_stmt = VarDecl('int', idx_var, Literal('int', 0))
+            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(coll_var)]))
+            upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
+            v1_decl = VarDecl(t1 if t1 != 'any' else 'int', n1, Identifier(idx_var))
+            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(coll_var), Identifier(idx_var)))
+            loop_body = [v1_decl, v2_decl] + body
+            for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
+            return Block([VarDecl('any', coll_var, coll), for_loop])
+
+        # pairs(m)
+        if isinstance(iterable, CallExpr) and iterable.callee == 'pairs' and len(iterable.args) == 1:
+            map_expr = iterable.args[0]
+            map_var  = f"__map_{self._gen_id()}"
+            keys_var = f"__keys_{self._gen_id()}"
+            idx_var  = f"__i_{self._gen_id()}"
+            init_stmt = VarDecl('int', idx_var, Literal('int', 0))
+            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(keys_var)]))
+            upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
+            v1_decl = VarDecl(t1 if t1 != 'any' else 'string', n1, IndexAccess(Identifier(keys_var), Identifier(idx_var)))
+            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(map_var), Identifier(n1)))
+            loop_body = [v1_decl, v2_decl] + body
+            for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
+            return Block([
+                VarDecl('any', map_var, map_expr),
+                VarDecl('any', keys_var, CallExpr('keys', [Identifier(map_var)])),
+                for_loop
+            ])
+
+        # generic tuple iteration
+        coll_var = f"__coll_{self._gen_id()}"
+        item_var = f"__item_{self._gen_id()}"
+        decls = []
+        for idx, (vt, vn) in enumerate(vars_list):
+            decls.append(VarDecl(vt, vn, IndexAccess(Identifier(item_var), Literal('int', idx))))
+        loop_body = decls + body
+        foreach_loop = ForEach('any', item_var, Identifier(coll_var), loop_body)
+        return Block([VarDecl('any', coll_var, iterable), foreach_loop])
 
     def _for(self):
         self._expect(TokenType.FOR)
         self._expect(TokenType.LPAREN)
 
         if self._is_foreach():
-            vtype = self._parse_type()
-            vname = self._expect(TokenType.IDENT).value
+            vars_list = self._parse_for_vars()
             self._expect(TokenType.IN)
-            iterable = self._expr()
+            iterable = self._no_range()
+            # range form:  for (int i in start .. end)  /  .. = (inclusive)
+            if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                if len(vars_list) != 1:
+                    raise ParseError(f"[Syntax Error] Line {self._cur().line}: range loop requires a single variable")
+                vtype, vname = vars_list[0]
+                inclusive = self._advance().type == TokenType.RANGE_INCL
+                end = self._no_range()
+                self._expect(TokenType.RPAREN)
+                body = self._block()
+                return self._desugar_range(vtype, vname, iterable, end, inclusive, body)
             self._expect(TokenType.RPAREN)
-            return ForEach(vtype, vname, iterable, self._block())
+            body = self._block()
+            return self._desugar_for_vars(vars_list, iterable, body)
 
         init = None
         if not self._match(TokenType.SEMICOLON):
@@ -497,6 +818,23 @@ class Parser:
 
         self._expect(TokenType.RPAREN)
         return For(init, cond, update, self._block())
+
+    def _desugar_range(self, vtype, vname, start, end, inclusive, body):
+        """Lower `for (int i in a .. b)` to the equivalent counted loop.
+
+        Exclusive `..` uses `i < b`; inclusive `..=` uses `i <= b`. The bound is
+        part of the loop condition (re-evaluated each iteration), exactly as if
+        the programmer had written the classic `for (int i = a; i < b; ...)`.
+        Range loops require an integer loop variable."""
+        if vtype != 'int':
+            raise ParseError(
+                f"[Syntax Error] Line {self._cur().line}: range loop variable must be "
+                f"'int', got '{vtype}'")
+        op = '<=' if inclusive else '<'
+        init   = VarDecl('int', vname, start)
+        cond   = BinaryExpr(op, Identifier(vname), end)
+        update = Assignment(vname, BinaryExpr('+', Identifier(vname), Literal('int', 1)))
+        return For(init, cond, update, body)
 
     # ── try ─────────────────────────────────────────────────
 
@@ -645,7 +983,55 @@ class Parser:
 
     # ── expressoes (precedencia crescente) ──────────────────
 
-    def _expr(self):  return self._ternary()
+    def _expr(self):  return self._range()
+
+    def _no_range(self):
+        """An expression that stops before `..`.
+
+        Four constructs consume the range tokens THEMSELVES — the range `for`
+        (10.1), which lowers to a counted loop rather than building an array,
+        and slice syntax (10.9). They must parse their operands with this, or
+        `_range` below would swallow the `..` first and `for (int i in 0..n)`
+        would silently start allocating an array per loop.
+        """
+        return self._ternary()
+
+    def _range(self):
+        """Roadmap 10.9 — `a..b` as a value: the array [a, a+1, ..., b-1].
+
+        Binds looser than everything else, so `0..n+1` reads as `0..(n+1)`.
+        Lowered to a synthetic function rather than a new native, so all six
+        backends get it with no VM change (architecture rule 2), matching how
+        10.1 and the comprehensions are done.
+        """
+        left = self._ternary()
+        if not self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+            return left
+        tok = self._advance()
+        right = self._ternary()
+        if tok.type == TokenType.RANGE_INCL:
+            right = BinaryExpr('+', right, Literal('int', 1))
+        return CallExpr(self._range_helper(), [left, right], line=tok.line)
+
+    def _range_helper(self) -> str:
+        """Declare (once) the function a range value expands to."""
+        name = '__cryo_range'
+        if name not in self.user_defined_fns:
+            self.user_defined_fns.add(name)
+            i = '__r_i'
+            body = [
+                VarDecl('int[]', '__r_out', ArrayLiteral([])),
+                For(VarDecl('int', i, Identifier('lo')),
+                    BinaryExpr('<', Identifier(i), Identifier('hi')),
+                    Increment('++', i),
+                    [MethodCallExpr(Identifier('__r_out'), 'push',
+                                    [Identifier(i)])]),
+                Return(Identifier('__r_out')),
+            ]
+            self.synthetic_fns.append(
+                FunctionDecl(name, [('int', 'lo'), ('int', 'hi')],
+                             'int[]', body))
+        return name
 
     def _ternary(self):
         cond = self._cast()
@@ -739,26 +1125,85 @@ class Parser:
             self._advance(); return AwaitExpr(self._unary())
         return self._postfix()
 
+    def _call_args(self):
+        """Parse `expr, expr, ...)` after an already-consumed '(' — the ')' is
+        consumed too. Arguments MUST be separated by commas: a missing comma
+        used to be accepted silently, so `f(a)(b)` parsed as `f(a, b)` and
+        `f(1 2)` as `f(1, 2)` — wrong code with no diagnostic."""
+        args = []
+        while not self._match(TokenType.RPAREN):
+            args.append(self._expr())
+            if self._match(TokenType.COMMA):
+                self._advance()
+            elif not self._match(TokenType.RPAREN):
+                tok = self._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {tok.line}: expected ',' or ')' between call "
+                    f"arguments, got {tok.type.name} ({tok.value!r})")
+        self._expect(TokenType.RPAREN)
+        return args
+
+    def _slice_expr(self, obj, start, lb):
+        """Roadmap 10.9 — `xs[a..b]`, `xs[a..=b]`, `xs[a..]`, `xs[..b]`.
+
+        Lowered here in the front end so all six backends get slicing for free
+        (architecture rule 2). The result is always `slice(obj, start, end)`;
+        the `slice` native is polymorphic over array|string because the parser
+        cannot know which one `obj` is.
+        """
+        tok = self._advance()                       # RANGE or RANGE_INCL
+        inclusive = tok.type == TokenType.RANGE_INCL
+
+        if self._match(TokenType.RBRACKET):
+            # Open end: `xs[a..]` means "through the last element", which needs
+            # len(obj) — so obj is evaluated TWICE. Only safe for a plain name;
+            # anything else could have side effects or be expensive.
+            if not isinstance(obj, Identifier):
+                raise ParseError(
+                    f"[Syntax Error] Line {lb.line}: an open-ended slice `[a..]` "
+                    "requires a simple variable on the left, because the value is "
+                    "needed twice (once to slice, once for its length); assign it "
+                    "to a variable first")
+            if inclusive:
+                raise ParseError(
+                    f"[Syntax Error] Line {tok.line}: `..=` needs an end index; "
+                    "write `[a..]` for an open-ended slice")
+            end = CallExpr('len', [Identifier(obj.name)], line=lb.line)
+        else:
+            end = self._no_range()
+            if inclusive:
+                # `a..=b` includes b, and slice()'s end is exclusive.
+                end = BinaryExpr('+', end, Literal('int', 1))
+        self._expect(TokenType.RBRACKET)
+        return CallExpr('slice', [obj, start, end], line=lb.line)
+
     def _postfix(self):
         expr = self._primary()
         while True:
             if self._match(TokenType.LBRACKET):
-                self._advance()
-                idx = self._expr()
+                lb = self._advance()
+                # `x[..b]` — open start. Checked before parsing an index so the
+                # leading `..` is not mistaken for a malformed expression.
+                if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                    expr = self._slice_expr(expr, Literal('int', 0), lb)
+                    continue
+                idx = self._no_range()
+                if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+                    expr = self._slice_expr(expr, idx, lb)
+                    continue
                 self._expect(TokenType.RBRACKET)
                 expr = IndexAccess(expr, idx)
+            elif self._match(TokenType.LPAREN):
+                # calling the RESULT of an expression: `f(a)(b)`, `pick(x)(y)`.
+                # `name(args)` is handled in _primary; this is the chained form.
+                lp = self._advance()
+                expr = CallValueExpr(expr, self._call_args(), line=lp.line)
             elif self._match(TokenType.DOT):
                 self._advance()
                 member = self._expect(TokenType.IDENT).value
                 if self._match(TokenType.LPAREN):
                     self._advance()
-                    args = []
-                    while not self._match(TokenType.RPAREN):
-                        args.append(self._expr())
-                        if self._match(TokenType.COMMA):
-                            self._advance()
-                    self._expect(TokenType.RPAREN)
-                    expr = MethodCallExpr(expr, member, args)
+                    expr = MethodCallExpr(expr, member, self._call_args())
                 else:
                     expr = FieldAccess(expr, member)
             elif self._match(TokenType.NOT):
@@ -787,6 +1232,52 @@ class Parser:
     def _starts_expr(self, tok) -> bool:
         return tok.type in self._EXPR_START
 
+    def _is_generic_var_decl_ahead(self):
+        saved = self.pos
+        try:
+            if self._cur().type != TokenType.IDENT:
+                return False
+            self._advance()
+            if not self._match(TokenType.LT):
+                return False
+            self._advance()
+            while not self._match(TokenType.GT, TokenType.EOF):
+                self._parse_type()
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            if not self._match(TokenType.GT):
+                return False
+            self._advance()
+            while self._match(TokenType.LBRACKET) and self._peek().type == TokenType.RBRACKET:
+                self._advance()
+                self._advance()
+            if self._match(TokenType.QUESTION):
+                self._advance()
+            return self._match(TokenType.IDENT)
+        except Exception:
+            return False
+        finally:
+            self.pos = saved
+
+    def _type_args_ahead(self):
+        saved = self.pos
+        try:
+            if not self._match(TokenType.LT):
+                return False
+            self._advance()
+            while not self._match(TokenType.GT, TokenType.EOF):
+                self._parse_type()
+                if self._match(TokenType.COMMA):
+                    self._advance()
+            if not self._match(TokenType.GT):
+                return False
+            self._advance()
+            return self._match(TokenType.LPAREN) or self._match(TokenType.LBRACE)
+        except Exception:
+            return False
+        finally:
+            self.pos = saved
+
     def _primary(self):
         tok = self._cur()
 
@@ -801,10 +1292,18 @@ class Parser:
         if tok.type == TokenType.NULL:
             self._advance(); return Literal('null', None)
 
-        # array literal
+        # array literal or list comprehension
         if tok.type == TokenType.LBRACKET:
             self._advance()
-            elems = []
+            if self._match(TokenType.RBRACKET):
+                self._advance()
+                return ArrayLiteral([])
+            first = self._expr()
+            if self._match(TokenType.FOR):
+                return self._parse_list_comprehension(first)
+            elems = [first]
+            if self._match(TokenType.COMMA):
+                self._advance()
             while not self._match(TokenType.RBRACKET):
                 elems.append(self._expr())
                 if self._match(TokenType.COMMA):
@@ -812,10 +1311,20 @@ class Parser:
             self._expect(TokenType.RBRACKET)
             return ArrayLiteral(elems)
 
-        # map literal: { key: value, ... }  or  {}
+        # map literal or map comprehension
         if tok.type == TokenType.LBRACE:
             self._advance()
-            pairs = []
+            if self._match(TokenType.RBRACE):
+                self._advance()
+                return MapLiteral([])
+            first_k = self._expr()
+            self._expect(TokenType.COLON)
+            first_v = self._expr()
+            if self._match(TokenType.FOR):
+                return self._parse_map_comprehension(first_k, first_v)
+            pairs = [(first_k, first_v)]
+            if self._match(TokenType.COMMA):
+                self._advance()
             while not self._match(TokenType.RBRACE):
                 k = self._expr()
                 self._expect(TokenType.COLON)
@@ -830,6 +1339,14 @@ class Parser:
         if tok.type == TokenType.NEW:
             self._advance()
             sname = self._expect(TokenType.IDENT).value
+            type_args = []
+            if self._match(TokenType.LT):
+                self._advance()
+                while not self._match(TokenType.GT, TokenType.EOF):
+                    type_args.append(self._parse_type())
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.GT)
             self._expect(TokenType.LBRACE)
             fields = []
             while not self._match(TokenType.RBRACE):
@@ -840,21 +1357,55 @@ class Parser:
                 if self._match(TokenType.COMMA):
                     self._advance()
             self._expect(TokenType.RBRACE)
-            return StructInit(sname, fields)
+            return StructInit(sname, fields, type_args=type_args)
 
-        # identifier or function call
-        if tok.type == TokenType.IDENT:
+        # identifier or function call or map builtin
+        if tok.type in (TokenType.IDENT, TokenType.MAP):
             id_line = tok.line
             name = self._advance().value
-            if self._match(TokenType.LPAREN):
+            if self._match(TokenType.COLON_COLON):
                 self._advance()
-                args = []
-                while not self._match(TokenType.RPAREN):
-                    args.append(self._expr())
+                member = self._expect(TokenType.IDENT).value
+                name = f"{name}::{member}"
+            type_args = []
+            if self._type_args_ahead():
+                self._expect(TokenType.LT)
+                while not self._match(TokenType.GT, TokenType.EOF):
+                    type_args.append(self._parse_type())
                     if self._match(TokenType.COMMA):
                         self._advance()
-                self._expect(TokenType.RPAREN)
-                return CallExpr(name, args, line=id_line)
+                self._expect(TokenType.GT)
+                if self._match(TokenType.LBRACE):
+                    self._advance()
+                    fields = []
+                    while not self._match(TokenType.RBRACE):
+                        fname = self._expect(TokenType.IDENT).value
+                        self._expect(TokenType.COLON)
+                        fval  = self._expr()
+                        fields.append((fname, fval))
+                        if self._match(TokenType.COMMA):
+                            self._advance()
+                    self._expect(TokenType.RBRACE)
+                    return StructInit(name, fields, type_args=type_args)
+            if self._match(TokenType.LBRACE) and (self._peek().type == TokenType.RBRACE or (self._peek().type == TokenType.IDENT and self._peek(2).type == TokenType.COLON)):
+                self._advance()
+                fields = []
+                while not self._match(TokenType.RBRACE):
+                    fname = self._expect(TokenType.IDENT).value
+                    self._expect(TokenType.COLON)
+                    fval  = self._expr()
+                    fields.append((fname, fval))
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                self._expect(TokenType.RBRACE)
+                return StructInit(name, fields)
+            if self._match(TokenType.LPAREN):
+                self._advance()
+                args = self._call_args()
+                res = self._maybe_desugar_call(name, args, id_line)
+                if type_args and isinstance(res, CallExpr):
+                    res.type_args = type_args
+                return res
             return Identifier(name, line=id_line)
 
         if tok.type == TokenType.LPAREN:
@@ -870,6 +1421,137 @@ class Parser:
             f"[Syntax Error] Line {tok.line}: Unexpected token in expression: "
             f"{tok.type.name} ({tok.value!r})"
         )
+
+    def _parse_list_comprehension(self, elem_expr):
+        self._expect(TokenType.FOR)
+        has_paren = False
+        if self._match(TokenType.LPAREN):
+            self._advance()
+            has_paren = True
+
+        vars_list = self._parse_for_vars()
+        self._expect(TokenType.IN)
+        iterable = self._no_range()
+
+        is_range = False
+        inclusive = False
+        range_end = None
+        if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+            is_range = True
+            inclusive = self._advance().type == TokenType.RANGE_INCL
+            range_end = self._no_range()
+
+        if has_paren:
+            self._expect(TokenType.RPAREN)
+
+        cond = None
+        if self._match(TokenType.IF):
+            self._advance()
+            cond = self._expr()
+
+        self._expect(TokenType.RBRACKET)
+
+        push_stmt = MethodCallExpr(Identifier("__res"), "push", [elem_expr])
+        body = [push_stmt]
+        if cond:
+            body = [If(cond, body, None)]
+
+        if is_range:
+            vtype, vname = vars_list[0]
+            for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
+        else:
+            for_loop = self._desugar_for_vars(vars_list, iterable, body)
+
+        found = set()
+        _extract_identifiers(elem_expr, found)
+        _extract_identifiers(iterable, found)
+        if range_end:
+            _extract_identifiers(range_end, found)
+        if cond:
+            _extract_identifiers(cond, found)
+
+        loop_vars = {vn for _vt, vn in vars_list}
+        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+
+        fn_name = f"__list_comp_{self._gen_id()}"
+        params = [("any", name) for name in captured]
+        init_res = VarDecl('any[]', '__res', ArrayLiteral([]))
+        return_stmt = Return(Identifier("__res"))
+        if isinstance(for_loop, Block):
+            fn_body = [init_res] + for_loop.body + [return_stmt]
+        else:
+            fn_body = [init_res, for_loop, return_stmt]
+
+        fn_decl = FunctionDecl(fn_name, params, "any[]", fn_body)
+        self.synthetic_fns.append(fn_decl)
+
+        return CallExpr(fn_name, [Identifier(name) for name in captured])
+
+    def _parse_map_comprehension(self, k_expr, v_expr):
+        self._expect(TokenType.FOR)
+        has_paren = False
+        if self._match(TokenType.LPAREN):
+            self._advance()
+            has_paren = True
+
+        vars_list = self._parse_for_vars()
+        self._expect(TokenType.IN)
+        iterable = self._no_range()
+
+        is_range = False
+        inclusive = False
+        range_end = None
+        if self._match(TokenType.RANGE, TokenType.RANGE_INCL):
+            is_range = True
+            inclusive = self._advance().type == TokenType.RANGE_INCL
+            range_end = self._no_range()
+
+        if has_paren:
+            self._expect(TokenType.RPAREN)
+
+        cond = None
+        if self._match(TokenType.IF):
+            self._advance()
+            cond = self._expr()
+
+        self._expect(TokenType.RBRACE)
+
+        set_stmt = IndexAssignment(Identifier("__res"), k_expr, v_expr)
+        body = [set_stmt]
+        if cond:
+            body = [If(cond, body, None)]
+
+        if is_range:
+            vtype, vname = vars_list[0]
+            for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
+        else:
+            for_loop = self._desugar_for_vars(vars_list, iterable, body)
+
+        found = set()
+        _extract_identifiers(k_expr, found)
+        _extract_identifiers(v_expr, found)
+        _extract_identifiers(iterable, found)
+        if range_end:
+            _extract_identifiers(range_end, found)
+        if cond:
+            _extract_identifiers(cond, found)
+
+        loop_vars = {vn for _vt, vn in vars_list}
+        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+
+        fn_name = f"__map_comp_{self._gen_id()}"
+        params = [("any", name) for name in captured]
+        init_res = VarDecl('map<any,any>', '__res', MapLiteral([]))
+        return_stmt = Return(Identifier("__res"))
+        if isinstance(for_loop, Block):
+            fn_body = [init_res] + for_loop.body + [return_stmt]
+        else:
+            fn_body = [init_res, for_loop, return_stmt]
+
+        fn_decl = FunctionDecl(fn_name, params, "map<any,any>", fn_body)
+        self.synthetic_fns.append(fn_decl)
+
+        return CallExpr(fn_name, [Identifier(name) for name in captured])
 
     def _lambda_ahead(self) -> bool:
         """True if the current '(' opens a lambda parameter list —
@@ -909,3 +1591,108 @@ class Parser:
         else:
             body = [Return(self._expr())]
         return Lambda(params, None, body, line=line)
+
+    def _maybe_desugar_call(self, name, args, id_line):
+        if name not in self.user_defined_fns:
+            if name == 'map' and len(args) == 2:
+                return self._desugar_map(args[0], args[1])
+            if name == 'filter' and len(args) == 2:
+                return self._desugar_filter(args[0], args[1])
+            if name == 'reduce' and len(args) == 3:
+                return self._desugar_reduce(args[0], args[1], args[2])
+            if name == 'find_first' and len(args) == 2:
+                return self._desugar_find_first(args[0], args[1])
+            if name == 'any' and len(args) == 2:
+                return self._desugar_any(args[0], args[1])
+            if name == 'all' and len(args) == 2:
+                return self._desugar_all(args[0], args[1])
+        return CallExpr(name, args, line=id_line)
+
+    def _extract_fn_info(self, f, len_params=1):
+        if isinstance(f, Lambda) and len(f.params) == len_params:
+            if len_params == 1:
+                elem_type = f.params[0][0] or 'any'
+                return elem_type, f"{elem_type}[]"
+            elif len_params == 2:
+                acc_type = f.params[0][0] or 'any'
+                elem_type = f.params[1][0] or 'any'
+                return acc_type, elem_type, f"{elem_type}[]"
+        if len_params == 1:
+            return 'any', 'any[]'
+        else:
+            return 'any', 'any', 'any[]'
+
+    def _desugar_map(self, arr, f):
+        elem_t, arr_t = self._extract_fn_info(f, 1)
+        fn_name = f"__map_{self._gen_id()}"
+        init_res = VarDecl(arr_t, '__res', ArrayLiteral([]))
+        loop_var = f"__x_{self._gen_id()}"
+        push_stmt = MethodCallExpr(Identifier("__res"), "push", [CallValueExpr(Identifier("f"), [Identifier(loop_var)])])
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [push_stmt])
+        return_stmt = Return(Identifier("__res"))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({elem_t})->{elem_t}", "f")], arr_t, [init_res, for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f])
+
+    def _desugar_filter(self, arr, f):
+        elem_t, arr_t = self._extract_fn_info(f, 1)
+        fn_name = f"__filter_{self._gen_id()}"
+        init_res = VarDecl(arr_t, '__res', ArrayLiteral([]))
+        loop_var = f"__x_{self._gen_id()}"
+        cond_call = CallValueExpr(Identifier("f"), [Identifier(loop_var)])
+        if_stmt = If(cond_call, [MethodCallExpr(Identifier("__res"), "push", [Identifier(loop_var)])], None)
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [if_stmt])
+        return_stmt = Return(Identifier("__res"))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({elem_t})->bool", "f")], arr_t, [init_res, for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f])
+
+    def _desugar_reduce(self, arr, f, init):
+        acc_t, elem_t, arr_t = self._extract_fn_info(f, 2)
+        fn_name = f"__reduce_{self._gen_id()}"
+        init_acc = VarDecl(acc_t, '__acc', Identifier("init"))
+        loop_var = f"__x_{self._gen_id()}"
+        call_f = CallValueExpr(Identifier("f"), [Identifier("__acc"), Identifier(loop_var)])
+        assign_acc = Assignment("__acc", call_f)
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [assign_acc])
+        return_stmt = Return(Identifier("__acc"))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({acc_t},{elem_t})->{acc_t}", "f"), (acc_t, "init")], acc_t, [init_acc, for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f, init])
+
+    def _desugar_find_first(self, arr, f):
+        elem_t, arr_t = self._extract_fn_info(f, 1)
+        fn_name = f"__find_first_{self._gen_id()}"
+        loop_var = f"__x_{self._gen_id()}"
+        cond_call = CallValueExpr(Identifier("f"), [Identifier(loop_var)])
+        if_stmt = If(cond_call, [Return(Identifier(loop_var))], None)
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [if_stmt])
+        return_stmt = Return(Literal('null', None))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({elem_t})->bool", "f")], "any", [for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f])
+
+    def _desugar_any(self, arr, f):
+        elem_t, arr_t = self._extract_fn_info(f, 1)
+        fn_name = f"__any_{self._gen_id()}"
+        loop_var = f"__x_{self._gen_id()}"
+        cond_call = CallValueExpr(Identifier("f"), [Identifier(loop_var)])
+        if_stmt = If(cond_call, [Return(Literal('bool', True))], None)
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [if_stmt])
+        return_stmt = Return(Literal('bool', False))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({elem_t})->bool", "f")], "bool", [for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f])
+
+    def _desugar_all(self, arr, f):
+        elem_t, arr_t = self._extract_fn_info(f, 1)
+        fn_name = f"__all_{self._gen_id()}"
+        loop_var = f"__x_{self._gen_id()}"
+        cond_call = CallValueExpr(Identifier("f"), [Identifier(loop_var)])
+        not_cond = UnaryExpr("!", cond_call)
+        if_stmt = If(not_cond, [Return(Literal('bool', False))], None)
+        for_loop = ForEach(elem_t, loop_var, Identifier("arr"), [if_stmt])
+        return_stmt = Return(Literal('bool', True))
+        fn_decl = FunctionDecl(fn_name, [(arr_t, "arr"), (f"fn({elem_t})->bool", "f")], "bool", [for_loop, return_stmt])
+        self.synthetic_fns.append(fn_decl)
+        return CallExpr(fn_name, [arr, f])

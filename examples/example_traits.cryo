@@ -1,0 +1,22 @@
+// Example Interfaces / Traits with Static Dispatch (Phase 10.7)
+
+trait Printable {
+    fn to_str() -> string;
+}
+
+struct Person {
+    string name;
+    int age;
+}
+
+impl Printable for Person {
+    fn to_str() -> string ={
+        return this.name + " (" + to_string(this.age) + ")";
+    }
+}
+
+Person p = Person { name: "Alice", age: 30 };
+print(p.to_str());
+
+// Explicit trait call syntax
+print(Printable.to_str(p));

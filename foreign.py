@@ -13,7 +13,9 @@
 from dataclasses import fields
 from typing import Any, Set
 
-from ast_nodes import Node, Import, Library, ForeignBlock
+from ast_nodes import (
+    Node, Import, Library, ForeignBlock, FunctionDecl, VarDecl, ConstDecl,
+)
 
 
 class ForeignError(Exception):
@@ -89,7 +91,45 @@ def verify(program) -> Set[str]:
                         f"'library >LANG {n.name}<'."
                     )
 
+    verify_struct_params(program)
     return imported
+
+
+def _declared_names(program) -> Set[str]:
+    """Every top-level name a structure parameter is allowed to point at."""
+    names = set()
+    for n in _walk(program):
+        if isinstance(n, (FunctionDecl, VarDecl, ConstDecl)):
+            nm = getattr(n, 'name', None)
+            if nm:
+                names.add(nm)
+    return names
+
+
+def verify_struct_params(program) -> None:
+    """Roadmap 10.12 — every `<k = v>` on a foreign block must resolve.
+
+    A structure parameter wires a foreign block to something outside it, so a
+    typo in `v` would otherwise be discovered only by the *foreign* toolchain
+    (javac, gcc, the browser) — long after Cryo could have given a useful
+    message, and in a language the Cryo author may not read. Checking it here
+    keeps the error in Cryo's own terms.
+    """
+    declared = _declared_names(program)
+    for n in _walk(program):
+        if not isinstance(n, ForeignBlock) or not n.params:
+            continue
+        for key, val in n.params:
+            if val not in declared:
+                near = sorted(d for d in declared
+                              if d.lower().startswith(val.lower()[:3]))
+                hint = f" Did you mean: {', '.join(near[:3])}?" if near else ""
+                raise ForeignError(
+                    f">{n.lang}( ... )<{key} = {val}> refers to '{val}', which "
+                    f"is not declared in this program. A structure parameter "
+                    f"must name a function, variable or constant that exists."
+                    f"{hint}"
+                )
 
 
 def resolve_library_lang(lib: Library, imported: Set[str]) -> str:

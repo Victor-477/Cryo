@@ -1,0 +1,42 @@
+// ============================================================
+//  Phase 10.4 example — extended standard library
+//
+//  New batteries-included builtins, all with go/node/pyro parity:
+//    math:    clamp(x, lo, hi)   sign(x)   gcd(a, b)   hypot(a, b)
+//    strings: starts_with(s, p)  ends_with(s, p)   repeat(s, n)
+//
+//    python burnout/cryoc.py cryo/examples/example_stdlib_ext.cryo --backend pyro --run
+//    (same output with --backend go / node)
+// ============================================================
+
+// ── math ──────────────────────────────────────────────
+print("clamp(15, 0, 10) = ${clamp(15, 0, 10)}");     // 10  (int in → int out)
+print("clamp(-3, 0, 10) = ${clamp(-3, 0, 10)}");      // 0
+print("clamp(5, 0, 10)  = ${clamp(5, 0, 10)}");       // 5
+
+fn signName(int x) -> string ={
+    int s = sign(x);
+    if (s < 0) { return "negative"; }
+    if (s > 0) { return "positive"; }
+    return "zero";
+}
+print("sign(-42): ${signName(0 - 42)}");              // negative
+print("sign(0):   ${signName(0)}");                   // zero
+
+print("gcd(48, 36) = ${gcd(48, 36)}");                // 12
+print("gcd(17, 5)  = ${gcd(17, 5)}");                 // 1
+
+number d = hypot(3.0, 4.0);
+print("hypot(3, 4) = ${d}");                          // 5
+
+// ── strings ───────────────────────────────────────────
+string path = "report.pdf";
+print("is a pdf?  ${ends_with(path, \".pdf\")}");       // true
+print("is https?  ${starts_with(\"http://x\", \"https\")}"); // false
+
+// a tiny bar chart built with repeat()
+string[] labels = ["cpu", "mem", "net"];
+int[] load = [8, 4, 6];
+for (int i in 0..len(labels)) {
+    print(labels[i] + ": " + repeat("#", load[i]));
+}

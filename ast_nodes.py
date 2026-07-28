@@ -2,7 +2,7 @@
 #  Cryo Compiler - AST Nodes  (v0.2)
 # ============================================================
 from dataclasses import dataclass, field
-from typing import Optional, List, Any, Tuple
+from typing import Optional, List, Any, Tuple, Dict
 
 
 @dataclass
@@ -22,9 +22,31 @@ class StructField(Node):
 
 @dataclass
 class StructDecl(Node):
-    name:   str
-    fields: List[StructField]
-    line:   int = 0
+    name:        str
+    fields:      List[StructField]
+    line:        int = 0
+    type_params: List[str] = field(default_factory=list)
+    type_bounds: Dict[str, str] = field(default_factory=dict)
+    is_pub:      bool = False
+
+@dataclass
+class TraitMethodSig(Node):
+    name:        str
+    params:      List[Tuple[str, str]]
+    return_type: Optional[str]
+
+@dataclass
+class TraitDecl(Node):
+    name:    str
+    methods: List[TraitMethodSig]
+    line:    int = 0
+
+@dataclass
+class ImplDecl(Node):
+    trait_name:  str
+    target_type: str
+    methods:     List['FunctionDecl']
+    line:        int = 0
 
 @dataclass
 class EnumMember:
@@ -37,6 +59,7 @@ class EnumDecl(Node):
     name:    str
     members: List[EnumMember]
     line:    int = 0
+    is_pub:  bool = False
 
 @dataclass
 class MatchCase(Node):
@@ -71,6 +94,7 @@ class ConstDecl(Node):
     var_type: str
     name:     str
     value:    Node
+    is_pub:   bool = False
 
 @dataclass
 class Assignment(Node):
@@ -104,8 +128,13 @@ class FunctionDecl(Node):
     body:        List[Node]
     is_tool:     bool = False   # 'tool fn' — exposed to LLMs (Phase 3)
     line:        int = 0
+    type_params: List[str] = field(default_factory=list)
+    type_bounds: Dict[str, str] = field(default_factory=dict)
+    is_pub:      bool = False
 
-# -- flow control -----------------------------------
+@dataclass
+class Block(Node):
+    body: List[Node]
 
 @dataclass
 class Return(Node):
@@ -190,8 +219,15 @@ class Import(Node):
 
 @dataclass
 class ModuleImport(Node):
-    """Import of another Cryo file: import "utils.cryo" (resolved by the compiler)."""
-    path: str
+    """Import of another Cryo file: import "utils.cryo" as utils (resolved by compiler)."""
+    path:  str
+    alias: Optional[str] = None
+
+@dataclass
+class QualifiedIdentifier(Node):
+    namespace: str
+    name:      str
+    line:      int = 0
 
 @dataclass
 class Library(Node):
@@ -202,6 +238,13 @@ class Library(Node):
 class ForeignBlock(Node):
     lang: str
     code: str
+    # Roadmap 10.12 — structure parameters: `>Lang( ... )<k = v, ...>`.
+    # Each entry wires this block to something outside it: another foreign
+    # block (named by the Cryo function wrapping it), a Cryo function, or a
+    # Cryo variable. Empty list = the plain `>Lang( ... )` form; `<>` is also
+    # legal and means "declares a parameter list, currently empty".
+    params: List[Tuple[str, str]] = field(default_factory=list)
+    name:   str = ""     # set by the frontend pass to the enclosing fn, if any
 
 # -- expressions ------------------------------------------
 
@@ -256,7 +299,17 @@ class UnaryExpr(Node):
 
 @dataclass
 class CallExpr(Node):
-    callee: str
+    callee:    str
+    args:      List[Node]
+    line:      int = 0
+    type_args: List[str] = field(default_factory=list)
+
+@dataclass
+class CallValueExpr(Node):
+    """Call whose callee is an arbitrary expression, e.g. `f(a)(b)` or
+    `pick(true)(10)`. CallExpr covers the common `name(args)` case; this covers
+    calling the *result* of an expression (a function value)."""
+    callee: Node
     args:   List[Node]
     line:   int = 0
 
@@ -284,6 +337,7 @@ class ArrayLiteral(Node):
 class StructInit(Node):
     struct_name: str
     fields:      List[Tuple[str, Node]]
+    type_args:   List[str] = field(default_factory=list)
 
 @dataclass
 class Lambda(Node):

@@ -21,9 +21,9 @@ from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
-    Continue, Assert, SafetyBlock, ForeignBlock, Import, ModuleImport, Library,
+    Continue, Assert, SafetyBlock, Block, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr,
-    MapLiteral, UnaryExpr, CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
+    MapLiteral, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr, FieldAccess, IndexAccess,
     ArrayLiteral, StructInit, Identifier, Literal, Lambda, MatchCase, MatchStatement,
 )
 
@@ -38,11 +38,15 @@ BUILTINS: Set[str] = {
     'print', 'input', 'input_int', 'input_num', 'len', 'assert',
     'to_string', 'to_int', 'to_number', 'throw',
     'sqrt', 'pow', 'abs', 'min', 'max', 'floor', 'ceil', 'round',
-    'has', 'keys', 'remove',
-    'upper', 'lower', 'trim', 'contains', 'find', 'replace', 'substr',
-    'split', 'join',
+    'clamp', 'sign', 'gcd', 'hypot',
+    'has', 'keys', 'remove', 'sort', 'reverse', 'slice', 'index_of',
+    'concat', 'count', 'sum',
+    'upper', 'lower', 'trim', 'contains', 'find', 'find_first', 'replace', 'substr',
+    'split', 'join', 'starts_with', 'ends_with', 'repeat',
+    'pad_start', 'pad_end',
+    'now_ms', 'monotonic_ms', 'random', 'random_int', 'seed',
     'json_encode', 'json_decode',
-    'http_get', 'http_post', 'sleep', 'write_bytes',
+    'http_get', 'http_post', 'sleep', 'write_bytes', 'read_file', 'args', 'http_serve',
     'schema_of', 'llm', 'tools', 'tools_json', 'tool_get', 'agent',
     'skills', 'skill_get', 'skill_has', 'skills_json',
     'pyro_exec', 'pyro_env', 'pyro_args', 'pyro_time', 'pyro_read',
@@ -302,6 +306,8 @@ class _Checker:
                 self.check_expr(n.message, scope)
         elif isinstance(n, SafetyBlock):
             self.check_block(n.body, scope)
+        elif isinstance(n, Block):
+            self.check_block(n.body, scope)
         elif isinstance(n, (CallExpr, MethodCallExpr)):
             self.check_expr(n, scope)
         # Import/Library/ForeignBlock/nested decls: no checking here
@@ -335,6 +341,11 @@ class _Checker:
                 scope.declare(pn)
             self.check_block(n.body, scope)
             scope.pop()
+        elif isinstance(n, CallValueExpr):
+            # `f(a)(b)`: the callee is an expression, so just walk both sides
+            self.check_expr(n.callee, scope)
+            for a in n.args:
+                self.check_expr(a, scope)
         elif isinstance(n, MethodCallExpr):
             self.check_expr(n.obj, scope)
             for a in n.args:

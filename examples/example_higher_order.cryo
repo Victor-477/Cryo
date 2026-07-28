@@ -1,0 +1,27 @@
+// Example Higher-Order Collection Operations (map, filter, reduce, find, any, all)
+
+int[] nums = [1, 2, 3, 4, 5];
+
+// 1. map
+int[] doubled = map(nums, (int x) => x * 2);
+for (v in doubled) { print(v); }
+
+// 2. filter
+int[] evens = filter(nums, (int x) => x % 2 == 0);
+for (v in evens) { print(v); }
+
+// 3. reduce
+int sum_val = reduce(nums, (int acc, int x) => acc + x, 0);
+print(sum_val);
+
+// 4. find_first
+any found = find_first(nums, (int x) => x > 3);
+print(found);
+
+// 5. any
+bool has_large = any(nums, (int x) => x > 4);
+print(has_large);
+
+// 6. all
+bool all_pos = all(nums, (int x) => x > 0);
+print(all_pos);

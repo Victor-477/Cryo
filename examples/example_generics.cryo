@@ -1,0 +1,30 @@
+// Example Generics via Monomorphization (fn max_of<T>, struct Pair<A, B>)
+
+// 1. Generic Function
+fn max_of<T>(T a, T b) -> T ={
+    if (a > b) { return a; }
+    return b;
+}
+
+// 2. Generic Struct
+struct Pair<A, B> {
+    A first;
+    B second;
+}
+
+// Instantiate max_of for int and number
+int max_i = max_of<int>(10, 25);
+print(max_i);
+
+number max_f = max_of<number>(3.14, 2.71);
+print(max_f);
+
+// Instantiate Pair for string and int
+Pair<string, int> p1 = Pair<string, int> { first: "age", second: 30 };
+print(p1.first);
+print(p1.second);
+
+// Instantiate Pair for int and bool
+Pair<int, bool> p2 = Pair<int, bool> { first: 1, second: true };
+print(p2.first);
+print(p2.second);
