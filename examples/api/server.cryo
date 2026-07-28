@@ -1,0 +1,219 @@
+// ============================================================
+//  A REST API written in Cryo, compiled to a standalone .exe
+//
+//  Build it:
+//    python Burnout/cryoc.py Cryo/examples/api/server.cryo \
+//        --backend go -o build/api/server.go
+//
+//  That produces build/api/server.exe. Double-click it (or run
+//  it from a shell) and the API is live on http://localhost:8080
+//  — no VM, no Python, no Go toolchain needed at runtime.
+//
+//  Set PORT to serve somewhere else:  PORT=9000 server.exe
+//
+//  ── How the two halves split ──────────────────────────────
+//  Cryo owns the API's BEHAVIOUR: the Task shape, every JSON
+//  payload, the validation rules and the statistics.
+//  The >Go( ... ) block owns only the HTTP transport: the
+//  in-memory store, routing, methods and status codes.
+//
+//  That split is deliberate. `http_serve` (the builtin used by
+//  the full-stack demo) is a *static file* server — it has no
+//  per-request handler, so a dynamic API cannot be expressed
+//  with it today. Foreign blocks are the language's designed
+//  escape hatch for exactly this, and `library >Go pkg<` pulls
+//  the real dependency into the generated program.
+// ============================================================
+
+import >Go<
+library >Go net/http<
+library >Go encoding/json<
+library >Go strconv<
+library >Go strings<
+library >Go sync<
+library >Go fmt<
+library >Go os<
+
+// ── the resource ──────────────────────────────────────────
+struct Task {
+    int    id;
+    string title;
+    bool   done;
+}
+
+// ── payloads: every byte the API returns is built here ────
+
+fn task_json(int id, string title, bool done) -> string ={
+    Task t = Task{ id: id, title: title, done: done };
+    return json_encode(t);
+}
+
+// The Go side hands us each task already encoded; we only join
+// them, so the array shape lives in one place.
+fn tasks_json(string[] encoded) -> string ={
+    return "[" + join(encoded, ",") + "]";
+}
+
+fn error_json(string message) -> string ={
+    return "{\"error\":\"" + message + "\"}";
+}
+
+fn health_json(int task_count) -> string ={
+    return "{\"status\":\"ok\",\"service\":\"cryo-api\",\"version\":\"1.1.0\",\"tasks\":"
+         + to_string(task_count) + "}";
+}
+
+// ── rules: the API's behaviour, not its plumbing ──────────
+
+// Returns "" when the title is acceptable, otherwise the reason.
+// The caller turns a non-empty result into a 400.
+fn validate_title(string raw) -> string ={
+    string t = trim(raw);
+    if (len(t) == 0) {
+        return "title is required";
+    }
+    if (len(t) > 60) {
+        return "title must be 60 characters or fewer";
+    }
+    return "";
+}
+
+fn normalize_title(string raw) -> string ={
+    return trim(raw);
+}
+
+// Integer percentage, guarding the empty case so 0 tasks is 0%
+// rather than a division by zero.
+fn percent_done(int total, int done) -> int ={
+    if (total == 0) {
+        return 0;
+    }
+    return (done * 100) / total;
+}
+
+fn stats_json(int total, int done) -> string ={
+    int pending = total - done;
+    return "{\"total\":" + to_string(total)
+         + ",\"done\":" + to_string(done)
+         + ",\"pending\":" + to_string(pending)
+         + ",\"percent_done\":" + to_string(percent_done(total, done)) + "}";
+}
+
+// ── HTTP transport ────────────────────────────────────────
+// Everything below is glue: it moves bytes and picks status
+// codes. Every payload it writes came from a Cryo function.
+>Go(
+    type row struct {
+        id    int64
+        title string
+        done  bool
+    }
+
+    var mu sync.Mutex
+    var rows = []row{
+        {1, "read the Cryo docs", true},
+        {2, "write an API in Cryo", false},
+        {3, "ship a standalone exe", false},
+    }
+    var nextID int64 = 4
+
+    writeJSON := func(w http.ResponseWriter, status int, body string) {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(status)
+        fmt.Fprint(w, body)
+    }
+
+    encodeAll := func() []string {
+        out := make([]string, 0, len(rows))
+        for _, r := range rows {
+            out = append(out, task_json(r.id, r.title, r.done))
+        }
+        return out
+    }
+
+    http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+        mu.Lock()
+        n := int64(len(rows))
+        mu.Unlock()
+        writeJSON(w, 200, health_json(n))
+    })
+
+    http.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+        mu.Lock()
+        total := int64(len(rows))
+        var done int64
+        for _, x := range rows {
+            if x.done {
+                done++
+            }
+        }
+        mu.Unlock()
+        writeJSON(w, 200, stats_json(total, done))
+    })
+
+    http.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method == http.MethodGet {
+            mu.Lock()
+            body := tasks_json(encodeAll())
+            mu.Unlock()
+            writeJSON(w, 200, body)
+            return
+        }
+        if r.Method == http.MethodPost {
+            var in struct {
+                Title string `json:"title"`
+            }
+            if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+                writeJSON(w, 400, error_json("body must be valid JSON"))
+                return
+            }
+            // The rule lives in Cryo; this only reports it.
+            if reason := validate_title(in.Title); reason != "" {
+                writeJSON(w, 400, error_json(reason))
+                return
+            }
+            mu.Lock()
+            rec := row{nextID, normalize_title(in.Title), false}
+            nextID++
+            rows = append(rows, rec)
+            mu.Unlock()
+            writeJSON(w, 201, task_json(rec.id, rec.title, rec.done))
+            return
+        }
+        w.Header().Set("Allow", "GET, POST")
+        writeJSON(w, 405, error_json("method not allowed"))
+    })
+
+    http.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
+        raw := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+        id, err := strconv.ParseInt(raw, 10, 64)
+        if err != nil {
+            writeJSON(w, 400, error_json("id must be a number"))
+            return
+        }
+        mu.Lock()
+        defer mu.Unlock()
+        for _, x := range rows {
+            if x.id == id {
+                writeJSON(w, 200, task_json(x.id, x.title, x.done))
+                return
+            }
+        }
+        writeJSON(w, 404, error_json("no task with that id"))
+    })
+
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8080"
+    }
+    fmt.Println("cryo-api listening on http://localhost:" + port)
+    fmt.Println("  GET  /api/health")
+    fmt.Println("  GET  /api/stats")
+    fmt.Println("  GET  /api/tasks")
+    fmt.Println("  GET  /api/tasks/{id}")
+    fmt.Println("  POST /api/tasks       body: {\"title\":\"...\"}")
+    if err := http.ListenAndServe(":"+port, nil); err != nil {
+        fmt.Println("server error:", err)
+        os.Exit(1)
+    }
+)
