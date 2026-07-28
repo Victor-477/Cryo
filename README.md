@@ -19,6 +19,7 @@
 * **Generics & Traits:** `fn max_of<T>(T a, T b)` and `struct Pair<A,B>` via compile-time monomorphization; `trait`/`impl` with static dispatch and bounds (`<T: Printable>`).
 * **Slices & Ranges:** `xs[a..b]`, `xs[a..=b]`, `xs[a..]`, `xs[..b]` on arrays *and* strings, and `a..b` as a first-class value (`int[] r = 0..5`).
 * **Front-End in Cryo:** `>html(`, `>javascript(` and `>CSS(` blocks composed with `<script = ..., style = ...>`, emitted as a self-contained page or as `.html` + a WebAssembly binary.
+* **APIs as Standalone Binaries:** Write the resource, payloads (`json_encode`) and rules in Cryo, borrow a mature HTTP stack through a foreign block, and compile the whole thing to one native executable.
 
 ---
 
@@ -42,6 +43,7 @@
 | 📁 [`examples/`](examples/) | **Examples & Demos** | Interactive examples illustrating enums, networking, calculators, Windows update simulations, and real-time graphics. |
 | 📁 [`examples/fullstack/`](examples/fullstack/) | **Full-Stack Demo** | One app, Cryo on both ends: a server using the `http_serve` builtin and a browser client compiled to WebAssembly. |
 | 📁 [`examples/frontend/`](examples/frontend/) | **Front-End Demo** | A web page written entirely in Cryo — html/javascript/CSS blocks composed by name, built as one vanilla file or as `.html` + `app.wasm`. |
+| 📁 [`examples/api/`](examples/api/) | **REST API Demo** | A JSON API whose payloads, validation rules and statistics are all Cryo; compiles to a standalone `.exe` that serves on `:8080` with no runtime dependencies. |
 
 ---
 
