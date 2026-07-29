@@ -63,24 +63,34 @@ curl -X POST "http://localhost:8080/api/tasks?token=secret" -d 'write the docs'
 python Burnout/tests/test_taskapp.py
 ```
 
-30 assertions. It launches the app, exercises the API, then **restarts the
+36 assertions. It launches the app, exercises the API, then **restarts the
 process on a different engine** against the same data file — which is how the
 persistence and parity claims are checked rather than asserted. It also reads
 the data file directly to confirm a delete reached the disk and no `.tmp` was
 left behind.
 
-## What building it revealed
+## What building it revealed — and what got fixed
 
-The point of a reference application is to find what is missing. Two things:
+The point of a reference application is to find what is missing. It found two
+gaps, and **both are now closed**:
 
-- **`http_accept` exposes no request headers** — only method, path, query and
-  body. So the auth token has to travel in the query string, where it lands in
-  server logs and browser history. A real deployment wants `Authorization`.
-  Headers are the clearest next addition to 11.6.
-- **No percent-decoding.** `http.cryo` splits the query on `&` and `=` and
-  stops there, so a value containing `%20` or `&` arrives raw. Fine for ids and
-  a token; not fine in general. A `url_decode` builtin belongs alongside the
-  HTTP natives.
+- **`http_accept` exposed no request headers.** The first version had to put
+  the auth token in the query string, where it lands in server logs and
+  browser history. Headers now arrive in the same request map under
+  `header:<lowercased-name>`, and this app authenticates with
+  `Authorization: Bearer <token>` — keeping `?token=` only so the browser UI
+  can still be opened with a plain URL.
+- **There was no percent-decoding.** `url_decode` / `url_encode` (natives
+  65/66) joined the set, so a query value containing `%20` or `%26` arrives
+  correctly. A malformed escape passes through unchanged rather than aborting:
+  a server must not die on a bad request.
 
-Neither blocks the application, and both are recorded here rather than papered
-over.
+Both were implemented on the Go VM and in the C runtime together, so the C VM
+and the AOT binary agree with the Go VM byte for byte.
+
+## Still missing
+
+- No streaming or chunked bodies: a request is read whole, into a fixed
+  buffer.
+- One request at a time, by design — see the note on the accept loop in
+  `PYRO_RUNTIME.md`.

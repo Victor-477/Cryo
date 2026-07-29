@@ -25,7 +25,10 @@
 //
 //    PORT=9000 TASKS_TOKEN=hunter2 TASKS_FILE=my.json taskapp
 //
-//  Endpoints (all require ?token=... when a token is configured):
+//  Auth (when TASKS_TOKEN is set): `Authorization: Bearer <token>`,
+//  or `?token=...` so the browser UI can be opened with a plain URL.
+//
+//  Endpoints:
 //    GET  /                       the UI
 //    GET  /api/tasks              the list
 //    POST /api/tasks              body = the title
@@ -60,12 +63,17 @@ fn config_limit() -> int ={
 // Returns "<status>|<content-type>|<body>", so one function
 // decides the whole response and `main` only writes it.
 
-fn route(string method, string path, string query, string body) -> string ={
+fn route(map<string,string> req) -> string ={
+    string method = req["method"];
+    string path   = req["path"];
+    string query  = req["query"];
+    string body   = req["body"];
+
     if (path == "/" && method == "GET") {
         return "200|text/html|" + ui::page();
     }
 
-    if (!web::authorized(query)) {
+    if (!web::authorized(req)) {
         return "401|application/json|" + web::json_error("unauthorized");
     }
 
@@ -128,7 +136,7 @@ if (!http_listen(port)) {
         // http_accept always returns a map; an empty method means the
         // connection failed or the request was malformed.
         if (len(req["method"]) > 0) {
-            string res = route(req["method"], req["path"], req["query"], req["body"]);
+            string res = route(req);
             int bar1 = find(res, "|");
             string status = res[0..bar1];
             string rest = res[bar1 + 1..];
