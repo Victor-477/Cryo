@@ -17,6 +17,7 @@ from ast_nodes import (
     BinaryExpr, CallExpr, Literal, VarDecl, ConstDecl,
     Assignment, CompoundAssignment, ForEach, Identifier,
     FunctionDecl,
+    CastExpr, PermissionsDecl,   # 11.15
 )
 
 
@@ -65,7 +66,17 @@ _TAINT_SOURCES = {
     'pyro_args', 'pyro_env',
     'http_get', 'http_post',
     'llm', 'agent',
+    # 11.15 — the natives added in 11.6-11.8 are untrusted sources too. Their
+    # absence meant a program built entirely on the newer I/O audited clean.
+    'read_file', 'exec',
+    'http_accept',       # method/path/query/body/headers, all attacker-supplied
 }
+# Deliberately NOT sources: `env` and `args` are how an OPERATOR configures a
+# program, and `asset` is data the author embedded. Treating them as untrusted
+# made every configured path a HIGH finding on correct code — and an audit
+# that is noisy on your own correct code is an audit people switch off, which
+# costs more than the recall it buys. They remain covered where it matters:
+# a path from any source is still confined by the capability policy (11.11).
 
 # callee -> (arg_index, level, rule, message)
 _TAINT_SINKS = {
@@ -86,6 +97,46 @@ _TAINT_SINKS = {
     'http_post':       (0, 'HIGH', 'tainted-ssrf',
                         "URL coming from untrusted input — SSRF risk "
                         "(validate the host against an allowlist)."),
+    # 11.15 — the current filesystem/process natives, which the table predated
+    'exec':            (0, 'HIGH', 'tainted-exec',
+                        "shell command built from untrusted input — command "
+                        "injection risk (use an allowlist, and grant `exec` "
+                        "narrowly in the permissions block)."),
+    'write_file':      (0, 'HIGH', 'tainted-path',
+                        "file path coming from untrusted input — arbitrary "
+                        "write risk (normalize the path and confine it with "
+                        "`write` in the permissions block)."),
+    'write_file_atomic': (0, 'HIGH', 'tainted-path',
+                        "file path coming from untrusted input — arbitrary "
+                        "write risk (normalize and confine the path)."),
+    'write_bytes':     (0, 'HIGH', 'tainted-path',
+                        "file path coming from untrusted input — arbitrary "
+                        "write risk (normalize and confine the path)."),
+    'delete_file':     (0, 'HIGH', 'tainted-path',
+                        "deletion path coming from untrusted input — a "
+                        "traversal here destroys data rather than leaking it."),
+    'make_dir':        (0, 'MEDIUM', 'tainted-path',
+                        "directory path coming from untrusted input — "
+                        "normalize and confine it."),
+    'read_file':       (0, 'HIGH', 'tainted-path',
+                        "file path coming from untrusted input — path "
+                        "traversal / arbitrary read risk (confine it with "
+                        "`read` in the permissions block)."),
+    'http_serve':      (1, 'HIGH', 'tainted-path',
+                        "served directory coming from untrusted input — this "
+                        "publishes whatever that path resolves to."),
+}
+
+# ── 11.15: time-of-check / time-of-use ──────────────────────
+_TOCTOU_CHECKS = {'file_exists', 'is_dir'}
+_TOCTOU_USERS = {'read_file', 'write_file', 'write_file_atomic',
+                 'write_bytes', 'delete_file'}
+
+# ── 11.15: unbounded allocation ─────────────────────────────
+# callee -> index of the argument that sizes the result. A count taken from
+# untrusted input turns one request into an out-of-memory abort.
+_ALLOC_SIZED_BY = {
+    'repeat': 1, 'pad_start': 1, 'pad_end': 1,
 }
 
 # ── hardcoded secrets ───────────────────────────────────────
@@ -109,8 +160,13 @@ def _expr_is_tainted(expr: Any, tainted: Set[str]) -> bool:
 
 
 def _compute_taint(program) -> Set[str]:
-    """Set of variable names that can receive untrusted data
-    , via monotonic fixpoint over the entire program."""
+    """Variable names that can receive untrusted data, by monotonic fixpoint.
+
+    Scoped by its CALLER: pass one function's body, not the whole program.
+    Taint is tracked by name, so mixing scopes makes a variable called `path`
+    in one function taint an unrelated `path` in another — which is exactly
+    the false positive this scoping exists to avoid.
+    """
     tainted: Set[str] = set()
     changed = True
     while changed:
@@ -151,10 +207,33 @@ def audit_ast(program) -> List[Finding]:
     n_foreign = 0
     used_input = False
 
-    # taint: variable names that can carry untrusted data
-    tainted = _compute_taint(program)
+    # Taint, computed PER SCOPE. Each function gets its own set, and the
+    # top-level statements another; see _compute_taint for why sharing one
+    # set across the program produces false positives.
+    scopes = []
+    top_level = [n for n in getattr(program, 'statements', [])
+                 if not isinstance(n, FunctionDecl)]
+    scopes.append((top_level, _compute_taint(top_level)))
+    for n in _walk(program):
+        if isinstance(n, FunctionDecl):
+            body = n.body or []
+            # a parameter is untrusted only if the analysis can see it being
+            # assigned untrusted data; without inter-procedural tracking we
+            # do not guess, which trades some recall for far less noise
+            scopes.append((body, _compute_taint(body)))
 
-    for node in _walk(program):
+    tainted: Set[str] = set()
+
+    # 11.15 — paths that were tested with file_exists()/is_dir(). Collected in
+    # a pre-pass so a use is flagged wherever it appears relative to the check.
+    checked_paths: Set[str] = set()
+    for n in _walk(program):
+        if isinstance(n, CallExpr) and n.callee in _TOCTOU_CHECKS                 and n.args and isinstance(n.args[0], Identifier):
+            checked_paths.add(n.args[0].name)
+
+    for scope_nodes, scope_taint in scopes:
+      tainted = scope_taint
+      for node in _walk(scope_nodes):
         # Foreign language blocks: injection surface,
         # completely ignore Cryo's security instrumentation.
         if isinstance(node, ForeignBlock):
@@ -206,6 +285,62 @@ def audit_ast(program) -> List[Finding]:
             argi, level, rule, msg = _TAINT_SINKS[node.callee]
             if argi < len(node.args) and _expr_is_tainted(node.args[argi], tainted):
                 findings.append(Finding(level, rule, msg))
+
+        # 11.15 — unvalidated deserialization. json_decode of untrusted data
+        # produces a value shaped however the ATTACKER chose; `as T` does not
+        # verify it (the cast is an assertion, not a check), so every field
+        # read afterwards is attacker-controlled.
+        if isinstance(node, CastExpr):
+            inner = node.expr
+            if (isinstance(inner, CallExpr) and inner.callee == 'json_decode'
+                    and inner.args and _expr_is_tainted(inner.args[0], tainted)):
+                findings.append(Finding(
+                    # MEDIUM, not HIGH: it is a real issue, but the usual case
+                    # is a program reading its own data file, where an attacker
+                    # needs write access first. --strict gates on HIGH, so
+                    # rating this HIGH would break CI for ordinary code.
+                    'MEDIUM', 'unvalidated-deserialization',
+                    f"json_decode() of untrusted data cast to "
+                    f"'{node.target_type}' — `as T` asserts a shape, it does "
+                    f"not verify one. Check the fields you rely on (presence, "
+                    f"type and range) before using them."))
+
+        # 11.15 — unbounded allocation from input. A size taken from untrusted
+        # data turns a single request into an out-of-memory abort.
+        if isinstance(node, CallExpr) and node.callee in _ALLOC_SIZED_BY:
+            argi = _ALLOC_SIZED_BY[node.callee]
+            if argi < len(node.args) and _expr_is_tainted(node.args[argi], tainted):
+                findings.append(Finding(
+                    'MEDIUM', 'unbounded-allocation',
+                    f"{node.callee}() sized by untrusted input — clamp the "
+                    f"count to a maximum before allocating, or a single "
+                    f"request can exhaust memory."))
+
+        # 11.15 — permissions that grant a whole class. Legal, and sometimes
+        # correct, but it defeats the point of declaring them.
+        if isinstance(node, PermissionsDecl):
+            for cap, values in node.grants.items():
+                if '*' in values:
+                    lvl = 'HIGH' if cap in ('exec', 'write') else 'MEDIUM'
+                    findings.append(Finding(
+                        lvl, 'broad-permission',
+                        f"permissions: '{cap} = \"*\"' grants the whole "
+                        f"class — name the paths, hosts or binaries actually "
+                        f"needed, or the declaration proves nothing."))
+
+        # 11.15 — time-of-check / time-of-use. `file_exists(p)` proves nothing
+        # about the moment `p` is opened: between the two, the path can be
+        # replaced (a symlink, a different file). Heuristic by design — it
+        # matches on the same variable NAME, so it reports the shape of the
+        # mistake rather than proving it.
+        if isinstance(node, CallExpr) and node.callee in _TOCTOU_USERS:
+            if node.args and isinstance(node.args[0], Identifier)                     and node.args[0].name in checked_paths:
+                findings.append(Finding(
+                    'LOW', 'toctou-path',
+                    f"'{node.args[0].name}' is used by {node.callee}() after a "
+                    f"file_exists()/is_dir() check — the check does not hold "
+                    f"at the moment of use. Act on the operation's own result "
+                    f"instead of testing first."))
 
         # Hardcoded secrets in the source code.
         if isinstance(node, (VarDecl, ConstDecl)):

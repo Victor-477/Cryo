@@ -14,7 +14,7 @@
 * **Algebraic Data Types (ADTs) & Pattern Matching:** Powerful algebraic enums with positional data fields (e.g., `Result { Ok(int), Err(string), Empty }`) and pattern matching statements (`match`).
 * **First-Class Functions & Lambdas:** Functions as first-class citizens, complete with lambdas/closures (`(int x) -> int => x * 2`).
 * **Error Propagation & Handling:** Simple `try/catch` exception blocks and the `?` error propagation operator (similar to Rust/Swift).
-* **Static Taint Analysis & Security Audit:** Built-in vulnerability scanner checking for shell injections (`tainted-exec`), path traversals (`tainted-path`), SSRF (`tainted-ssrf`), and hardcoded secrets.
+* **Static Taint Analysis & Security Audit:** Built-in vulnerability scanner checking for shell injections (`tainted-exec`), path traversals (`tainted-path`), SSRF (`tainted-ssrf`), hardcoded secrets, unvalidated deserialization, input-sized allocation, TOCTOU on paths and over-broad permission grants. Taint is scoped per function; `--strict` gates CI on HIGH findings (exit `2`).
 * **Independent Modules:** Supports flat, cyclic-protected, de-duplicated module imports (`import "file.cryo"`), plus namespaces (`import "geo.cryo" as geo;` → `geo::area(...)`) and `pub` visibility.
 * **Generics & Traits:** `fn max_of<T>(T a, T b)` and `struct Pair<A,B>` via compile-time monomorphization; `trait`/`impl` with static dispatch and bounds (`<T: Printable>`).
 * **Slices & Ranges:** `xs[a..b]`, `xs[a..=b]`, `xs[a..]`, `xs[..b]` on arrays *and* strings, and `a..b` as a first-class value (`int[] r = 0..5`).
