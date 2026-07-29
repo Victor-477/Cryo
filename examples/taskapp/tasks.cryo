@@ -1,0 +1,125 @@
+// ============================================================
+//  tasks.cryo — the domain
+//
+//  Tasks are held in the store under `task:<id>`, with the value
+//  `<done>|<title>`. A flat key/value store keeps the persisted
+//  form obvious and lets the whole module work with the plain
+//  string builtins.
+// ============================================================
+
+import "store.cryo" as store;
+
+int _next_id = 1;
+
+// ── internals ─────────────────────────────────────────────
+
+fn _key(int id) -> string ={
+    return "task:" + to_string(id);
+}
+
+fn _encode(bool done, string title) -> string ={
+    if (done) { return "1|" + title; }
+    return "0|" + title;
+}
+
+fn _title_of(string raw) -> string ={
+    // everything after the first '|' — a title may contain one
+    return raw[2..];
+}
+
+fn _done_of(string raw) -> bool ={
+    return starts_with(raw, "1|");
+}
+
+fn _id_of(string key) -> int ={
+    return to_int(key[5..]);          // drop "task:"
+}
+
+fn _escape(string s) -> string ={
+    // enough for the fields this app produces
+    return replace(replace(s, "\\", "\\\\"), "\"", "\\\"");
+}
+
+// The highest id already stored, so ids keep climbing across a
+// restart instead of colliding with a task that already exists.
+fn _sync_next_id() ={
+    int top = 0;
+    for (string k in store::all_keys()) {
+        if (starts_with(k, "task:")) {
+            int id = _id_of(k);
+            if (id > top) { top = id; }
+        }
+    }
+    _next_id = top + 1;
+}
+
+// ── api ───────────────────────────────────────────────────
+
+pub fn load(string path) ={
+    store::open(path);
+    _sync_next_id();
+}
+
+pub fn add(string title) -> int ={
+    int id = _next_id;
+    store::set(_key(id), _encode(false, title));
+    _next_id = _next_id + 1;
+    store::save();
+    return id;
+}
+
+pub fn complete(int id) -> bool ={
+    string k = _key(id);
+    if (!store::has_key(k)) { return false; }
+    store::set(k, _encode(true, _title_of(store::get(k))));
+    return store::save();
+}
+
+pub fn remove_task(int id) -> bool ={
+    string k = _key(id);
+    if (!store::has_key(k)) { return false; }
+    store::drop(k);
+    return store::save();
+}
+
+pub fn count() -> int ={
+    int n = 0;
+    for (string k in store::all_keys()) {
+        if (starts_with(k, "task:")) { n = n + 1; }
+    }
+    return n;
+}
+
+pub fn done_count() -> int ={
+    int n = 0;
+    for (string k in store::all_keys()) {
+        if (starts_with(k, "task:") && _done_of(store::get(k))) {
+            n = n + 1;
+        }
+    }
+    return n;
+}
+
+pub fn to_json() -> string ={
+    string out = "[";
+    bool first = true;
+    for (string k in store::all_keys()) {
+        if (starts_with(k, "task:")) {
+            string raw = store::get(k);
+            if (!first) { out = out + ","; }
+            first = false;
+            out = out + "{\"id\":" + to_string(_id_of(k))
+                      + ",\"title\":\"" + _escape(_title_of(raw)) + "\""
+                      + ",\"done\":" + to_string(_done_of(raw)) + "}";
+        }
+    }
+    return out + "]";
+}
+
+pub fn stats_json() -> string ={
+    int total = count();
+    int done = done_count();
+    return "{\"total\":" + to_string(total)
+         + ",\"done\":" + to_string(done)
+         + ",\"pending\":" + to_string(total - done) + "}";
+}

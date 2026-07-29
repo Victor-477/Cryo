@@ -1,0 +1,64 @@
+// ============================================================
+//  web.cryo — the browser UI
+//
+//  Built as Cryo strings rather than >html( ... ) blocks, so this
+//  application contains NO foreign blocks at all. The page is
+//  served straight from memory by the API process.
+// ============================================================
+
+fn _css() -> string ={
+    return "body{font-family:system-ui,sans-serif;background:#0b0b0d;color:#e8e8ea;"
+         + "margin:0;padding:2.5rem 1.5rem;max-width:44rem;margin-inline:auto}"
+         + "h1{font-size:1.4rem;font-weight:600}"
+         + "form{display:flex;gap:.5rem;margin:1.25rem 0}"
+         + "input{flex:1;padding:.55rem .7rem;border-radius:6px;border:1px solid #2a2a31;"
+         + "background:#141418;color:inherit}"
+         + "button{padding:.55rem .9rem;border-radius:6px;border:0;background:#3b6ef5;"
+         + "color:#fff;cursor:pointer}"
+         + "li{display:flex;align-items:center;gap:.6rem;padding:.5rem 0;"
+         + "border-bottom:1px solid #1e1e24;list-style:none}"
+         + "li.done span{opacity:.45;text-decoration:line-through}"
+         + "ul{padding:0}.muted{color:#8a8a92;font-size:.875rem}";
+}
+
+fn _js() -> string ={
+    return "const q=new URLSearchParams(location.search);"
+         + "const t=q.get('token')||'';"
+         + "const api=(p)=>p+(p.includes('?')?'&':'?')+'token='+encodeURIComponent(t);"
+         + "async function load(){"
+         + "const r=await fetch(api('/api/tasks'));"
+         + "if(r.status===401){document.getElementById('list').innerHTML="
+         + "'<p class=\"muted\">Unauthorized — add ?token=... to the URL.</p>';return;}"
+         + "const ts=await r.json();"
+         + "document.getElementById('list').innerHTML=ts.length?"
+         + "'<ul>'+ts.map(x=>'<li class=\"'+(x.done?'done':'')+'\">'"
+         + "+'<input type=checkbox '+(x.done?'checked disabled':'')+' onchange=\"done('+x.id+')\">'"
+         + "+'<span>'+x.title+'</span>'"
+         + "+'<button onclick=\"del('+x.id+')\" style=\"margin-left:auto;background:#2a2a31\">x</button>'"
+         + "+'</li>').join('')+'</ul>'"
+         + ":'<p class=\"muted\">Nothing yet.</p>';"
+         + "const s=await (await fetch(api('/api/stats'))).json();"
+         + "document.getElementById('stats').textContent="
+         + "s.done+' of '+s.total+' done';}"
+         + "async function add(e){e.preventDefault();"
+         + "const i=document.getElementById('title');if(!i.value.trim())return;"
+         + "await fetch(api('/api/tasks'),{method:'POST',body:i.value});"
+         + "i.value='';load();}"
+         + "async function done(id){await fetch(api('/api/tasks/complete?id='+id),"
+         + "{method:'POST'});load();}"
+         + "async function del(id){await fetch(api('/api/tasks/delete?id='+id),"
+         + "{method:'POST'});load();}"
+         + "document.getElementById('f').addEventListener('submit',add);load();";
+}
+
+pub fn page() -> string ={
+    return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+         + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+         + "<title>Tasks — Cryo</title><style>" + _css() + "</style></head><body>"
+         + "<h1>Tasks</h1>"
+         + "<p class=\"muted\" id=\"stats\"></p>"
+         + "<form id=\"f\"><input id=\"title\" placeholder=\"What needs doing?\" "
+         + "autocomplete=\"off\"><button>Add</button></form>"
+         + "<div id=\"list\"></div>"
+         + "<script>" + _js() + "</script></body></html>";
+}

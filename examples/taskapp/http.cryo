@@ -1,0 +1,49 @@
+// ============================================================
+//  http.cryo — query parsing and auth
+//
+//  `http_accept` exposes method, path, query and body — but NOT
+//  headers. So the token travels in the query string. That is a
+//  real limitation this application surfaced; see the README.
+// ============================================================
+
+string _token = "";
+
+pub fn set_token(string t) ={
+    _token = t;
+}
+
+// Reads one parameter out of a raw `a=1&b=2` query string.
+// Returns "" when absent. No percent-decoding: this app's values
+// are ids and a token, and pretending otherwise would be worse
+// than saying so.
+pub fn param(string query, string name) -> string ={
+    string[] parts = split(query, "&");
+    for (string p in parts) {
+        int eq = find(p, "=");
+        if (eq > 0) {
+            string k = p[0..eq];
+            if (k == name) {
+                return p[eq + 1..];
+            }
+        }
+    }
+    return "";
+}
+
+pub fn param_int(string query, string name, int fallback) -> int ={
+    string raw = param(query, name);
+    if (len(raw) == 0) { return fallback; }
+    return to_int(raw);
+}
+
+// Constant-ish comparison: the token is short and this is an
+// example, but the check is centralised so there is one place to
+// harden later.
+pub fn authorized(string query) -> bool ={
+    if (len(_token) == 0) { return true; }        // no token configured
+    return param(query, "token") == _token;
+}
+
+pub fn json_error(string message) -> string ={
+    return "{\"error\":\"" + message + "\"}";
+}
