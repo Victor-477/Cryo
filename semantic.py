@@ -20,6 +20,7 @@ from typing import Dict, List, Set, Tuple
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
+    PermissionsDecl,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
     Continue, Assert, SafetyBlock, Block, ForeignBlock, Import, ModuleImport, Library,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, SpawnExpr, AwaitExpr,
@@ -70,6 +71,20 @@ class _Scope:
         return any(name in s for s in self.stack)
 
 
+# Roadmap 11.12 — which permission each gated builtin requires. Mirrors the
+# runtime gates in pyro_runtime.c / main.go; a builtin missing from here would
+# be checked at runtime but not at compile time, which is the wrong way round.
+GATED_BUILTINS = {
+    'read_file': 'read',
+    'write_bytes': 'write', 'write_file': 'write',
+    'write_file_atomic': 'write', 'make_dir': 'write', 'delete_file': 'write',
+    'http_get': 'net', 'http_post': 'net',
+    'http_serve': 'net', 'http_listen': 'net',
+    'exec': 'exec',
+    'env': 'env',
+}
+
+
 class _Checker:
     def __init__(self, program: Program):
         self.program = program
@@ -83,6 +98,8 @@ class _Checker:
         # visible (and assignable) inside every function, not locals of
         # main. A function-local of the same name still shadows them.
         self.global_vars: Set[str] = set()
+        # 11.12 — None until a `permissions` block is seen; opt-in
+        self.declared_perms = None
         self.type_names: Set[str] = set()        # struct/enum/schema (usable in schema_of etc.)
         self.loop_depth = 0
 
@@ -116,6 +133,11 @@ class _Checker:
                 self.global_consts.add(n.name)
             elif isinstance(n, VarDecl):
                 self.global_vars.add(n.name)
+            elif isinstance(n, PermissionsDecl):
+                if self.declared_perms is None:
+                    self.declared_perms = {}
+                for k, vals in n.grants.items():
+                    self.declared_perms.setdefault(k, []).extend(vals)
             if name is not None:
                 if name in seen:
                     self.err(getattr(n, 'line', 0),
@@ -323,6 +345,22 @@ class _Checker:
             self.check_expr(n, scope)
         # Import/Library/ForeignBlock/nested decls: no checking here
 
+    def check_permission(self, callee: str, line: int):
+        """11.12 — a gated builtin may only be called if its permission was
+        declared. Only when the program HAS a permissions block: without one
+        nothing changes, so this is opt-in rather than a breaking rule."""
+        if self.declared_perms is None:
+            return
+        need = GATED_BUILTINS.get(callee)
+        if need is None:
+            return
+        if need not in self.declared_perms:
+            self.err(line,
+                     f"[Semantic Error] '{callee}()' needs the '{need}' "
+                     f"permission, which this program does not declare — add "
+                     f"it to the permissions block, e.g. "
+                     f"permissions {{ {need} = \"...\"; }}")
+
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
                 or name in self.global_vars
@@ -336,6 +374,7 @@ class _Checker:
             if not self._known_var(n.name, scope):
                 self.err(n.line, f"[Semantic Error] undeclared variable '{n.name}'")
         elif isinstance(n, CallExpr):
+            self.check_permission(n.callee, n.line)   # 11.12
             if n.callee in BUILTINS or scope.has(n.callee):
                 pass   # builtin or indirect call via function type variable
             elif n.callee not in self.fn_arity:

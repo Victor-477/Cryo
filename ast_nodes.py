@@ -235,6 +235,18 @@ class Library(Node):
     lang: str = ""   # foreign language to which the library belongs (e.g.: "c", "go")
 
 @dataclass
+class PermissionsDecl(Node):
+    """Roadmap 11.12 — what the program declares it needs.
+
+    `grants` maps a capability name (read/write/net/exec/env) to the values
+    granted for it. The compiler refuses an undeclared capability, and the
+    same list is embedded in the artifact so the runtime enforces it.
+    """
+    grants: Dict[str, List[str]]
+    line:   int = 0
+
+
+@dataclass
 class ForeignBlock(Node):
     lang: str
     code: str

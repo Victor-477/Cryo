@@ -38,6 +38,7 @@ class TokenType(Enum):
     MAP      = auto()
     AS       = auto()
     SKILL    = auto()
+    PERMISSIONS = auto()   # 11.12: declared capability requirements
     SPAWN    = auto()
     AWAIT    = auto()
     FUTURE   = auto()
@@ -155,6 +156,7 @@ KEYWORDS = {
     'map':      TokenType.MAP,
     'as':       TokenType.AS,
     'skill':    TokenType.SKILL,
+    'permissions': TokenType.PERMISSIONS,
     'spawn':    TokenType.SPAWN,
     'await':    TokenType.AWAIT,
     'future':   TokenType.FUTURE,

@@ -13,6 +13,7 @@ from ast_nodes import (
     Return, If, While, For, DoWhile, ForEach, TryCatch, Block,
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     Import, ModuleImport, Library, ForeignBlock,
+    PermissionsDecl,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, CallValueExpr, MethodCallExpr,
@@ -261,6 +262,7 @@ class Parser:
             self._advance(); self._opt_semi(); return Break()
         if tok.type == TokenType.CONTINUE:
             self._advance(); self._opt_semi(); return Continue()
+        if tok.type == TokenType.PERMISSIONS: return self._permissions()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
         # primitive type, map, future or (type) -> var decl
@@ -524,6 +526,36 @@ class Parser:
         else:
             lang, name = '', raw
         return Library(name=name.strip(), lang=lang.strip())
+
+    _PERMISSION_KEYS = ('read', 'write', 'net', 'exec', 'env')
+
+    def _permissions(self):
+        """Roadmap 11.12 — `permissions { read = "./data"; net = "host"; }`."""
+        tok = self._expect(TokenType.PERMISSIONS)
+        self._expect(TokenType.LBRACE)
+        grants = {}
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            key_tok = self._cur()
+            key = str(key_tok.value)
+            self._advance()
+            if key not in self._PERMISSION_KEYS:
+                raise ParseError(
+                    f"[Syntax Error] Line {key_tok.line}: unknown permission "
+                    f"'{key}' — expected one of "
+                    f"{', '.join(self._PERMISSION_KEYS)}")
+            self._expect(TokenType.ASSIGN)
+            values = []
+            while True:
+                v = self._expect(TokenType.STR_LIT)
+                values.append(str(v.value))
+                if self._match(TokenType.COMMA):
+                    self._advance()
+                    continue
+                break
+            self._opt_semi()
+            grants.setdefault(key, []).extend(values)
+        self._expect(TokenType.RBRACE)
+        return PermissionsDecl(grants, line=tok.line)
 
     def _foreign(self):
         tok = self._expect(TokenType.LANG_BLOCK)
