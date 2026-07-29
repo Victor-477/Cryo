@@ -74,6 +74,10 @@ class _Checker:
         self.enum_defs: Dict[str, EnumDecl] = {}
         self.member_to_enum: Dict[str, str] = {}
         self.global_consts: Set[str] = set()
+        # Roadmap 11.1 — top-level `var` declarations are MODULE STATE:
+        # visible (and assignable) inside every function, not locals of
+        # main. A function-local of the same name still shadows them.
+        self.global_vars: Set[str] = set()
         self.type_names: Set[str] = set()        # struct/enum/schema (usable in schema_of etc.)
         self.loop_depth = 0
 
@@ -105,6 +109,8 @@ class _Checker:
                         self.fn_arity[f"{n.name}_{m.name}"] = len(m.fields)
             elif isinstance(n, ConstDecl):
                 self.global_consts.add(n.name)
+            elif isinstance(n, VarDecl):
+                self.global_vars.add(n.name)
             if name is not None:
                 if name in seen:
                     self.err(getattr(n, 'line', 0),
@@ -314,6 +320,7 @@ class _Checker:
 
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
+                or name in self.global_vars
                 or name in self.enum_members or name in self.type_names
                 or name in self.fn_arity)   # function name = 1st class value
 
