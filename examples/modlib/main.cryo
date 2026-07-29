@@ -1,0 +1,6 @@
+import "counter.cryo" as c;
+print(c::total());
+c::bump();
+print(c::total());
+print(c::twice());
+print(c::report());

@@ -1,0 +1,14 @@
+// A library with INTERNALS — the shape ISSUES/19 made impossible.
+// Private state and a private helper, behind a pub API.
+
+int _count = 0;                      // module state, private (11.1)
+string _label = "hits";
+
+fn _format(int n) -> string ={       // private helper
+    return _label + "=" + to_string(n);
+}
+
+pub fn bump() ={ _count = _count + 1; }
+pub fn total() -> int ={ return _count; }
+pub fn report() -> string ={ return _format(_count); }
+pub fn twice() -> int ={ bump(); bump(); return total(); }   // pub calling pub
