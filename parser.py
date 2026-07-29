@@ -365,9 +365,14 @@ class Parser:
     def _impl(self):
         iline = self._cur().line
         self._expect(TokenType.IMPL)
-        trait_name = self._expect(TokenType.IDENT).value
-        self._expect(TokenType.FOR)
-        target_type = self._parse_type()
+        first_ident = self._expect(TokenType.IDENT).value
+        if self._match(TokenType.FOR):
+            self._advance()
+            trait_name = first_ident
+            target_type = self._parse_type()
+        else:
+            trait_name = None
+            target_type = first_ident
         self._expect(TokenType.LBRACE)
         methods = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):

@@ -43,7 +43,7 @@ class TraitDecl(Node):
 
 @dataclass
 class ImplDecl(Node):
-    trait_name:  str
+    trait_name:  Optional[str]
     target_type: str
     methods:     List['FunctionDecl']
     line:        int = 0

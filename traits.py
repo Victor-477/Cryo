@@ -20,19 +20,36 @@ def lower_traits(program: Program) -> Program:
     type_methods: Dict[Tuple[str, str], str] = {} # (target_type, method_name) -> mangled_fn_name
     
     non_trait_stmts: List[Node] = []
+    generated_functions: List[FunctionDecl] = []
     
     # 1. Collect traits and impls
     for stmt in program.statements:
         if isinstance(stmt, TraitDecl):
             traits[stmt.name] = stmt
         elif isinstance(stmt, ImplDecl):
-            impls[(stmt.trait_name, stmt.target_type)] = stmt
+            if stmt.trait_name is not None:
+                impls[(stmt.trait_name, stmt.target_type)] = stmt
+            else:
+                # Plain struct methods without a trait
+                for method in stmt.methods:
+                    mangled_name = f"{stmt.target_type}__{method.name}"
+                    type_methods[(stmt.target_type, method.name)] = mangled_name
+                    fn_params = [(stmt.target_type, "this")] + method.params
+                    generated_fn = FunctionDecl(
+                        name=mangled_name,
+                        params=fn_params,
+                        return_type=method.return_type,
+                        body=method.body,
+                        is_tool=method.is_tool,
+                        line=method.line,
+                        type_params=method.type_params,
+                        type_bounds=method.type_bounds
+                    )
+                    generated_functions.append(generated_fn)
         else:
             non_trait_stmts.append(stmt)
             
     # 2. Validate impls and generate mangled functions
-    generated_functions: List[FunctionDecl] = []
-    
     for (trait_name, target_type), impl in impls.items():
         if trait_name not in traits:
             raise RuntimeError(f"[Traits Error] Line {impl.line}: Unknown trait '{trait_name}' in impl for '{target_type}'")
