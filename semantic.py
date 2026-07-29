@@ -49,6 +49,7 @@ BUILTINS: Set[str] = {
     'file_exists', 'is_dir', 'list_dir', 'make_dir', 'delete_file', 'file_size', 'write_file', 'env', 'exec',
     'write_file_atomic',
     'url_decode', 'url_encode',
+    'asset', 'asset_names',
     'json_encode', 'json_decode',
     'http_get', 'http_post', 'sleep', 'write_bytes', 'read_file', 'args', 'http_serve',
     'schema_of', 'llm', 'tools', 'tools_json', 'tool_get', 'agent',
