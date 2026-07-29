@@ -45,6 +45,7 @@ BUILTINS: Set[str] = {
     'split', 'join', 'starts_with', 'ends_with', 'repeat',
     'pad_start', 'pad_end',
     'now_ms', 'monotonic_ms', 'random', 'random_int', 'seed',
+    'http_listen', 'http_accept', 'http_respond',
     'json_encode', 'json_decode',
     'http_get', 'http_post', 'sleep', 'write_bytes', 'read_file', 'args', 'http_serve',
     'schema_of', 'llm', 'tools', 'tools_json', 'tool_get', 'agent',

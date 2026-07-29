@@ -1,0 +1,95 @@
+// ============================================================
+//  A REST API in PURE CRYO — no foreign block anywhere
+//
+//  This is the example that could not be written before. Compare
+//  it with ../api/server.cryo, which needed a >Go( ... )< block
+//  for its store and its routing. Two Phase 11 items removed that
+//  need:
+//
+//    11.1  module state — `tasks` below is a top-level variable
+//          that every function can read and mutate. Before, it
+//          had to live in the foreign block.
+//    11.6  http_listen / http_accept / http_respond — the program
+//          owns the accept loop, so routing is ordinary Cryo.
+//
+//  Run it on the VM, or compile it to a standalone binary:
+//
+//    python Burnout/cryoc.py Cryo/examples/api_native/server.cryo \
+//        --backend pyro -o build/api.pyro --run
+//
+//    python Burnout/pyro.py build Cryo/examples/api_native/server.cryo \
+//        -o build/apiserver          # native exe, no VM at runtime
+//
+//  Then:  curl http://localhost:8080/api/tasks
+//
+//  ── Why an accept loop and not a callback ──
+//  `http_api(port, handler)` would have to call a Cryo function
+//  from inside a native — re-entering the interpreter — and the
+//  two VMs hold their execution state differently, so that is a
+//  different refactor per engine. Owning the loop needs no
+//  re-entrancy anywhere, and it makes the sequencing visible:
+//  one request is handled at a time, in this loop, in order.
+// ============================================================
+
+// ── module state (11.1): survives across requests ──
+string[] tasks = ["read the docs", "write an API"];
+int served = 0;
+
+fn task_list_json() -> string ={
+    string out = "[";
+    for (int i in 0..len(tasks)) {
+        if (i > 0) { out = out + ","; }
+        out = out + "{\"id\":" + to_string(i) + ",\"title\":\"" + tasks[i] + "\"}";
+    }
+    return out + "]";
+}
+
+fn stats_json() -> string ={
+    return "{\"tasks\":" + to_string(len(tasks))
+         + ",\"served\":" + to_string(served) + "}";
+}
+
+fn not_found() -> string ={
+    return "{\"error\":\"no such route\"}";
+}
+
+// ── routing: ordinary Cryo, because the loop is ours ──
+fn route(string method, string path, string body) -> string ={
+    served = served + 1;
+    if (path == "/api/tasks" && method == "GET") {
+        return task_list_json();
+    }
+    if (path == "/api/tasks" && method == "POST") {
+        if (len(trim(body)) == 0) {
+            return "{\"error\":\"body is required\"}";
+        }
+        tasks.push(trim(body));
+        return "{\"created\":\"" + trim(body) + "\"}";
+    }
+    if (path == "/api/stats" && method == "GET") {
+        return stats_json();
+    }
+    return not_found();
+}
+
+// ── the server ──
+if (!http_listen(8080)) {
+    print("could not bind port 8080");
+} else {
+    print("cryo-api listening on http://localhost:8080");
+    print("  GET  /api/tasks");
+    print("  POST /api/tasks   body: the task title");
+    print("  GET  /api/stats");
+
+    while (true) {
+        map<string,string> req = http_accept();
+        // http_accept ALWAYS returns a map; an empty method means the
+        // connection failed or the request was malformed, so there is
+        // nothing to answer. (It is not `null` on purpose — see the note
+        // in the docs about container/null equality.)
+        if (len(req["method"]) > 0) {
+            string body = route(req["method"], req["path"], req["body"]);
+            http_respond(200, "application/json", body);
+        }
+    }
+}
