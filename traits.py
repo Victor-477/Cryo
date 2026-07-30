@@ -3,7 +3,7 @@ Cryo Language - Traits & Interfaces Lowering Pass (Phase 10.7)
 Lower structural contracts (trait/impl) into monomorphic, top-level
 functions and direct call expressions before codegen.
 """
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, TraitDecl, ImplDecl, TraitMethodSig,
     VarDecl, ConstDecl, Assignment, IndexAssignment, CompoundAssignment,
@@ -89,11 +89,63 @@ def lower_traits(program: Program) -> Program:
             )
             generated_functions.append(generated_fn)
 
-    # 3. Transform AST to rewrite trait method calls
+    # 3. The iteration protocol (roadmap 11.5).
+    #
+    # A type becomes iterable by implementing a trait method named `iter` that
+    # takes no arguments and returns a collection. `for (x in obj)` then means
+    # `for (x in obj.iter())`.
+    #
+    # The rewrite happens here rather than in the parser because it needs the
+    # receiver's TYPE, and the parser has none. It is deliberately conservative:
+    # only an identifier with a declared type, or a struct literal, is rewritten.
+    # Anything else is left alone rather than guessed at — and a wrong guess
+    # would surface as a compile error (calling iter() on an array), never as a
+    # silently different loop.
+    iterable_types = {t for (t, m) in type_methods if m == 'iter'}
+    # name -> declared type, for the function currently being transformed.
+    # Flat rather than scoped: a shadowed name could only mislead if the shadow
+    # is also a struct implementing `iter`, and the result is a loud error.
+    var_types: Dict[str, str] = {}
+
+    def collect_var_types(stmts: List[Node], into: Dict[str, str]) -> None:
+        for s in stmts:
+            if isinstance(s, VarDecl) and s.var_type:
+                into[s.name] = s.var_type
+            elif isinstance(s, ConstDecl) and s.var_type:
+                into[s.name] = s.var_type
+            elif isinstance(s, If):
+                collect_var_types(s.then_body, into)
+                if s.else_body:
+                    collect_var_types(s.else_body, into)
+            elif isinstance(s, (While, Block)):
+                collect_var_types(s.body, into)
+            elif isinstance(s, For):
+                if s.init is not None:
+                    collect_var_types([s.init], into)
+                collect_var_types(s.body, into)
+            elif isinstance(s, ForEach):
+                if s.var_type:
+                    into[s.var_name] = s.var_type
+                collect_var_types(s.body, into)
+            elif isinstance(s, DoWhile):
+                collect_var_types(s.body, into)
+
+    def iterable_call(expr: Node) -> Optional[Node]:
+        """`expr.iter()` if expr's type implements the protocol, else None."""
+        target = None
+        if isinstance(expr, Identifier):
+            target = var_types.get(expr.name)
+        elif isinstance(expr, StructInit):
+            target = expr.struct_name
+        if target and target in iterable_types:
+            return CallExpr(type_methods[(target, 'iter')], [expr], type_args=[])
+        return None
+
+    # 4. Transform AST to rewrite trait method calls
     def transform_node(node: Node) -> Node:
         if node is None:
             return None
-            
+
         if isinstance(node, VarDecl):
             return VarDecl(node.var_type, node.name, transform_node(node.value))
             
@@ -101,7 +153,16 @@ def lower_traits(program: Program) -> Program:
             return ConstDecl(node.var_type, node.name, transform_node(node.value))
 
         if isinstance(node, FunctionDecl):
+            # Declared types for this function: parameters, then its locals.
+            # Saved and restored so a nested declaration cannot leak outward.
+            nonlocal var_types
+            saved = var_types
+            var_types = dict(saved)
+            for ptype, pname in node.params:
+                var_types[pname] = ptype
+            collect_var_types(node.body, var_types)
             new_body = [transform_node(s) for s in node.body]
+            var_types = saved
             return FunctionDecl(node.name, node.params, node.return_type, new_body, is_tool=node.is_tool, line=node.line, type_params=node.type_params, type_bounds=node.type_bounds)
 
         if isinstance(node, MethodCallExpr):
@@ -162,7 +223,10 @@ def lower_traits(program: Program) -> Program:
             return DoWhile([transform_node(s) for s in node.body], transform_node(node.condition))
 
         if isinstance(node, ForEach):
-            return ForEach(node.var_type, node.var_name, transform_node(node.iterable), [transform_node(s) for s in node.body])
+            it = transform_node(node.iterable)
+            it = iterable_call(it) or it          # 11.5 iteration protocol
+            return ForEach(node.var_type, node.var_name, it,
+                           [transform_node(s) for s in node.body])
 
         if isinstance(node, Block):
             return Block([transform_node(s) for s in node.body])
@@ -193,6 +257,9 @@ def lower_traits(program: Program) -> Program:
 
         return node
 
+    # Module-level declarations are visible to top-level loops (11.1 made a
+    # top-level `var` module state), so seed the map with them.
+    collect_var_types(non_trait_stmts, var_types)
     transformed_stmts = [transform_node(stmt) for stmt in non_trait_stmts]
     final_statements = generated_functions + transformed_stmts
     return Program(final_statements)

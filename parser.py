@@ -1115,6 +1115,46 @@ class Parser:
             self._advance()
         return vars_list
 
+    def _desugar_pairs_loop(self, map_expr, t1, n1, t2, n2, body):
+        """`for (k, v in m)` -> index the key list, look each key up.
+
+        A temp for the map is only introduced when the expression could be
+        re-evaluated; an identifier is bound directly. That is not just an
+        optimisation: the temp used to be declared `any`, and an `any` value
+        cannot be indexed or passed to keys() on the go backend, so binding one
+        made the whole loop fail to compile there — which is why
+        `for (k, v in pairs(m))` had never worked on go. Using the variable
+        keeps its real type. The key list is typed from the key variable for
+        the same reason.
+
+        A map expression that is NOT an identifier (a call, an index) still
+        needs the temp, and still hits that limitation on go until 11.31 lands.
+        """
+        k_type = t1 if t1 != 'any' else 'string'
+        pre = []
+        if isinstance(map_expr, Identifier):
+            map_ref = map_expr
+        else:
+            map_var = f"__map_{self._gen_id()}"
+            pre.append(VarDecl('any', map_var, map_expr))
+            map_ref = Identifier(map_var)
+
+        keys_var = f"__keys_{self._gen_id()}"
+        idx_var  = f"__i_{self._gen_id()}"
+        init_stmt = VarDecl('int', idx_var, Literal('int', 0))
+        cond_expr = BinaryExpr('<', Identifier(idx_var),
+                               CallExpr('len', [Identifier(keys_var)]))
+        upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var),
+                                                   Literal('int', 1)))
+        v1_decl = VarDecl(k_type, n1,
+                          IndexAccess(Identifier(keys_var), Identifier(idx_var)))
+        v2_decl = VarDecl(t2, n2, IndexAccess(map_ref, Identifier(n1)))
+        for_loop = For(init_stmt, cond_expr, upd_stmt, [v1_decl, v2_decl] + body)
+        return Block(pre + [
+            VarDecl(f"{k_type}[]", keys_var, CallExpr('keys', [map_ref])),
+            for_loop,
+        ])
+
     def _desugar_for_vars(self, vars_list, iterable, body):
         if len(vars_list) == 1:
             vtype, vname = vars_list[0]
@@ -1126,37 +1166,38 @@ class Parser:
         # enumerate(coll)
         if isinstance(iterable, CallExpr) and iterable.callee == 'enumerate' and len(iterable.args) == 1:
             coll = iterable.args[0]
-            coll_var = f"__coll_{self._gen_id()}"
+            # An identifier is used directly instead of being rebound: the temp
+            # was declared `any`, and an `any` value can be neither indexed nor
+            # passed to len() on the go backend, so `for (i, x in enumerate(xs))`
+            # did not compile there. Same defect as the map form below.
+            pre_coll = []
+            if isinstance(coll, Identifier):
+                coll_ref = coll
+            else:
+                coll_var = f"__coll_{self._gen_id()}"
+                pre_coll = [VarDecl('any', coll_var, coll)]
+                coll_ref = Identifier(coll_var)
             idx_var  = f"__i_{self._gen_id()}"
             init_stmt = VarDecl('int', idx_var, Literal('int', 0))
-            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(coll_var)]))
+            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [coll_ref]))
             upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
             v1_decl = VarDecl(t1 if t1 != 'any' else 'int', n1, Identifier(idx_var))
-            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(coll_var), Identifier(idx_var)))
+            v2_decl = VarDecl(t2, n2, IndexAccess(coll_ref, Identifier(idx_var)))
             loop_body = [v1_decl, v2_decl] + body
             for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
-            return Block([VarDecl('any', coll_var, coll), for_loop])
+            return Block(pre_coll + [for_loop])
 
-        # pairs(m)
+        # pairs(m)  — and, since 11.5, a bare map: `for (k, v in m)`.
+        # Two loop variables mean key/value. The parser has no types, so it
+        # cannot tell a map from an array here; `enumerate(xs)` above stays the
+        # form for an array, and a map is what the two-variable form means.
+        # Handing an array to it fails in keys(), which says so.
         if isinstance(iterable, CallExpr) and iterable.callee == 'pairs' and len(iterable.args) == 1:
-            map_expr = iterable.args[0]
-            map_var  = f"__map_{self._gen_id()}"
-            keys_var = f"__keys_{self._gen_id()}"
-            idx_var  = f"__i_{self._gen_id()}"
-            init_stmt = VarDecl('int', idx_var, Literal('int', 0))
-            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(keys_var)]))
-            upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
-            v1_decl = VarDecl(t1 if t1 != 'any' else 'string', n1, IndexAccess(Identifier(keys_var), Identifier(idx_var)))
-            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(map_var), Identifier(n1)))
-            loop_body = [v1_decl, v2_decl] + body
-            for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
-            return Block([
-                VarDecl('any', map_var, map_expr),
-                VarDecl('any', keys_var, CallExpr('keys', [Identifier(map_var)])),
-                for_loop
-            ])
+            return self._desugar_pairs_loop(iterable.args[0], t1, n1, t2, n2, body)
+        if len(vars_list) == 2:
+            return self._desugar_pairs_loop(iterable, t1, n1, t2, n2, body)
 
-        # generic tuple iteration
+        # generic tuple iteration (3+ variables): item[0], item[1], item[2]…
         coll_var = f"__coll_{self._gen_id()}"
         item_var = f"__item_{self._gen_id()}"
         decls = []

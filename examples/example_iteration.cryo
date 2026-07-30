@@ -1,0 +1,110 @@
+// ============================================================
+//  The iteration protocol  (roadmap 11.5)
+//
+//    for (k, v in map)     a map, iterated directly
+//    for (x in obj)        a user type that implements `iter`
+//
+//  Run:  python Burnout/pyro.py run Cryo/examples/example_iteration.cryo
+// ============================================================
+
+// ── maps ─────────────────────────────────────────────────────
+// Two loop variables mean key and value. Before 11.5 this needed
+// `keys(m)` and a lookup per key, or an explicit `pairs(m)`.
+map<string,int> stock = {"bolts": 40, "nuts": 12, "washers": 7};
+
+print("-- inventory --");
+for (string item, int qty in stock) {
+    print("${item:<10}${qty:>4}");
+}
+
+int total = 0;
+for (string item, int qty in stock) {
+    total = total + qty;
+}
+print("${\"total\":<10}${total:>4}");
+
+// `pairs(m)` still reads well when you want to be explicit —
+// it means exactly the same thing.
+print("");
+print("-- with pairs(), identical --");
+for (string item, int qty in pairs(stock)) {
+    print("${item} x${qty}");
+}
+
+// Keys need not be strings.
+print("");
+map<int,string> codes = {200: "OK", 404: "Not Found"};
+for (int code, string text in codes) {
+    print("${code} ${text}");
+}
+
+// break and continue behave as in any loop.
+print("");
+for (string item, int qty in stock) {
+    if (qty < 10) { continue; }
+    print("plenty of ${item}");
+}
+
+// ── arrays ───────────────────────────────────────────────────
+// One variable iterates the elements; `enumerate` adds the index.
+// The two-variable form is for maps, so an array needs enumerate.
+print("");
+string[] queue = ["build", "test", "ship"];
+for (string step in queue) {
+    print("step ${step}");
+}
+for (int i, string step in enumerate(queue)) {
+    print("${i}: ${step}");
+}
+
+// ── user types ───────────────────────────────────────────────
+// A type becomes iterable by implementing a trait method `iter`
+// that returns a collection. `for (x in obj)` then means
+// `for (x in obj.iter())` — resolved from the receiver's declared
+// type, so it costs nothing at run time.
+trait Iterable {
+    fn iter() -> int[];
+}
+
+struct Countdown {
+    int n;
+}
+
+impl Iterable for Countdown {
+    fn iter() -> int[] ={
+        int[] out = [];
+        for (int i = this.n; i > 0; i = i - 1) {
+            out.push(i);
+        }
+        return out;
+    }
+}
+
+print("");
+Countdown c = Countdown { n: 3 };
+for (int x in c) {
+    print("tick ${x}");
+}
+
+// It works wherever the receiver's type is known — including a
+// parameter, and a struct literal written in place.
+fn sum_of(Countdown cd) -> int ={
+    int s = 0;
+    for (int x in cd) { s = s + x; }
+    return s;
+}
+print("sum ${sum_of(c)}");
+
+for (int x in Countdown { n: 2 }) {
+    print("inline ${x}");
+}
+
+// Ordinary collections are untouched by the protocol, and calling
+// .iter() yourself still works.
+int[] plain = [7, 8];
+for (int y in plain) {
+    print("plain ${y}");
+}
+for (int z in c.iter()) {
+    print("explicit ${z}");
+}
