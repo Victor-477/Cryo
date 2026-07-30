@@ -43,6 +43,7 @@ _BUILTIN_NAMES = {
     'asset', 'asset_names',
     'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'llm_call', 'llm_try',                                # 11.19 outcomes
+    'agent_call', 'agent_try',                            # 11.20 agent
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
     'true', 'false', 'null'
@@ -2209,7 +2210,9 @@ class Parser:
         if name in ('llm_call', 'llm_stream') and len(args) == 3:
             self._check_llm_options(args[2], id_line)
         if name == 'llm_try' and 'llm_try' not in self.user_defined_fns:
-            return self._llm_try(args, id_line)         # 11.19
+            return self._llm_try(args, id_line, 'llm_call')      # 11.19
+        if name == 'agent_try' and 'agent_try' not in self.user_defined_fns:
+            return self._llm_try(args, id_line, 'agent_call')    # 11.20
         return CallExpr(name, args, line=id_line)
 
     # ── llm_try: the outcome as something you can match on (11.19) ──
@@ -2230,11 +2233,11 @@ class Parser:
     # namespace as the program's own, and a project with `enum Result { Ok…`
     # is entirely likely. A silent clash is worse than a longer name.
 
-    def _llm_try(self, args, line: int):
+    def _llm_try(self, args, line: int, primitive: str = 'llm_call'):
         if len(args) not in (2, 3):
             raise ParseError(
-                f"[Syntax Error] Line {line}: llm_try(model, prompt) takes 2 "
-                f"arguments, or 3 with the options map")
+                f"[Syntax Error] Line {line}: this takes 2 arguments "
+                f"(model, prompt), or 3 with the options map")
         if len(args) == 3:
             self._check_llm_options(args[2], line)
         self._llm_outcome_enum()
@@ -2244,7 +2247,7 @@ class Parser:
         r = '__lt_r'
         body = [
             VarDecl('string[]', r,
-                    CallExpr('llm_call', [Identifier('m'), Identifier('p'), opts],
+                    CallExpr(primitive, [Identifier('m'), Identifier('p'), opts],
                              line=line)),
             If(BinaryExpr('==', IndexAccess(Identifier(r), Literal('int', 0)),
                           Literal('string', '')),
@@ -2291,6 +2294,9 @@ class Parser:
         'timeout':     'an int (milliseconds)',
         'repair':      'an int (how many times to re-ask on a bad reply)',
         'retries':     'an int (transport retries, with backoff)',
+        'steps':       'an int (agent_try: how many tool rounds)',
+        'max_context': 'an int (agent_try: message budget, in bytes)',
+        'tools':       'an array of tool names (agent_try)',
     }
 
     def _check_llm_options(self, node, line: int):
@@ -2337,6 +2343,12 @@ class Parser:
         prove and leaves the rest to the provider.
         """
         want = self._LLM_OPTIONS[key]
+        if key == 'tools':
+            if not isinstance(v, ArrayLiteral):
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option 'tools' takes "
+                    f"{want}, e.g. [\"search\", \"fetch\"]")
+            return
         if key == 'stop':
             if isinstance(v, Literal) and v.kind != 'string':
                 raise ParseError(
@@ -2345,7 +2357,8 @@ class Parser:
             return
         if not isinstance(v, Literal):
             return                       # an expression: cannot judge it here
-        if key in ('max_tokens', 'seed', 'timeout', 'repair', 'retries'):
+        if key in ('max_tokens', 'seed', 'timeout', 'repair', 'retries',
+                   'steps', 'max_context'):
             if v.kind != 'int':
                 raise ParseError(
                     f"[Syntax Error] Line {line}: llm() option '{key}' takes "

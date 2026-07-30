@@ -51,6 +51,7 @@ BUILTINS: Set[str] = {
     'write_file_atomic',
     'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'llm_call', 'llm_try',                                # 11.19 outcomes
+    'agent_call', 'agent_try',                            # 11.20 agent
     'url_decode', 'url_encode',
     'asset', 'asset_names',
     'json_encode', 'json_decode',
