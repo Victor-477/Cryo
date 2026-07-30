@@ -1,0 +1,110 @@
+// ============================================================
+//  LLM resilience  (roadmap 11.19)
+//
+//      match llm_try(model, prompt, opts) {
+//          LlmOk(text)          => ...
+//          LlmFailed(kind, why) => ...
+//      }
+//
+//  Two problems this replaces:
+//
+//  1. Every failure returned "" — the same thing an empty
+//     completion returns. A program could not tell them apart,
+//     so it could not react.
+//  2. Retries were three attempts with no pause and no
+//     discrimination, so a wrong API key cost three round trips
+//     before failing, and a rate limit was answered immediately
+//     (which is just a second rate limit).
+//
+//  Build (the LLM layer targets the go backend):
+//      python Burnout/cryoc.py Cryo/examples/example_llm_resilience.cryo \
+//             --backend go -o /tmp/res.go
+// ============================================================
+
+// ── the failure kinds ────────────────────────────────────────
+//   no_endpoint    CRYO_LLM_URL is not set
+//   transport      the connection failed
+//   timeout        the per-call `timeout` budget ran out (or 408)
+//   rate_limited   429 — Retry-After is honoured when present
+//   server_error   5xx — retried with backoff
+//   refused        4xx — NOT retried; asking again cannot help
+
+fn ask(string question) -> string ={
+    match llm_try("gpt-4o-mini", question, {
+        "temperature": 0.0,
+        "retries": 3,
+        "timeout": 10000
+    }) {
+        LlmOk(text) => {
+            return text;
+        }
+        // Guards (11.4) make each kind its own branch.
+        LlmFailed(kind, why) if kind == "rate_limited" => {
+            print("[busy] ${why}");
+            return "";
+        }
+        LlmFailed(kind, why) if kind == "refused" => {
+            // The request itself is wrong — a bad model name, a bad
+            // key. Retrying would not have helped, and the compiler
+            // did not waste attempts finding that out.
+            print("[rejected] ${why}");
+            return "";
+        }
+        LlmFailed(kind, why) => {
+            print("[${kind}] ${why}");
+            return "";
+        }
+    }
+    return "";
+}
+
+print(ask("Name the capital of France."));
+
+// ── choosing a retry budget ──────────────────────────────────
+// Retries only apply to failures that can improve: transport
+// errors, 408, 429 and 5xx. The pause doubles each time —
+// 200ms, 400ms, 800ms — capped at 8s.
+
+// A batch job: be patient, the work matters more than latency.
+match llm_try("gpt-4o-mini", "Summarise this report.", { "retries": 5 }) {
+    LlmOk(text) => print("summary: ${text}");
+    LlmFailed(kind, why) => print("gave up: ${kind}");
+}
+
+// An interactive path: one attempt, bounded, then move on.
+match llm_try("gpt-4o-mini", "Suggest a title.", {
+    "retries": 0,
+    "timeout": 2000
+}) {
+    LlmOk(text) => print("title: ${text}");
+    LlmFailed(kind, why) => print("no suggestion (${kind})");
+}
+
+// ── a fallback chain ─────────────────────────────────────────
+// Because the outcome is a value, an alternative is ordinary
+// control flow rather than an exception handler.
+fn ask_with_fallback(string q) -> string ={
+    match llm_try("big-model", q, { "retries": 1 }) {
+        LlmOk(text) => { return text; }
+        LlmFailed(kind, why) => {
+            print("big model unavailable (${kind}), trying the small one");
+        }
+    }
+    match llm_try("small-model", q, { "retries": 2 }) {
+        LlmOk(text) => { return text; }
+        LlmFailed(kind, why) => { return "unavailable: ${kind}"; }
+    }
+    return "";
+}
+print(ask_with_fallback("What is 2 + 2?"));
+
+// ── notes ────────────────────────────────────────────────────
+// * Nothing here aborts. A failure is a value; the program
+//   decides what it means.
+// * `llm(...)` still exists and still returns "" on failure —
+//   llm_try is the door when you need to know why.
+// * The variants are LlmOk / LlmFailed rather than Ok / Err
+//   because enum members share a namespace with your own, and a
+//   program with `enum Result { Ok(int), ... }` is likely.
+// * `retries`, `timeout` and `repair` are all consumed by the
+//   caller and never sent to the provider.
