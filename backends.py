@@ -61,7 +61,17 @@ _SUPPORTS = {
 _LANG_OF = {
     'go': {'go'}, 'node': {'node', 'js', 'javascript'}, 'c': {'c'},
     'pyro': set(), 'asm': set(),
+    # The front-end backend is the only one that emits a page. It was missing
+    # from these tables entirely, so `--backend auto` could never choose it and
+    # a program built out of >html(/>CSS( blocks was handed to go — which drops
+    # them, leaving the page's functions empty with only a comment behind.
+    'frontend': {'html', 'css', 'javascript', 'js'},
 }
+
+# Blocks that only become anything on the front-end backend. Their presence is
+# what makes a program a *page* rather than a program that happens to embed
+# some markup.
+_PAGE_LANGS = {'html', 'css'}
 
 # preference order: more lightweight/native first
 _PREF = ['pyro', 'go', 'node', 'c', 'asm']
@@ -182,6 +192,16 @@ def missing_capabilities(program, backend: str) -> Tuple[Set[str], Set[str]]:
 def select_backend(program) -> Tuple[str, str]:
     """Chooses the ideal backend for the program. Returns (backend, reason)."""
     tags, foreign = analyze(program)
+
+    # A program containing >html( or >CSS( blocks is a page, and only the
+    # front-end backend renders one. Checked before the preference loop
+    # because no entry in that list can emit these blocks: the loop would fall
+    # through to the go fallback and quietly drop them.
+    page = foreign & _PAGE_LANGS
+    if page:
+        langs = '/'.join(sorted(page))
+        return 'frontend', (f"{langs} block(s) — only the front-end backend "
+                            f"renders a page; the others drop them")
 
     for b in _PREF:
         if not tags <= _SUPPORTS[b]:
