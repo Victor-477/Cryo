@@ -49,6 +49,7 @@ BUILTINS: Set[str] = {
     'http_listen', 'http_accept', 'http_respond',
     'file_exists', 'is_dir', 'list_dir', 'make_dir', 'delete_file', 'file_size', 'write_file', 'env', 'exec',
     'write_file_atomic',
+    'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'url_decode', 'url_encode',
     'asset', 'asset_names',
     'json_encode', 'json_decode',

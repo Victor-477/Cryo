@@ -1,0 +1,80 @@
+// ============================================================
+//  LLM streaming  (roadmap 11.17)
+//
+//      for (string token in llm_stream(model, prompt, opts)) { ... }
+//
+//  Tokens are printed as they arrive instead of after the whole
+//  completion. A ten-second wait with nothing on screen is the
+//  difference between a demo and a tool someone will use.
+//
+//  Build (the LLM layer targets the go backend):
+//      python Burnout/cryoc.py Cryo/examples/example_llm_stream.cryo \
+//             --backend go -o /tmp/stream.go
+//
+//  Then run with CRYO_LLM_URL pointing at a provider that speaks
+//  Server-Sent Events. With no URL set, the stream is empty and
+//  the loop body simply does not run.
+// ============================================================
+
+// ── the loop form ────────────────────────────────────────────
+// The same generation controls as 11.16 apply.
+print("streaming a haiku:");
+for (string token in llm_stream("gpt-4o-mini", "Write a haiku about compilers.", {
+        "temperature": 0.7,
+        "max_tokens": 60
+    })) {
+    print(token);
+}
+print("");
+
+// ── accumulating while you display ───────────────────────────
+// A streamed answer is usually shown AND kept.
+string full = "";
+int count = 0;
+for (string token in llm_stream("gpt-4o-mini", "Name three colours.", {
+        "temperature": 0.0,
+        "seed": 1
+    })) {
+    full = full + token;
+    count = count + 1;
+}
+print("received ${count} tokens");
+print("assembled: ${full}");
+print("");
+
+// ── the underlying calls ─────────────────────────────────────
+// The for-each form is sugar over these three. Use them directly
+// when you need to do something between tokens — stop early,
+// count, or buffer until a sentence ends.
+int h = llm_stream("gpt-4o-mini", "Count from one to twenty.", {
+    "timeout": 10000
+});
+int seen = 0;
+while (llm_next(h)) {
+    string t = llm_token(h);
+    seen = seen + 1;
+    print("${seen:>3}: ${t}");
+    if (seen >= 5) {
+        // Leaving early: close the stream. The producer runs
+        // concurrently, and without this it stays blocked on a
+        // full buffer — harmless in a script, a leak per request
+        // in a server.
+        llm_close(h);
+        break;
+    }
+}
+print("stopped after ${seen}");
+
+// ── notes ────────────────────────────────────────────────────
+// * The stream is LAZY. It is not 11.5's `iter()` protocol: that
+//   returns a finished collection, and waiting for every token
+//   before the loop starts is what streaming exists to avoid.
+// * `llm_stream` returns an int handle, so it passes through
+//   typed parameters on the go backend without trouble.
+// * The request carries "stream": true alongside the options.
+//   Each `data:` line is read as JSON and its `content` (or
+//   `delta`) is the token; `data: [DONE]` ends the stream, and a
+//   provider that just writes one line per token works too.
+// * `timeout` bounds the whole request, as in 11.16.
+// * `llm_close(h)` releases a stream you abandon early. The
+//   for-each form reads to the end, so it needs no close.
