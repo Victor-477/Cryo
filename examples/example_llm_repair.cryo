@@ -1,0 +1,106 @@
+// ============================================================
+//  Validated structured output  (roadmap 11.18)
+//
+//      Person p = llm("model", "who?", { "repair": 2 }) as Person;
+//
+//  `as T` asks the model for JSON in the shape of T. What it gets
+//  back is not always that shape. Before 11.18 a bad reply was
+//  silently turned into a zero-valued T:
+//
+//      missing a field    ->  name=Ada  age=0
+//      wrong type         ->  name=Ada  age=0
+//      not JSON at all    ->  name=     age=0
+//      wrapped in a fence ->  name=     age=0
+//
+//  `age=0` is indistinguishable from a person who is actually 0,
+//  so the program could not tell a good answer from a discarded
+//  one. Now the reply is checked against the schema and, if it
+//  does not fit, the model is asked again with the problem named.
+//
+//  Build (the LLM layer targets the go backend):
+//      python Burnout/cryoc.py Cryo/examples/example_llm_repair.cryo \
+//             --backend go -o /tmp/repair.go
+// ============================================================
+
+struct Person {
+    string name;
+    int age;
+}
+
+struct Item {
+    string sku;
+    int qty;
+}
+
+struct Order {
+    string id;
+    Item[] items;
+}
+
+// ── the default ──────────────────────────────────────────────
+// Two repairs are allowed before giving up. Nothing to configure
+// for the common case.
+Person p = llm("gpt-4o-mini", "Invent a person and reply as JSON.") as Person;
+print("person: ${p.name}, ${p.age}");
+
+// What happens behind that line, when the model misbehaves:
+//
+//   1. reply -> {"name": "Ada"}
+//   2. the schema says `age` is required, so it asks again:
+//
+//        <the original prompt>
+//
+//        Your previous reply could not be used: age is missing.
+//        Reply with JSON only — no prose, no code fences —
+//        matching this schema exactly:
+//        {"type":"object","properties":{...},"required":["name","age"]}
+//
+//   3. reply -> {"name": "Ada", "age": 36}   ✔ used
+//
+// If it still does not fit after the budget, the value is left as
+// it parsed and the reason goes to stderr — the program is never
+// aborted, and never lied to.
+
+// ── choosing the budget ──────────────────────────────────────
+// Deterministic settings pair well with a repair budget: a fixed
+// seed makes the retry reproducible too.
+Person exact = llm("gpt-4o-mini", "Invent a person as JSON.", {
+    "temperature": 0.0,
+    "seed": 7,
+    "repair": 3
+}) as Person;
+print("exact: ${exact.name}");
+
+// A model that is cheap to call but often sloppy: allow more.
+Person patient = llm("small-model", "Invent a person as JSON.", {
+    "repair": 5
+}) as Person;
+print("patient: ${patient.name}");
+
+// A latency-critical path: take the first answer or nothing.
+Person fast = llm("gpt-4o-mini", "Invent a person as JSON.", {
+    "repair": 0,
+    "timeout": 2000
+}) as Person;
+print("fast: ${fast.name}");
+
+// ── nested shapes are checked all the way down ───────────────
+// The problem reported points at the exact element, so the
+// re-ask is specific: "items[0].qty should be an integer, got two".
+Order o = llm("gpt-4o-mini", "Invent an order with two items as JSON.", {
+    "temperature": 0.0
+}) as Order;
+print("order ${o.id} with ${len(o.items)} item(s)");
+
+// ── what is recovered without a retry ────────────────────────
+// These are the commonest "bad" replies and they are not really
+// bad — the JSON is right there. It is extracted before
+// validation, so they cost no extra round trip:
+//
+//     ```json
+//     {"name": "Ada", "age": 36}
+//     ```
+//
+//     Here you go:
+//     {"name": "Ada", "age": 36}
+//     Hope that helps!
