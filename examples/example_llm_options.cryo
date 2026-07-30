@@ -1,0 +1,95 @@
+// ============================================================
+//  LLM generation controls  (roadmap 11.16)
+//
+//      llm(model, prompt, { "temperature": 0.2, "seed": 7 })
+//
+//  A third argument carries the generation options. Names and
+//  literal types are checked at COMPILE time, so a `temprature`
+//  typo is an error here rather than a silently ignored field in
+//  an HTTP payload.
+//
+//  The LLM layer targets the go backend:
+//      python Burnout/cryoc.py Cryo/examples/example_llm_options.cryo \
+//             --backend go -o /tmp/llm.go
+//
+//  At run time it POSTs to $CRYO_LLM_URL (bearer $CRYO_LLM_KEY).
+//  With no URL set it prints a notice and returns "".
+// ============================================================
+
+// ── the options ──────────────────────────────────────────────
+//   temperature   number   0.0-2.0   randomness
+//   top_p         number   0.0-1.0   nucleus sampling
+//   max_tokens    int                cap on the reply length
+//   stop          string | string[]  sequences that end generation
+//   seed          int                same seed + same input = same output
+//   timeout       int                milliseconds; ours, not the provider's
+
+// Deterministic: temperature 0 and a fixed seed are what make a
+// program that calls a model testable at all.
+string factual = llm("gpt-4o-mini", "Name the capital of France.", {
+    "temperature": 0.0,
+    "seed": 42,
+    "max_tokens": 20
+});
+print("factual: ${factual}");
+
+// Loose, for drafting — and bounded so one call cannot run away.
+string draft = llm("gpt-4o-mini", "Write a one-line product tagline.", {
+    "temperature": 0.9,
+    "top_p": 0.95,
+    "max_tokens": 60
+});
+print("draft: ${draft}");
+
+// `stop` takes a string or an array of them.
+string upto = llm("gpt-4o-mini", "List three fruits, one per line.", {
+    "stop": "\n\n",
+    "max_tokens": 40
+});
+print("upto: ${upto}");
+
+string fenced = llm("gpt-4o-mini", "Return JSON only.", {
+    "stop": ["```", "END"]
+});
+print("fenced: ${fenced}");
+
+// `timeout` is enforced by the caller, not sent to the provider:
+// a model that stalls should not hang the program.
+string bounded = llm("gpt-4o-mini", "Summarise this.", {
+    "timeout": 5000
+});
+print("bounded: ${bounded}");
+
+// Values need not be literals. A seed held in a variable is the
+// whole point of seeding — feed it from a test fixture or a run id.
+int run_seed = 1234;
+string repeatable = llm("gpt-4o-mini", "Pick a colour.", {
+    "temperature": 0.0,
+    "seed": run_seed
+});
+print("repeatable: ${repeatable}");
+
+// Options compose with structured output (`as T`): the schema and
+// the controls travel in the same request.
+struct Person {
+    string name;
+    int age;
+}
+
+Person p = llm("gpt-4o-mini", "Invent a person as JSON.", {
+    "temperature": 0.0,
+    "seed": 7
+}) as Person;
+print("person: ${p.name}, ${p.age}");
+
+// A call with no options behaves exactly as before.
+string plain = llm("gpt-4o-mini", "Hello.");
+print("plain: ${plain}");
+
+// ── what the compiler refuses ────────────────────────────────
+// Uncomment any of these to see the message:
+//
+//   llm("m", "p", { "temprature": 0.2 });   // unknown option
+//   llm("m", "p", { temperature: 0.2 });    // names are map keys: quote them
+//   llm("m", "p", { "max_tokens": 1.5 });   // takes an int
+//   llm("m", "p", { "seed": 1, "seed": 2 }); // set twice

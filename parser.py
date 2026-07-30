@@ -2173,19 +2173,90 @@ class Parser:
                 return self._desugar_any(args[0], args[1])
             if name == 'all' and len(args) == 2:
                 return self._desugar_all(args[0], args[1])
+        if name == 'llm' and len(args) == 3:
+            self._check_llm_options(args[2], id_line)   # 11.16
         return CallExpr(name, args, line=id_line)
-        self.user_defined_fns.add(name)
-        body = [
-            MatchStatement(Identifier('r'), [
-                MatchCase('Ok', ['__oe_v'], [Return(Identifier('__oe_v'))]),
-                MatchCase('_', [], [Return(Identifier('d'))]),
-            ]),
-            # Unreachable, but every path has to return for the typed backends.
-            Return(Identifier('d')),
-        ]
-        self.synthetic_fns.append(
-            FunctionDecl(name, [('any', 'r'), ('any', 'd')], 'any', body))
-        return name
+
+    # ── LLM generation controls (roadmap 11.16) ──────────────
+    #
+    #   llm("model", prompt, { temperature: 0.2, max_tokens: 400, seed: 7 })
+    #
+    # Checked here, at the call site, rather than passed through to the
+    # provider. An unrecognised option that reaches an HTTP API is either
+    # ignored or rejected far from the line that wrote it — and a `temprature`
+    # typo that silently produces default-temperature output is exactly the
+    # kind of failure a program cannot notice.
+    _LLM_OPTIONS = {
+        'temperature': 'a number (0.0-2.0)',
+        'top_p':       'a number (0.0-1.0)',
+        'max_tokens':  'an int',
+        'stop':        'a string, or an array of strings',
+        'seed':        'an int',
+        'timeout':     'an int (milliseconds)',
+    }
+
+    def _check_llm_options(self, node, line: int):
+        """The third argument of llm() must be a literal map of known options."""
+        if not isinstance(node, MapLiteral):
+            raise ParseError(
+                f"[Syntax Error] Line {line}: the third argument of llm() is "
+                f"the generation options and must be written as a map literal, "
+                f"e.g. llm(model, prompt, {{ temperature: 0.2 }})")
+        seen = set()
+        for k, v in node.pairs:
+            if isinstance(k, Literal) and k.kind == 'string':
+                key = k.value
+            elif isinstance(k, Identifier):
+                # A bare key is not map syntax in Cryo — it parses as a
+                # variable reference, so it would surface much later as
+                # "undeclared variable 'temperature'", which says nothing
+                # about the real mistake.
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option names are map "
+                    f"keys and must be quoted — write "
+                    f"{{ \"{k.name}\": … }}, not {{ {k.name}: … }}")
+            else:
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option names must be "
+                    f"written literally, so they can be checked here")
+            if key not in self._LLM_OPTIONS:
+                near = ', '.join(sorted(self._LLM_OPTIONS))
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: unknown llm() option "
+                    f"'{key}'. Supported: {near}")
+            if key in seen:
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' is "
+                    f"set twice")
+            seen.add(key)
+            self._check_llm_option_value(key, v, line)
+
+    def _check_llm_option_value(self, key, v, line: int):
+        """Reject a literal of the wrong kind; let expressions through.
+
+        Only literals can be judged here — `seed: n` is legitimate and its type
+        is not knowable at parse time — so this catches the mistakes it can
+        prove and leaves the rest to the provider.
+        """
+        want = self._LLM_OPTIONS[key]
+        if key == 'stop':
+            if isinstance(v, Literal) and v.kind != 'string':
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option 'stop' takes "
+                    f"{want}")
+            return
+        if not isinstance(v, Literal):
+            return                       # an expression: cannot judge it here
+        if key in ('max_tokens', 'seed', 'timeout'):
+            if v.kind != 'int':
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' takes "
+                    f"{want}, got {v.kind}")
+        elif key in ('temperature', 'top_p'):
+            if v.kind not in ('int', 'float'):
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' takes "
+                    f"{want}, got {v.kind}")
 
     def _extract_fn_info(self, f, len_params=1):
         if isinstance(f, Lambda) and len(f.params) == len_params:
