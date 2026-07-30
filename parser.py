@@ -41,6 +41,7 @@ _BUILTIN_NAMES = {
     'write_file_atomic',
     'url_decode', 'url_encode',
     'asset', 'asset_names',
+    'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
     'true', 'false', 'null'
@@ -1155,9 +1156,38 @@ class Parser:
             for_loop,
         ])
 
+    def _desugar_stream_loop(self, vtype, vname, call, body):
+        """`for (string t in llm_stream(...))` -> a lazy while loop (11.17).
+
+        Streaming deliberately does NOT use 11.5's `iter()` protocol: that
+        returns a materialised collection, and waiting for every token before
+        the loop body runs once is precisely what streaming exists to avoid.
+        So the loop is driven by advance/read instead —
+
+            int h = llm_stream(model, prompt, opts);
+            while (llm_next(h)) { string t = llm_token(h); ... }
+
+        The handle is an `int` on purpose: an `any` cannot cross a typed
+        parameter on the go backend (11.31), and go is the only backend the
+        LLM layer targets.
+        """
+        h = f"__stream_{self._gen_id()}"
+        return Block([
+            VarDecl('int', h, call),
+            While(CallExpr('llm_next', [Identifier(h)], line=call.line),
+                  [VarDecl(vtype if vtype != 'any' else 'string', vname,
+                           CallExpr('llm_token', [Identifier(h)], line=call.line))]
+                  + body),
+        ])
+
     def _desugar_for_vars(self, vars_list, iterable, body):
         if len(vars_list) == 1:
             vtype, vname = vars_list[0]
+            # 11.17 — a stream is consumed lazily, not as a collection
+            if (isinstance(iterable, CallExpr)
+                    and iterable.callee == 'llm_stream'
+                    and 'llm_stream' not in self.user_defined_fns):
+                return self._desugar_stream_loop(vtype, vname, iterable, body)
             return ForEach(vtype, vname, iterable, body)
 
         t1, n1 = vars_list[0]
