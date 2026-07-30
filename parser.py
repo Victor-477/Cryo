@@ -2,6 +2,7 @@
 #  Cryo Compiler - Parser  (v0.2)
 # ============================================================
 
+import re
 from typing import List, Optional, Tuple
 from lexer import Token, TokenType, TYPE_TOKENS
 from ast_nodes import (
@@ -607,7 +608,10 @@ class Parser:
     # ── string interpolation: "total: ${x}" ──────────────
 
     def _string_literal(self, s: str, line: int):
-        """String literal; with `${expr}` becomes concatenation with to_string(expr)."""
+        """String literal; with `${expr}` becomes concatenation with to_string(expr).
+
+        `${expr:spec}` (11.3) applies a format spec — see _split_fmt_spec.
+        """
         if '${' not in s:
             return Literal('string', s)
         from lexer import Lexer as _Lexer   # local import (no cycle)
@@ -636,8 +640,29 @@ class Parser:
             if not frag:
                 raise ParseError(
                     f"[Syntax Error] Line {line}: empty interpolation '${{}}'")
-            expr = Parser(_Lexer(frag).tokenize())._expr()
-            parts.append(CallExpr('to_string', [expr]))
+            frag, spec = self._split_fmt_spec(frag, line)
+            sub = Parser(_Lexer(frag).tokenize())
+            expr = sub._expr()
+            # _expr() stops at the first thing it cannot use and does not care
+            # what follows, so "${x y}" used to compile as plain `x` with the
+            # rest of the fragment dropped. Leftover tokens mean the fragment
+            # was not the expression the author wrote.
+            if not sub._match(TokenType.EOF):
+                bad = sub._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: interpolation "
+                    f"'${{{frag}}}' has leftover input starting at "
+                    f"{bad.type.name} ({bad.value!r})")
+            # A nested interpolation may itself desugar to a helper (a range,
+            # a lambda). Those land on the SUB-parser, which is thrown away
+            # here — so adopt them, or codegen emits a call to a function that
+            # was never declared.
+            for fn in sub.synthetic_fns:
+                if fn.name not in self.user_defined_fns:
+                    self.user_defined_fns.add(fn.name)
+                    self.synthetic_fns.append(fn)
+            parts.append(self._fmt_apply(expr, spec, line) if spec
+                         else CallExpr('to_string', [expr]))
             i = k
         if not parts:
             return Literal('string', '')
@@ -648,6 +673,339 @@ class Parser:
         for p in parts[1:]:
             node = BinaryExpr('+', node, p)
         return node
+
+    # ── format specs: "${value:>10,.2f}"  (roadmap 11.3) ─────
+    #
+    # A deliberate subset of the Python/Rust format mini-language, because a
+    # convention people already know beats a locally invented one:
+    #
+    #     [[fill]align] [0] [width] [,] [.precision] [type]
+    #     align : '<' left   '^' center   '>' right
+    #     type  : 'f' fixed-point   'd' integer   's' string   '%' percent
+    #
+    # Everything is desugared here into ordinary Cryo built from existing
+    # builtins — architecture rule 2. No new native, so pyro/go/node, both VMs
+    # and the AOT get this with no engine changes and no parity risk.
+    #
+    # Padding and alignment need repeat()/pad_start()/starts_with(), which the
+    # C backend does not implement (for any program, not just this feature), so
+    # a spec with a WIDTH is go/node/pyro only and C reports its usual "use
+    # --backend go, node or pyro". Precision and grouping avoid those three on
+    # purpose, so `${x:.2f}` and `${x:,.2f}` — the common cases — do work on C.
+    #
+    # Hex/binary/exponent types are NOT covered — radix conversion belongs on
+    # to_string, not in a format spec, and guessing at it here would be the
+    # wrong place to put it.
+
+    _FMT_SPEC = re.compile(
+        r'^(?:(?P<fill>[^{}])?(?P<align>[<^>]))?'
+        r'(?P<zero>0)?(?P<width>[1-9][0-9]*)?(?P<comma>,)?'
+        r'(?:\.(?P<prec>[0-9]+))?(?P<type>[fds%])?$')
+
+    def _split_fmt_spec(self, frag: str, line: int = 0):
+        """Split `expr:spec` into (expr, spec); (frag, None) if there is no spec.
+
+        The colon is ambiguous — it is also the ternary separator, `::` in a
+        namespaced name, and a separator inside a map literal or a string. So a
+        candidate is accepted only if BOTH halves check out: the tail matches
+        the spec grammar, and the head parses as a complete expression on its
+        own. `${flag ? 1 : 2}` fails the second test ("flag ? 1" does not
+        parse) and is left alone, which is the case that would otherwise break
+        silently — a ternary quietly reinterpreted as a width of 2.
+        """
+        depth = 0
+        quote = None
+        skip = False
+        for i, ch in enumerate(frag):
+            if skip:
+                skip = False
+                continue
+            if quote:
+                if ch == '\\':
+                    skip = True          # the escaped char, not just the '\'
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in '"\'':
+                quote = ch
+            elif ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                if frag[i + 1:i + 2] == ':' or frag[i - 1:i] == ':':
+                    continue                      # ns::name
+                head, tail = frag[:i].strip(), frag[i + 1:].strip()
+                if not head or not tail:
+                    continue
+                if not self._parses_alone(head):
+                    continue    # not a spec — a ternary, most likely
+                if not self._FMT_SPEC.match(tail):
+                    # The head IS a complete expression, so this colon was
+                    # meant as a spec separator and the spec is simply wrong.
+                    # Saying so beats falling through: `${x:>4q}` used to
+                    # compile silently and print x with the spec discarded.
+                    raise ParseError(
+                        f"[Syntax Error] Line {line}: "
+                        f"unsupported format spec '{tail}' in '${{{frag}}}'. "
+                        f"Expected [[fill]align][0][width][,][.prec][type] — "
+                        f"align is one of < ^ >, type is one of f, d, s, %")
+                return head, tail
+        return frag, None
+
+    def _parses_alone(self, text: str) -> bool:
+        """True if `text` is a complete expression with nothing left over."""
+        from lexer import Lexer as _Lexer
+        try:
+            p = Parser(_Lexer(text).tokenize())
+            p._expr()
+            return p._match(TokenType.EOF)
+        except Exception:
+            return False
+
+    def _fmt_apply(self, expr, spec: str, line: int):
+        """Wrap `expr` in the calls that `spec` describes."""
+        m = self._FMT_SPEC.match(spec)
+        if not m:   # unreachable via _split_fmt_spec; guards direct callers
+            raise ParseError(
+                f"[Syntax Error] Line {line}: unsupported format spec "
+                f"'{spec}'. Expected [[fill]align][0][width][,][.prec][type], "
+                f"where align is < ^ > and type is f, d, s or %")
+        fill = m.group('fill')
+        align = m.group('align')
+        zero = m.group('zero')
+        width = int(m.group('width')) if m.group('width') else 0
+        comma = bool(m.group('comma'))
+        prec = int(m.group('prec')) if m.group('prec') is not None else None
+        kind = m.group('type') or ''
+
+        if kind == 's' and comma:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': ',' groups "
+                f"digits, so it does not apply to a string ('s')")
+        if kind == 'd' and prec is not None:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': '.{prec}' "
+                f"is a decimal count, so it does not apply to an integer "
+                f"('d') — use 'f' for a fixed-point number")
+        if prec is not None and not kind:
+            # The parser has no types, so '.2' alone cannot be resolved: on a
+            # number it means two decimals, on a string it means truncate to
+            # two characters. Refusing beats guessing — guessing wrong turns
+            # `${pi:.2}` into "3." with nothing to indicate it went wrong.
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': '.{prec}' "
+                f"needs a type — '.{prec}f' for {prec} decimals, or "
+                f"'.{prec}s' to cut a string to {prec} characters")
+
+        numeric = kind in ('f', 'd', '%') or comma
+        if numeric:
+            # 'f' and '%' default to 6 decimals, as in C, Python and Rust;
+            # 'd' and a bare ',' are whole numbers.
+            p = prec if prec is not None else (6 if kind in ('f', '%') else 0)
+            val = expr
+            if kind == '%':
+                val = BinaryExpr('*', expr, Literal('float', 100.0))
+            # to_number, not the bare value: the helper's parameter is `number`,
+            # and go/c/asm are statically typed — an int argument to a float64
+            # parameter does not compile in Go. This is the conversion the
+            # dynamic backends would have done implicitly anyway.
+            node = CallExpr(self._fmt_num_helper(),
+                            [CallExpr('to_number', [val]), Literal('int', p),
+                             Literal('int', 1 if comma else 0)], line=line)
+            if kind == '%':
+                node = BinaryExpr('+', node, Literal('string', '%'))
+        else:
+            node = CallExpr('to_string', [expr])
+            if prec is not None:
+                # '.prec' on a string truncates — the counterpart of padding
+                node = CallExpr('substr', [node, Literal('int', 0),
+                                           Literal('int', prec)])
+
+        if not width:
+            return node
+        if zero and not align:
+            # Zero padding goes AFTER the sign: -0012.50, never 00-12.50.
+            # It does not regroup the inserted zeros; ',' groups the value.
+            return CallExpr(self._fmt_zero_helper(),
+                            [node, Literal('int', width)], line=line)
+        # Default alignment follows the convention — numbers right, text left —
+        # but the parser has no types, so "numeric" here means the SPEC said so
+        # (a type of f/d/% or a ','). `${n:5}` on an integer therefore left-
+        # aligns; write `${n:5d}` or `${n:>5}` to get the other one.
+        a = align or ('>' if numeric else '<')
+        return CallExpr(self._fmt_pad_helper(),
+                        [node, Literal('int', width),
+                         Literal('string', fill or ('0' if zero else ' ')),
+                         Literal('int', {'<': 0, '^': 1, '>': 2}[a])],
+                        line=line)
+
+    def _fmt_num_helper(self) -> str:
+        """number -> string with a fixed number of decimals, optionally grouped.
+
+        Deliberately integer arithmetic after the one round(): scaling to an
+        int and splitting it means the digits come from to_string(int), which
+        every backend agrees on, rather than from float formatting, which they
+        do not. The cost is that a magnitude beyond int64 once scaled by
+        10^prec overflows — formatting is not the tool for those.
+        """
+        name = '__cryo_fmt_num'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        v, sign, a, scale, i, n, ip, fp, out = (
+            'v', '__f_sign', '__f_a', '__f_scale', '__f_i',
+            '__f_n', '__f_ip', '__f_fp', '__f_out')
+        body = [
+            VarDecl('string', sign, Literal('string', '')),
+            VarDecl('number', a, Identifier(v)),
+            If(BinaryExpr('<', Identifier(a), Literal('float', 0.0)),
+               [Assignment(sign, Literal('string', '-')),
+                Assignment(a, BinaryExpr('-', Literal('float', 0.0),
+                                         Identifier(a)))],
+               None),
+            VarDecl('int', scale, Literal('int', 1)),
+            For(VarDecl('int', i, Literal('int', 0)),
+                BinaryExpr('<', Identifier(i), Identifier('prec')),
+                Increment('++', i),
+                [Assignment(scale, BinaryExpr('*', Identifier(scale),
+                                              Literal('int', 10)))]),
+            VarDecl('int', n, CallExpr('to_int', [CallExpr('round', [
+                BinaryExpr('*', Identifier(a),
+                           CallExpr('to_number', [Identifier(scale)]))])])),
+            VarDecl('int', ip, BinaryExpr('/', Identifier(n), Identifier(scale))),
+            VarDecl('int', fp, BinaryExpr('%', Identifier(n), Identifier(scale))),
+            VarDecl('string', out, CallExpr('to_string', [Identifier(ip)])),
+            If(BinaryExpr('==', Identifier('group'), Literal('int', 1)),
+               [Assignment(out, CallExpr(self._fmt_group_helper(),
+                                         [Identifier(out)]))],
+               None),
+            # The fraction needs leading zeros (0.5 at prec 2 is ".50", not
+            # ".5"), and the obvious pad_start() is one of the builtins the C
+            # backend refuses. scale + fp always has exactly prec+1 digits —
+            # fp < scale and scale is 10^prec — so dropping the leading '1'
+            # leaves the zero-padded fraction, using only arithmetic and
+            # substr. That keeps `${x:.2f}` and `${x:,.2f}` working on C too.
+            If(BinaryExpr('>', Identifier('prec'), Literal('int', 0)),
+               [Assignment(out, BinaryExpr('+', BinaryExpr('+',
+                   Identifier(out), Literal('string', '.')),
+                   CallExpr('substr', [
+                       CallExpr('to_string', [BinaryExpr('+', Identifier(scale),
+                                                         Identifier(fp))]),
+                       Literal('int', 1), Identifier('prec')])))],
+               None),
+            Return(BinaryExpr('+', Identifier(sign), Identifier(out))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('number', v), ('int', 'prec'), ('int', 'group')],
+                         'string', body))
+        return name
+
+    def _fmt_group_helper(self) -> str:
+        """Insert ',' every three digits. Takes a bare digit run — no sign and
+        no decimal point — because index_of() is arrays-only, so a helper that
+        had to *find* the parts could not be written from the builtins."""
+        name = '__cryo_fmt_group'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, out, c, i = 's', '__g_out', '__g_c', '__g_i'
+        body = [
+            VarDecl('string', out, Literal('string', '')),
+            VarDecl('int', c, Literal('int', 0)),
+            For(VarDecl('int', i, BinaryExpr('-', CallExpr('len', [Identifier(s)]),
+                                             Literal('int', 1))),
+                BinaryExpr('>=', Identifier(i), Literal('int', 0)),
+                Increment('--', i),
+                [Assignment(out, BinaryExpr('+',
+                    CallExpr('substr', [Identifier(s), Identifier(i),
+                                        Literal('int', 1)]),
+                    Identifier(out))),
+                 Assignment(c, BinaryExpr('+', Identifier(c), Literal('int', 1))),
+                 If(BinaryExpr('&&',
+                        BinaryExpr('==', BinaryExpr('%', Identifier(c),
+                                                    Literal('int', 3)),
+                                   Literal('int', 0)),
+                        BinaryExpr('>', Identifier(i), Literal('int', 0))),
+                    [Assignment(out, BinaryExpr('+', Literal('string', ','),
+                                                Identifier(out)))],
+                    None)]),
+            Return(Identifier(out)),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s)], 'string', body))
+        return name
+
+    def _fmt_pad_helper(self) -> str:
+        """Pad to `width` with `fill`; align 0=left, 1=center, 2=right.
+
+        Not pad_start/pad_end: those cannot centre, and centring needs the
+        extra character to land on the same side on every backend (the right,
+        as in Python)."""
+        name = '__cryo_fmt_pad'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, n, l = 's', '__p_n', '__p_l'
+        body = [
+            VarDecl('int', n, BinaryExpr('-', Identifier('width'),
+                                         CallExpr('len', [Identifier(s)]))),
+            If(BinaryExpr('<=', Identifier(n), Literal('int', 0)),
+               [Return(Identifier(s))], None),
+            If(BinaryExpr('==', Identifier('align'), Literal('int', 0)),
+               [Return(BinaryExpr('+', Identifier(s),
+                                  CallExpr('repeat', [Identifier('fill'),
+                                                      Identifier(n)])))], None),
+            If(BinaryExpr('==', Identifier('align'), Literal('int', 2)),
+               [Return(BinaryExpr('+',
+                                  CallExpr('repeat', [Identifier('fill'),
+                                                      Identifier(n)]),
+                                  Identifier(s)))], None),
+            VarDecl('int', l, BinaryExpr('/', Identifier(n), Literal('int', 2))),
+            Return(BinaryExpr('+', BinaryExpr('+',
+                CallExpr('repeat', [Identifier('fill'), Identifier(l)]),
+                Identifier(s)),
+                CallExpr('repeat', [Identifier('fill'),
+                                    BinaryExpr('-', Identifier(n),
+                                               Identifier(l))]))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s), ('int', 'width'),
+                                ('string', 'fill'), ('int', 'align')],
+                         'string', body))
+        return name
+
+    def _fmt_zero_helper(self) -> str:
+        """Left-pad with zeros, keeping a leading '-' in front of them."""
+        name = '__cryo_fmt_zero'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, sign, body_v = 's', '__z_sign', '__z_body'
+        body = [
+            If(BinaryExpr('>=', CallExpr('len', [Identifier(s)]),
+                          Identifier('width')),
+               [Return(Identifier(s))], None),
+            VarDecl('string', sign, Literal('string', '')),
+            VarDecl('string', body_v, Identifier(s)),
+            If(CallExpr('starts_with', [Identifier(s), Literal('string', '-')]),
+               [Assignment(sign, Literal('string', '-')),
+                Assignment(body_v, CallExpr('substr', [
+                    Identifier(s), Literal('int', 1),
+                    BinaryExpr('-', CallExpr('len', [Identifier(s)]),
+                               Literal('int', 1))]))],
+               None),
+            Return(BinaryExpr('+', Identifier(sign),
+                              CallExpr('pad_start', [
+                                  Identifier(body_v),
+                                  BinaryExpr('-', Identifier('width'),
+                                             CallExpr('len', [Identifier(sign)])),
+                                  Literal('string', '0')]))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s), ('int', 'width')],
+                         'string', body))
+        return name
 
     # ── return ──────────────────────────────────────────────
 

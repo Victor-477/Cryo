@@ -561,6 +561,23 @@ fn cgPrimary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
             lex(frag, ftt, ftv);
             int[] fp = [0];
             cgExpr(ftt, ftv, fp, code, cp, sl, fns);        // embedded expression
+            // cgExpr stops at the first token it cannot use and ignores the
+            // rest, so anything left over was silently dropped. That is how
+            // "${x:.2f}" used to compile here: the format spec (roadmap 11.3,
+            // supported by the reference compiler) vanished and the program
+            // printed an unformatted number, with the two compilers
+            // disagreeing and neither saying so. This compiler does not
+            // implement format specs; refusing is the honest answer.
+            if (fp[0] < len(ftt) && ftt[fp[0]] != "EOF") {
+                // "$" + "{" and not the two characters together: a literal
+                // "${" inside a string starts an interpolation the lexer then
+                // cannot close, and there is no escape for it.
+                throw("[selfhost] interpolation \"" + "$" + "{" + frag
+                      + "}\": unsupported trailing input at token \""
+                      + ftt[fp[0]] + "\". Format specs are not implemented in "
+                      + "the self-hosted compiler — use the reference "
+                      + "compiler (Burnout/cryoc.py).");
+            }
             code.push(112); code.push(8); code.push(1);     // NATIVE to_string (id 8, argc 1)
             code.push(16);                                  // ADD (concat)
             int j2 = findInterp(sv, k);
