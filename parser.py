@@ -2223,6 +2223,7 @@ class Parser:
         'stop':        'a string, or an array of strings',
         'seed':        'an int',
         'timeout':     'an int (milliseconds)',
+        'repair':      'an int (how many times to re-ask on a bad reply)',
     }
 
     def _check_llm_options(self, node, line: int):
@@ -2277,7 +2278,7 @@ class Parser:
             return
         if not isinstance(v, Literal):
             return                       # an expression: cannot judge it here
-        if key in ('max_tokens', 'seed', 'timeout'):
+        if key in ('max_tokens', 'seed', 'timeout', 'repair'):
             if v.kind != 'int':
                 raise ParseError(
                     f"[Syntax Error] Line {line}: llm() option '{key}' takes "
