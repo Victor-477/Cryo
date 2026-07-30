@@ -1311,6 +1311,7 @@ class Parser:
                     if self._match(TokenType.COMMA):
                         self._advance()
                 self._expect(TokenType.RPAREN)
+            guard = self._match_guard() if self._match(TokenType.IF) else None
             self._expect(TokenType.FAT_ARROW)
             if self._match(TokenType.LBRACE):
                 self._advance()
@@ -1320,9 +1321,134 @@ class Parser:
                 self._expect(TokenType.RBRACE)
             else:
                 body = [self._stmt()]
-            cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line))
+            cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line, guard))
         self._expect(TokenType.RBRACE)
-        return MatchStatement(subject, cases, m_tok.line)
+        return self._lower_match_guards(subject, cases, m_tok.line)
+
+    # ── match guards: `Ok(v) if v > 0 => ...`  (roadmap 11.4) ──
+
+    def _match_guard(self):
+        """Parse `if <expr>` sitting between a pattern and its `=>`.
+
+        The guard's tokens are sliced out and parsed by a sub-parser rather than
+        read inline, because a lambda is detected by "balanced parens followed
+        by `=>`" — so `Ok(v) if (n > 0) => ...` read inline would be taken for a
+        lambda parameter list. Cutting the stream at the terminating `=>` means
+        the lookahead never sees it, and a real lambda inside a guard still
+        works. Tightening the lambda heuristic instead would have had to tell
+        `(int x)` from `(n)`, which it cannot do reliably.
+        """
+        from lexer import Lexer as _Lexer   # noqa: F401  (parity with above)
+        if_tok = self._advance()                      # 'if'
+        start = self.pos
+        depth = 0
+        while True:
+            t = self._cur()
+            if t.type == TokenType.EOF:
+                raise ParseError(
+                    f"[Syntax Error] Line {if_tok.line}: match guard without "
+                    f"a following '=>'")
+            if t.type in (TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE):
+                depth += 1
+            elif t.type in (TokenType.RPAREN, TokenType.RBRACKET, TokenType.RBRACE):
+                depth -= 1
+            elif t.type == TokenType.FAT_ARROW and depth == 0:
+                break
+            self._advance()
+        toks = self.tokens[start:self.pos]
+        if not toks:
+            raise ParseError(
+                f"[Syntax Error] Line {if_tok.line}: empty match guard — "
+                f"'if' must be followed by a condition")
+        toks = list(toks) + [Token(TokenType.EOF, '', if_tok.line, 0)]
+        sub = Parser(toks)
+        guard = sub._expr()
+        if not sub._match(TokenType.EOF):
+            bad = sub._cur()
+            raise ParseError(
+                f"[Syntax Error] Line {if_tok.line}: match guard has leftover "
+                f"input starting at {bad.type.name} ({bad.value!r})")
+        for fn in sub.synthetic_fns:      # a guard may contain a lambda/range
+            if fn.name not in self.user_defined_fns:
+                self.user_defined_fns.add(fn.name)
+                self.synthetic_fns.append(fn)
+        return guard
+
+    def _lower_match_guards(self, subject, cases, line: int):
+        """Rewrite guards into `if` chains, so no backend has to know about them.
+
+        A guard needs "test, and if it fails try the next case", which `match`
+        cannot express — it dispatches on the constructor. But every case with
+        the SAME constructor binds the same payload, so they can be collapsed
+        into one case whose body is an if/else chain over the guards. The
+        subject is still evaluated exactly once.
+
+        Falling off the end of a group lands in the `_` case's body, which is
+        therefore copied into the chain's final else.
+        """
+        if not any(c.guard is not None for c in cases):
+            return MatchStatement(subject, cases, line)   # untouched
+
+        import copy
+        order, groups = [], {}
+        for c in cases:
+            if c.pattern_name not in groups:
+                groups[c.pattern_name] = []
+                order.append(c.pattern_name)
+            groups[c.pattern_name].append(c)
+
+        wildcard = groups.get('_', [])
+        wild_fallthrough = None
+        for c in wildcard:
+            if c.guard is None:
+                wild_fallthrough = c.body
+
+        out = []
+        for name in order:
+            if name == '_':
+                continue                       # emitted last, below
+            grp = groups[name]
+            if len(grp) == 1 and grp[0].guard is None:
+                out.append(grp[0])
+                continue
+            out.append(self._merge_guarded(name, grp, wild_fallthrough, copy))
+        if wildcard:
+            out.append(self._merge_guarded('_', wildcard, None, copy)
+                       if len(wildcard) > 1 or wildcard[0].guard is not None
+                       else wildcard[0])
+        return MatchStatement(subject, out, line)
+
+    def _merge_guarded(self, name, grp, fallthrough, copy):
+        """One case per constructor, body = if/else chain over that group."""
+        vars0 = grp[0].pattern_vars
+        for c in grp[1:]:
+            if c.pattern_vars != vars0:
+                # Renaming the body would work, but silently rewriting user
+                # identifiers is the kind of thing that goes wrong quietly.
+                # Asking for one name costs the author nothing.
+                raise ParseError(
+                    f"[Syntax Error] Line {c.line}: guarded '{name}' cases in "
+                    f"one match must bind the same name(s); this one binds "
+                    f"{c.pattern_vars or ['nothing']} but the first binds "
+                    f"{vars0 or ['nothing']}")
+        for i, c in enumerate(grp[:-1]):
+            if c.guard is None:
+                raise ParseError(
+                    f"[Syntax Error] Line {grp[i + 1].line}: this '{name}' case "
+                    f"is unreachable — the unguarded '{name}' case on line "
+                    f"{c.line} already matches everything. Put the guarded "
+                    f"cases first")
+        if grp[-1].guard is None:
+            tail = grp[-1].body                       # the group's own default
+            chain = grp[:-1]
+        else:
+            # every case guarded: fall through to the wildcard, if any
+            tail = copy.deepcopy(fallthrough) if fallthrough else None
+            chain = grp
+        node = tail
+        for c in reversed(chain):
+            node = [If(c.guard, c.body, node)]
+        return MatchCase(name, vars0, node or [], grp[0].line)
 
     # ── assert ──────────────────────────────────────────────
 
@@ -2007,6 +2133,18 @@ class Parser:
             if name == 'all' and len(args) == 2:
                 return self._desugar_all(args[0], args[1])
         return CallExpr(name, args, line=id_line)
+        self.user_defined_fns.add(name)
+        body = [
+            MatchStatement(Identifier('r'), [
+                MatchCase('Ok', ['__oe_v'], [Return(Identifier('__oe_v'))]),
+                MatchCase('_', [], [Return(Identifier('d'))]),
+            ]),
+            # Unreachable, but every path has to return for the typed backends.
+            Return(Identifier('d')),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('any', 'r'), ('any', 'd')], 'any', body))
+        return name
 
     def _extract_fn_info(self, f, len_params=1):
         if isinstance(f, Lambda) and len(f.params) == len_params:

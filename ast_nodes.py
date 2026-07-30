@@ -67,6 +67,12 @@ class MatchCase(Node):
     pattern_vars: List[str]   # ex: ["v"]
     body:         List[Node]  # Block instructions
     line:         int = 0
+    # Roadmap 11.4 — `Ok(v) if v > 0 => ...`. The parser lowers guards away
+    # (same-constructor cases collapse into one case holding an if/else chain),
+    # so this only ever holds a value between _match_stmt parsing a case and
+    # _lower_match_guards rewriting it. No code generator sees it set, which is
+    # why guards needed no backend changes.
+    guard:        Optional[Node] = None
 
 @dataclass
 class MatchStatement(Node):
