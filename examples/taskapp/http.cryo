@@ -1,0 +1,72 @@
+// ============================================================
+//  http.cryo — query parsing and auth
+//
+//  The token is read from the `Authorization: Bearer <token>`
+//  header, falling back to `?token=` so a browser can still be
+//  pointed at the UI with a plain URL. The header is preferred
+//  because a query string ends up in server logs and browser
+//  history; a header does not.
+//
+//  Header support and url_decode both came out of building this
+//  application (11.10) — the first version had to put the token
+//  in the query because http_accept exposed no headers at all.
+// ============================================================
+
+string _token = "";
+
+pub fn set_token(string t) ={
+    _token = t;
+}
+
+// Reads one parameter out of a raw `a=1&b=2` query string,
+// percent-decoded. Returns "" when absent.
+pub fn param(string query, string name) -> string ={
+    string[] parts = split(query, "&");
+    for (string p in parts) {
+        int eq = find(p, "=");
+        if (eq > 0) {
+            string k = p[0..eq];
+            if (k == name) {
+                return url_decode(p[eq + 1..]);
+            }
+        }
+    }
+    return "";
+}
+
+pub fn param_int(string query, string name, int fallback) -> int ={
+    string raw = param(query, name);
+    if (len(raw) == 0) { return fallback; }
+    return to_int(raw);
+}
+
+// `Authorization: Bearer <token>` -> the token, or "".
+fn _bearer(string header) -> string ={
+    string h = trim(header);
+    if (starts_with(h, "Bearer ")) {
+        return trim(h[7..]);
+    }
+    if (starts_with(h, "bearer ")) {
+        return trim(h[7..]);
+    }
+    return "";
+}
+
+// The presented credential: the Authorization header if there is
+// one, otherwise the `token` query parameter.
+pub fn presented(map<string,string> req) -> string ={
+    if (has(req, "header:authorization")) {
+        string b = _bearer(req["header:authorization"]);
+        if (len(b) > 0) { return b; }
+    }
+    return param(req["query"], "token");
+}
+
+pub fn authorized(map<string,string> req) -> bool ={
+    if (len(_token) == 0) { return true; }        // no token configured
+    return presented(req) == _token;
+}
+
+pub fn json_error(string message) -> string ={
+    return "{\"error\":\"" + message + "\"}";
+}

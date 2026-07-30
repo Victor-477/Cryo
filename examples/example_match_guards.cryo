@@ -1,0 +1,113 @@
+// ============================================================
+//  Guarded match cases  (roadmap 11.4)
+//
+//      match r {
+//          Ok(v) if v > 100 => ...
+//          Ok(v)            => ...
+//          Err(e)           => ...
+//      }
+//
+//  A guard is a condition attached to a pattern. It is lowered in
+//  the parser — cases sharing a constructor collapse into one case
+//  whose body is an if/else chain — so no backend knows guards
+//  exist, and pyro, go and node print the same bytes.
+//
+//  Run:  python Burnout/pyro.py run Cryo/examples/example_match_guards.cryo
+// ============================================================
+
+enum Result { Ok(int), Err(string) }
+
+fn parse_len(string s) -> Result ={
+    if (s == "") { return Err("empty input"); }
+    if (s == "bad") { return Err("malformed"); }
+    return Ok(len(s));
+}
+
+// ── guards let one constructor take several branches ──────────
+// Without them this needs a nested `if` inside the Ok arm, which
+// pushes the interesting condition a level away from the pattern.
+fn classify(Result r) ={
+    match r {
+        Ok(v) if v > 100 => print("huge   ${v}");
+        Ok(v) if v > 10  => print("big    ${v}");
+        Ok(v) if v > 0   => print("small  ${v}");
+        Ok(v)            => print("zero or negative ${v}");
+        Err(e)           => print("failed: ${e}");
+    }
+}
+
+classify(Ok(500));
+classify(Ok(50));
+classify(Ok(5));
+classify(Ok(0));
+classify(Err("disk offline"));
+
+// ── falling off the end of a guarded group ───────────────────
+// If no guard holds and there is no unguarded case for that
+// constructor, control reaches the wildcard.
+print("");
+fn triage(Result r) ={
+    match r {
+        Ok(v) if v < 0  => print("negative");
+        Ok(v) if v == 0 => print("zero");
+        _               => print("everything else");
+    }
+}
+triage(Ok(0 - 3));
+triage(Ok(0));
+triage(Ok(9));        // no guard holds -> wildcard
+triage(Err("x"));     // different constructor -> wildcard
+
+// ── a guard is an ordinary expression ────────────────────────
+// It can call functions, read module state, use && and ||, and
+// even be wrapped in parentheses (the parser is careful not to
+// confuse `if (v > 1) =>` with a lambda parameter list).
+int threshold = 10;
+
+fn even(int n) -> bool ={ return n % 2 == 0; }
+
+print("");
+fn report(Result r) ={
+    match r {
+        Ok(v) if (v > threshold) && even(v) => print("${v}: big and even");
+        Ok(v) if v > threshold             => print("${v}: big and odd");
+        Ok(v) if even(v)                   => print("${v}: small and even");
+        Ok(v)                              => print("${v}: small and odd");
+        Err(e)                             => print("error: ${e}");
+    }
+}
+report(Ok(20));
+report(Ok(21));
+report(Ok(4));
+report(Ok(7));
+report(parse_len("bad"));
+
+// ── guards alongside `?` ─────────────────────────────────────
+// `?` (Phase 8.3) propagates an Err out of the function; a guard
+// picks a branch once you have the value. They compose:
+// `?` for the paths you do not handle here, a guarded match for
+// the ones you do.
+print("");
+fn double_it(string s) -> Result ={
+    int v = parse_len(s)?;      // Err returns from double_it
+    return Ok(v * 2);
+}
+
+fn show(Result r) ={
+    match r {
+        Ok(v) if v >= 8 => print("doubled to ${v} (long input)");
+        Ok(v)           => print("doubled to ${v}");
+        Err(e)          => print("could not: ${e}");
+    }
+}
+show(double_it("abcd"));
+show(double_it("ab"));
+show(double_it("bad"));
+
+// ── what the parser refuses ──────────────────────────────────
+// Guarded cases for one constructor must bind the same name, and
+// an unguarded case may not sit above a guarded one (it would
+// match everything and make the guard dead code). Uncomment:
+//
+//   match r { Ok(a) if a > 1 => print("x"); Ok(b) => print("y"); }
+//   match r { Ok(v) => print("y"); Ok(v) if v > 1 => print("x"); }

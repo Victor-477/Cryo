@@ -1,0 +1,49 @@
+// ============================================================
+//  store.cryo — durable key/value storage
+//
+//  Private state behind a pub API. Every write goes through
+//  write_file_atomic (11.8), so an interrupted save cannot leave
+//  a truncated file — the application would otherwise lose all
+//  its tasks to a badly timed crash.
+// ============================================================
+
+map<string,string> _data = {};
+string _path = "";
+
+pub fn open(string path) ={
+    _path = path;
+    _data = {};
+    if (file_exists(path)) {
+        string raw = trim(read_file(path));
+        if (len(raw) > 0) {
+            _data = json_decode(raw) as map<string,string>;
+        }
+    }
+}
+
+pub fn save() -> bool ={
+    return write_file_atomic(_path, json_encode(_data));
+}
+
+pub fn set(string key, string value) ={
+    _data[key] = value;
+}
+
+pub fn get(string key) -> string ={
+    if (!has(_data, key)) { return ""; }
+    return _data[key];
+}
+
+pub fn has_key(string key) -> bool ={
+    return has(_data, key);
+}
+
+pub fn drop(string key) ={
+    if (has(_data, key)) { remove(_data, key); }
+}
+
+// Sorted, because the runtime sorts map keys by their textual
+// form — so the task list has a stable order on every engine.
+pub fn all_keys() -> string[] ={
+    return keys(_data);
+}

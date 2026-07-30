@@ -2,6 +2,7 @@
 #  Cryo Compiler - Parser  (v0.2)
 # ============================================================
 
+import re
 from typing import List, Optional, Tuple
 from lexer import Token, TokenType, TYPE_TOKENS
 from ast_nodes import (
@@ -13,6 +14,7 @@ from ast_nodes import (
     Return, If, While, For, DoWhile, ForEach, TryCatch, Block,
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     Import, ModuleImport, Library, ForeignBlock,
+    PermissionsDecl,
     Assignment, IndexAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, CallValueExpr, MethodCallExpr,
@@ -34,6 +36,11 @@ _BUILTIN_NAMES = {
     'clamp', 'sign', 'gcd', 'hypot', 'starts_with', 'ends_with', 'repeat',
     'pad_start', 'pad_end', 'concat', 'count', 'sum', 'enumerate', 'pairs',
     'now_ms', 'monotonic_ms', 'random', 'random_int', 'seed',
+    'http_listen', 'http_accept', 'http_respond',
+    'file_exists', 'is_dir', 'list_dir', 'make_dir', 'delete_file', 'file_size', 'write_file', 'env', 'exec',
+    'write_file_atomic',
+    'url_decode', 'url_encode',
+    'asset', 'asset_names',
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
     'true', 'false', 'null'
@@ -256,6 +263,7 @@ class Parser:
             self._advance(); self._opt_semi(); return Break()
         if tok.type == TokenType.CONTINUE:
             self._advance(); self._opt_semi(); return Continue()
+        if tok.type == TokenType.PERMISSIONS: return self._permissions()
         if tok.type == TokenType.LANG_BLOCK: return self._foreign()
 
         # primitive type, map, future or (type) -> var decl
@@ -360,9 +368,14 @@ class Parser:
     def _impl(self):
         iline = self._cur().line
         self._expect(TokenType.IMPL)
-        trait_name = self._expect(TokenType.IDENT).value
-        self._expect(TokenType.FOR)
-        target_type = self._parse_type()
+        first_ident = self._expect(TokenType.IDENT).value
+        if self._match(TokenType.FOR):
+            self._advance()
+            trait_name = first_ident
+            target_type = self._parse_type()
+        else:
+            trait_name = None
+            target_type = first_ident
         self._expect(TokenType.LBRACE)
         methods = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):
@@ -515,6 +528,36 @@ class Parser:
             lang, name = '', raw
         return Library(name=name.strip(), lang=lang.strip())
 
+    _PERMISSION_KEYS = ('read', 'write', 'net', 'exec', 'env')
+
+    def _permissions(self):
+        """Roadmap 11.12 — `permissions { read = "./data"; net = "host"; }`."""
+        tok = self._expect(TokenType.PERMISSIONS)
+        self._expect(TokenType.LBRACE)
+        grants = {}
+        while not self._match(TokenType.RBRACE, TokenType.EOF):
+            key_tok = self._cur()
+            key = str(key_tok.value)
+            self._advance()
+            if key not in self._PERMISSION_KEYS:
+                raise ParseError(
+                    f"[Syntax Error] Line {key_tok.line}: unknown permission "
+                    f"'{key}' — expected one of "
+                    f"{', '.join(self._PERMISSION_KEYS)}")
+            self._expect(TokenType.ASSIGN)
+            values = []
+            while True:
+                v = self._expect(TokenType.STR_LIT)
+                values.append(str(v.value))
+                if self._match(TokenType.COMMA):
+                    self._advance()
+                    continue
+                break
+            self._opt_semi()
+            grants.setdefault(key, []).extend(values)
+        self._expect(TokenType.RBRACE)
+        return PermissionsDecl(grants, line=tok.line)
+
     def _foreign(self):
         tok = self._expect(TokenType.LANG_BLOCK)
         lang, _, code = tok.value.partition(':')
@@ -565,7 +608,10 @@ class Parser:
     # ── string interpolation: "total: ${x}" ──────────────
 
     def _string_literal(self, s: str, line: int):
-        """String literal; with `${expr}` becomes concatenation with to_string(expr)."""
+        """String literal; with `${expr}` becomes concatenation with to_string(expr).
+
+        `${expr:spec}` (11.3) applies a format spec — see _split_fmt_spec.
+        """
         if '${' not in s:
             return Literal('string', s)
         from lexer import Lexer as _Lexer   # local import (no cycle)
@@ -594,8 +640,29 @@ class Parser:
             if not frag:
                 raise ParseError(
                     f"[Syntax Error] Line {line}: empty interpolation '${{}}'")
-            expr = Parser(_Lexer(frag).tokenize())._expr()
-            parts.append(CallExpr('to_string', [expr]))
+            frag, spec = self._split_fmt_spec(frag, line)
+            sub = Parser(_Lexer(frag).tokenize())
+            expr = sub._expr()
+            # _expr() stops at the first thing it cannot use and does not care
+            # what follows, so "${x y}" used to compile as plain `x` with the
+            # rest of the fragment dropped. Leftover tokens mean the fragment
+            # was not the expression the author wrote.
+            if not sub._match(TokenType.EOF):
+                bad = sub._cur()
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: interpolation "
+                    f"'${{{frag}}}' has leftover input starting at "
+                    f"{bad.type.name} ({bad.value!r})")
+            # A nested interpolation may itself desugar to a helper (a range,
+            # a lambda). Those land on the SUB-parser, which is thrown away
+            # here — so adopt them, or codegen emits a call to a function that
+            # was never declared.
+            for fn in sub.synthetic_fns:
+                if fn.name not in self.user_defined_fns:
+                    self.user_defined_fns.add(fn.name)
+                    self.synthetic_fns.append(fn)
+            parts.append(self._fmt_apply(expr, spec, line) if spec
+                         else CallExpr('to_string', [expr]))
             i = k
         if not parts:
             return Literal('string', '')
@@ -606,6 +673,339 @@ class Parser:
         for p in parts[1:]:
             node = BinaryExpr('+', node, p)
         return node
+
+    # ── format specs: "${value:>10,.2f}"  (roadmap 11.3) ─────
+    #
+    # A deliberate subset of the Python/Rust format mini-language, because a
+    # convention people already know beats a locally invented one:
+    #
+    #     [[fill]align] [0] [width] [,] [.precision] [type]
+    #     align : '<' left   '^' center   '>' right
+    #     type  : 'f' fixed-point   'd' integer   's' string   '%' percent
+    #
+    # Everything is desugared here into ordinary Cryo built from existing
+    # builtins — architecture rule 2. No new native, so pyro/go/node, both VMs
+    # and the AOT get this with no engine changes and no parity risk.
+    #
+    # Padding and alignment need repeat()/pad_start()/starts_with(), which the
+    # C backend does not implement (for any program, not just this feature), so
+    # a spec with a WIDTH is go/node/pyro only and C reports its usual "use
+    # --backend go, node or pyro". Precision and grouping avoid those three on
+    # purpose, so `${x:.2f}` and `${x:,.2f}` — the common cases — do work on C.
+    #
+    # Hex/binary/exponent types are NOT covered — radix conversion belongs on
+    # to_string, not in a format spec, and guessing at it here would be the
+    # wrong place to put it.
+
+    _FMT_SPEC = re.compile(
+        r'^(?:(?P<fill>[^{}])?(?P<align>[<^>]))?'
+        r'(?P<zero>0)?(?P<width>[1-9][0-9]*)?(?P<comma>,)?'
+        r'(?:\.(?P<prec>[0-9]+))?(?P<type>[fds%])?$')
+
+    def _split_fmt_spec(self, frag: str, line: int = 0):
+        """Split `expr:spec` into (expr, spec); (frag, None) if there is no spec.
+
+        The colon is ambiguous — it is also the ternary separator, `::` in a
+        namespaced name, and a separator inside a map literal or a string. So a
+        candidate is accepted only if BOTH halves check out: the tail matches
+        the spec grammar, and the head parses as a complete expression on its
+        own. `${flag ? 1 : 2}` fails the second test ("flag ? 1" does not
+        parse) and is left alone, which is the case that would otherwise break
+        silently — a ternary quietly reinterpreted as a width of 2.
+        """
+        depth = 0
+        quote = None
+        skip = False
+        for i, ch in enumerate(frag):
+            if skip:
+                skip = False
+                continue
+            if quote:
+                if ch == '\\':
+                    skip = True          # the escaped char, not just the '\'
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in '"\'':
+                quote = ch
+            elif ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                if frag[i + 1:i + 2] == ':' or frag[i - 1:i] == ':':
+                    continue                      # ns::name
+                head, tail = frag[:i].strip(), frag[i + 1:].strip()
+                if not head or not tail:
+                    continue
+                if not self._parses_alone(head):
+                    continue    # not a spec — a ternary, most likely
+                if not self._FMT_SPEC.match(tail):
+                    # The head IS a complete expression, so this colon was
+                    # meant as a spec separator and the spec is simply wrong.
+                    # Saying so beats falling through: `${x:>4q}` used to
+                    # compile silently and print x with the spec discarded.
+                    raise ParseError(
+                        f"[Syntax Error] Line {line}: "
+                        f"unsupported format spec '{tail}' in '${{{frag}}}'. "
+                        f"Expected [[fill]align][0][width][,][.prec][type] — "
+                        f"align is one of < ^ >, type is one of f, d, s, %")
+                return head, tail
+        return frag, None
+
+    def _parses_alone(self, text: str) -> bool:
+        """True if `text` is a complete expression with nothing left over."""
+        from lexer import Lexer as _Lexer
+        try:
+            p = Parser(_Lexer(text).tokenize())
+            p._expr()
+            return p._match(TokenType.EOF)
+        except Exception:
+            return False
+
+    def _fmt_apply(self, expr, spec: str, line: int):
+        """Wrap `expr` in the calls that `spec` describes."""
+        m = self._FMT_SPEC.match(spec)
+        if not m:   # unreachable via _split_fmt_spec; guards direct callers
+            raise ParseError(
+                f"[Syntax Error] Line {line}: unsupported format spec "
+                f"'{spec}'. Expected [[fill]align][0][width][,][.prec][type], "
+                f"where align is < ^ > and type is f, d, s or %")
+        fill = m.group('fill')
+        align = m.group('align')
+        zero = m.group('zero')
+        width = int(m.group('width')) if m.group('width') else 0
+        comma = bool(m.group('comma'))
+        prec = int(m.group('prec')) if m.group('prec') is not None else None
+        kind = m.group('type') or ''
+
+        if kind == 's' and comma:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': ',' groups "
+                f"digits, so it does not apply to a string ('s')")
+        if kind == 'd' and prec is not None:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': '.{prec}' "
+                f"is a decimal count, so it does not apply to an integer "
+                f"('d') — use 'f' for a fixed-point number")
+        if prec is not None and not kind:
+            # The parser has no types, so '.2' alone cannot be resolved: on a
+            # number it means two decimals, on a string it means truncate to
+            # two characters. Refusing beats guessing — guessing wrong turns
+            # `${pi:.2}` into "3." with nothing to indicate it went wrong.
+            raise ParseError(
+                f"[Syntax Error] Line {line}: format spec '{spec}': '.{prec}' "
+                f"needs a type — '.{prec}f' for {prec} decimals, or "
+                f"'.{prec}s' to cut a string to {prec} characters")
+
+        numeric = kind in ('f', 'd', '%') or comma
+        if numeric:
+            # 'f' and '%' default to 6 decimals, as in C, Python and Rust;
+            # 'd' and a bare ',' are whole numbers.
+            p = prec if prec is not None else (6 if kind in ('f', '%') else 0)
+            val = expr
+            if kind == '%':
+                val = BinaryExpr('*', expr, Literal('float', 100.0))
+            # to_number, not the bare value: the helper's parameter is `number`,
+            # and go/c/asm are statically typed — an int argument to a float64
+            # parameter does not compile in Go. This is the conversion the
+            # dynamic backends would have done implicitly anyway.
+            node = CallExpr(self._fmt_num_helper(),
+                            [CallExpr('to_number', [val]), Literal('int', p),
+                             Literal('int', 1 if comma else 0)], line=line)
+            if kind == '%':
+                node = BinaryExpr('+', node, Literal('string', '%'))
+        else:
+            node = CallExpr('to_string', [expr])
+            if prec is not None:
+                # '.prec' on a string truncates — the counterpart of padding
+                node = CallExpr('substr', [node, Literal('int', 0),
+                                           Literal('int', prec)])
+
+        if not width:
+            return node
+        if zero and not align:
+            # Zero padding goes AFTER the sign: -0012.50, never 00-12.50.
+            # It does not regroup the inserted zeros; ',' groups the value.
+            return CallExpr(self._fmt_zero_helper(),
+                            [node, Literal('int', width)], line=line)
+        # Default alignment follows the convention — numbers right, text left —
+        # but the parser has no types, so "numeric" here means the SPEC said so
+        # (a type of f/d/% or a ','). `${n:5}` on an integer therefore left-
+        # aligns; write `${n:5d}` or `${n:>5}` to get the other one.
+        a = align or ('>' if numeric else '<')
+        return CallExpr(self._fmt_pad_helper(),
+                        [node, Literal('int', width),
+                         Literal('string', fill or ('0' if zero else ' ')),
+                         Literal('int', {'<': 0, '^': 1, '>': 2}[a])],
+                        line=line)
+
+    def _fmt_num_helper(self) -> str:
+        """number -> string with a fixed number of decimals, optionally grouped.
+
+        Deliberately integer arithmetic after the one round(): scaling to an
+        int and splitting it means the digits come from to_string(int), which
+        every backend agrees on, rather than from float formatting, which they
+        do not. The cost is that a magnitude beyond int64 once scaled by
+        10^prec overflows — formatting is not the tool for those.
+        """
+        name = '__cryo_fmt_num'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        v, sign, a, scale, i, n, ip, fp, out = (
+            'v', '__f_sign', '__f_a', '__f_scale', '__f_i',
+            '__f_n', '__f_ip', '__f_fp', '__f_out')
+        body = [
+            VarDecl('string', sign, Literal('string', '')),
+            VarDecl('number', a, Identifier(v)),
+            If(BinaryExpr('<', Identifier(a), Literal('float', 0.0)),
+               [Assignment(sign, Literal('string', '-')),
+                Assignment(a, BinaryExpr('-', Literal('float', 0.0),
+                                         Identifier(a)))],
+               None),
+            VarDecl('int', scale, Literal('int', 1)),
+            For(VarDecl('int', i, Literal('int', 0)),
+                BinaryExpr('<', Identifier(i), Identifier('prec')),
+                Increment('++', i),
+                [Assignment(scale, BinaryExpr('*', Identifier(scale),
+                                              Literal('int', 10)))]),
+            VarDecl('int', n, CallExpr('to_int', [CallExpr('round', [
+                BinaryExpr('*', Identifier(a),
+                           CallExpr('to_number', [Identifier(scale)]))])])),
+            VarDecl('int', ip, BinaryExpr('/', Identifier(n), Identifier(scale))),
+            VarDecl('int', fp, BinaryExpr('%', Identifier(n), Identifier(scale))),
+            VarDecl('string', out, CallExpr('to_string', [Identifier(ip)])),
+            If(BinaryExpr('==', Identifier('group'), Literal('int', 1)),
+               [Assignment(out, CallExpr(self._fmt_group_helper(),
+                                         [Identifier(out)]))],
+               None),
+            # The fraction needs leading zeros (0.5 at prec 2 is ".50", not
+            # ".5"), and the obvious pad_start() is one of the builtins the C
+            # backend refuses. scale + fp always has exactly prec+1 digits —
+            # fp < scale and scale is 10^prec — so dropping the leading '1'
+            # leaves the zero-padded fraction, using only arithmetic and
+            # substr. That keeps `${x:.2f}` and `${x:,.2f}` working on C too.
+            If(BinaryExpr('>', Identifier('prec'), Literal('int', 0)),
+               [Assignment(out, BinaryExpr('+', BinaryExpr('+',
+                   Identifier(out), Literal('string', '.')),
+                   CallExpr('substr', [
+                       CallExpr('to_string', [BinaryExpr('+', Identifier(scale),
+                                                         Identifier(fp))]),
+                       Literal('int', 1), Identifier('prec')])))],
+               None),
+            Return(BinaryExpr('+', Identifier(sign), Identifier(out))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('number', v), ('int', 'prec'), ('int', 'group')],
+                         'string', body))
+        return name
+
+    def _fmt_group_helper(self) -> str:
+        """Insert ',' every three digits. Takes a bare digit run — no sign and
+        no decimal point — because index_of() is arrays-only, so a helper that
+        had to *find* the parts could not be written from the builtins."""
+        name = '__cryo_fmt_group'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, out, c, i = 's', '__g_out', '__g_c', '__g_i'
+        body = [
+            VarDecl('string', out, Literal('string', '')),
+            VarDecl('int', c, Literal('int', 0)),
+            For(VarDecl('int', i, BinaryExpr('-', CallExpr('len', [Identifier(s)]),
+                                             Literal('int', 1))),
+                BinaryExpr('>=', Identifier(i), Literal('int', 0)),
+                Increment('--', i),
+                [Assignment(out, BinaryExpr('+',
+                    CallExpr('substr', [Identifier(s), Identifier(i),
+                                        Literal('int', 1)]),
+                    Identifier(out))),
+                 Assignment(c, BinaryExpr('+', Identifier(c), Literal('int', 1))),
+                 If(BinaryExpr('&&',
+                        BinaryExpr('==', BinaryExpr('%', Identifier(c),
+                                                    Literal('int', 3)),
+                                   Literal('int', 0)),
+                        BinaryExpr('>', Identifier(i), Literal('int', 0))),
+                    [Assignment(out, BinaryExpr('+', Literal('string', ','),
+                                                Identifier(out)))],
+                    None)]),
+            Return(Identifier(out)),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s)], 'string', body))
+        return name
+
+    def _fmt_pad_helper(self) -> str:
+        """Pad to `width` with `fill`; align 0=left, 1=center, 2=right.
+
+        Not pad_start/pad_end: those cannot centre, and centring needs the
+        extra character to land on the same side on every backend (the right,
+        as in Python)."""
+        name = '__cryo_fmt_pad'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, n, l = 's', '__p_n', '__p_l'
+        body = [
+            VarDecl('int', n, BinaryExpr('-', Identifier('width'),
+                                         CallExpr('len', [Identifier(s)]))),
+            If(BinaryExpr('<=', Identifier(n), Literal('int', 0)),
+               [Return(Identifier(s))], None),
+            If(BinaryExpr('==', Identifier('align'), Literal('int', 0)),
+               [Return(BinaryExpr('+', Identifier(s),
+                                  CallExpr('repeat', [Identifier('fill'),
+                                                      Identifier(n)])))], None),
+            If(BinaryExpr('==', Identifier('align'), Literal('int', 2)),
+               [Return(BinaryExpr('+',
+                                  CallExpr('repeat', [Identifier('fill'),
+                                                      Identifier(n)]),
+                                  Identifier(s)))], None),
+            VarDecl('int', l, BinaryExpr('/', Identifier(n), Literal('int', 2))),
+            Return(BinaryExpr('+', BinaryExpr('+',
+                CallExpr('repeat', [Identifier('fill'), Identifier(l)]),
+                Identifier(s)),
+                CallExpr('repeat', [Identifier('fill'),
+                                    BinaryExpr('-', Identifier(n),
+                                               Identifier(l))]))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s), ('int', 'width'),
+                                ('string', 'fill'), ('int', 'align')],
+                         'string', body))
+        return name
+
+    def _fmt_zero_helper(self) -> str:
+        """Left-pad with zeros, keeping a leading '-' in front of them."""
+        name = '__cryo_fmt_zero'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        s, sign, body_v = 's', '__z_sign', '__z_body'
+        body = [
+            If(BinaryExpr('>=', CallExpr('len', [Identifier(s)]),
+                          Identifier('width')),
+               [Return(Identifier(s))], None),
+            VarDecl('string', sign, Literal('string', '')),
+            VarDecl('string', body_v, Identifier(s)),
+            If(CallExpr('starts_with', [Identifier(s), Literal('string', '-')]),
+               [Assignment(sign, Literal('string', '-')),
+                Assignment(body_v, CallExpr('substr', [
+                    Identifier(s), Literal('int', 1),
+                    BinaryExpr('-', CallExpr('len', [Identifier(s)]),
+                               Literal('int', 1))]))],
+               None),
+            Return(BinaryExpr('+', Identifier(sign),
+                              CallExpr('pad_start', [
+                                  Identifier(body_v),
+                                  BinaryExpr('-', Identifier('width'),
+                                             CallExpr('len', [Identifier(sign)])),
+                                  Literal('string', '0')]))),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', s), ('int', 'width')],
+                         'string', body))
+        return name
 
     # ── return ──────────────────────────────────────────────
 
@@ -715,6 +1115,46 @@ class Parser:
             self._advance()
         return vars_list
 
+    def _desugar_pairs_loop(self, map_expr, t1, n1, t2, n2, body):
+        """`for (k, v in m)` -> index the key list, look each key up.
+
+        A temp for the map is only introduced when the expression could be
+        re-evaluated; an identifier is bound directly. That is not just an
+        optimisation: the temp used to be declared `any`, and an `any` value
+        cannot be indexed or passed to keys() on the go backend, so binding one
+        made the whole loop fail to compile there — which is why
+        `for (k, v in pairs(m))` had never worked on go. Using the variable
+        keeps its real type. The key list is typed from the key variable for
+        the same reason.
+
+        A map expression that is NOT an identifier (a call, an index) still
+        needs the temp, and still hits that limitation on go until 11.31 lands.
+        """
+        k_type = t1 if t1 != 'any' else 'string'
+        pre = []
+        if isinstance(map_expr, Identifier):
+            map_ref = map_expr
+        else:
+            map_var = f"__map_{self._gen_id()}"
+            pre.append(VarDecl('any', map_var, map_expr))
+            map_ref = Identifier(map_var)
+
+        keys_var = f"__keys_{self._gen_id()}"
+        idx_var  = f"__i_{self._gen_id()}"
+        init_stmt = VarDecl('int', idx_var, Literal('int', 0))
+        cond_expr = BinaryExpr('<', Identifier(idx_var),
+                               CallExpr('len', [Identifier(keys_var)]))
+        upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var),
+                                                   Literal('int', 1)))
+        v1_decl = VarDecl(k_type, n1,
+                          IndexAccess(Identifier(keys_var), Identifier(idx_var)))
+        v2_decl = VarDecl(t2, n2, IndexAccess(map_ref, Identifier(n1)))
+        for_loop = For(init_stmt, cond_expr, upd_stmt, [v1_decl, v2_decl] + body)
+        return Block(pre + [
+            VarDecl(f"{k_type}[]", keys_var, CallExpr('keys', [map_ref])),
+            for_loop,
+        ])
+
     def _desugar_for_vars(self, vars_list, iterable, body):
         if len(vars_list) == 1:
             vtype, vname = vars_list[0]
@@ -726,37 +1166,38 @@ class Parser:
         # enumerate(coll)
         if isinstance(iterable, CallExpr) and iterable.callee == 'enumerate' and len(iterable.args) == 1:
             coll = iterable.args[0]
-            coll_var = f"__coll_{self._gen_id()}"
+            # An identifier is used directly instead of being rebound: the temp
+            # was declared `any`, and an `any` value can be neither indexed nor
+            # passed to len() on the go backend, so `for (i, x in enumerate(xs))`
+            # did not compile there. Same defect as the map form below.
+            pre_coll = []
+            if isinstance(coll, Identifier):
+                coll_ref = coll
+            else:
+                coll_var = f"__coll_{self._gen_id()}"
+                pre_coll = [VarDecl('any', coll_var, coll)]
+                coll_ref = Identifier(coll_var)
             idx_var  = f"__i_{self._gen_id()}"
             init_stmt = VarDecl('int', idx_var, Literal('int', 0))
-            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(coll_var)]))
+            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [coll_ref]))
             upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
             v1_decl = VarDecl(t1 if t1 != 'any' else 'int', n1, Identifier(idx_var))
-            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(coll_var), Identifier(idx_var)))
+            v2_decl = VarDecl(t2, n2, IndexAccess(coll_ref, Identifier(idx_var)))
             loop_body = [v1_decl, v2_decl] + body
             for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
-            return Block([VarDecl('any', coll_var, coll), for_loop])
+            return Block(pre_coll + [for_loop])
 
-        # pairs(m)
+        # pairs(m)  — and, since 11.5, a bare map: `for (k, v in m)`.
+        # Two loop variables mean key/value. The parser has no types, so it
+        # cannot tell a map from an array here; `enumerate(xs)` above stays the
+        # form for an array, and a map is what the two-variable form means.
+        # Handing an array to it fails in keys(), which says so.
         if isinstance(iterable, CallExpr) and iterable.callee == 'pairs' and len(iterable.args) == 1:
-            map_expr = iterable.args[0]
-            map_var  = f"__map_{self._gen_id()}"
-            keys_var = f"__keys_{self._gen_id()}"
-            idx_var  = f"__i_{self._gen_id()}"
-            init_stmt = VarDecl('int', idx_var, Literal('int', 0))
-            cond_expr = BinaryExpr('<', Identifier(idx_var), CallExpr('len', [Identifier(keys_var)]))
-            upd_stmt  = Assignment(idx_var, BinaryExpr('+', Identifier(idx_var), Literal('int', 1)))
-            v1_decl = VarDecl(t1 if t1 != 'any' else 'string', n1, IndexAccess(Identifier(keys_var), Identifier(idx_var)))
-            v2_decl = VarDecl(t2, n2, IndexAccess(Identifier(map_var), Identifier(n1)))
-            loop_body = [v1_decl, v2_decl] + body
-            for_loop  = For(init_stmt, cond_expr, upd_stmt, loop_body)
-            return Block([
-                VarDecl('any', map_var, map_expr),
-                VarDecl('any', keys_var, CallExpr('keys', [Identifier(map_var)])),
-                for_loop
-            ])
+            return self._desugar_pairs_loop(iterable.args[0], t1, n1, t2, n2, body)
+        if len(vars_list) == 2:
+            return self._desugar_pairs_loop(iterable, t1, n1, t2, n2, body)
 
-        # generic tuple iteration
+        # generic tuple iteration (3+ variables): item[0], item[1], item[2]…
         coll_var = f"__coll_{self._gen_id()}"
         item_var = f"__item_{self._gen_id()}"
         decls = []
@@ -911,6 +1352,7 @@ class Parser:
                     if self._match(TokenType.COMMA):
                         self._advance()
                 self._expect(TokenType.RPAREN)
+            guard = self._match_guard() if self._match(TokenType.IF) else None
             self._expect(TokenType.FAT_ARROW)
             if self._match(TokenType.LBRACE):
                 self._advance()
@@ -920,9 +1362,134 @@ class Parser:
                 self._expect(TokenType.RBRACE)
             else:
                 body = [self._stmt()]
-            cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line))
+            cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line, guard))
         self._expect(TokenType.RBRACE)
-        return MatchStatement(subject, cases, m_tok.line)
+        return self._lower_match_guards(subject, cases, m_tok.line)
+
+    # ── match guards: `Ok(v) if v > 0 => ...`  (roadmap 11.4) ──
+
+    def _match_guard(self):
+        """Parse `if <expr>` sitting between a pattern and its `=>`.
+
+        The guard's tokens are sliced out and parsed by a sub-parser rather than
+        read inline, because a lambda is detected by "balanced parens followed
+        by `=>`" — so `Ok(v) if (n > 0) => ...` read inline would be taken for a
+        lambda parameter list. Cutting the stream at the terminating `=>` means
+        the lookahead never sees it, and a real lambda inside a guard still
+        works. Tightening the lambda heuristic instead would have had to tell
+        `(int x)` from `(n)`, which it cannot do reliably.
+        """
+        from lexer import Lexer as _Lexer   # noqa: F401  (parity with above)
+        if_tok = self._advance()                      # 'if'
+        start = self.pos
+        depth = 0
+        while True:
+            t = self._cur()
+            if t.type == TokenType.EOF:
+                raise ParseError(
+                    f"[Syntax Error] Line {if_tok.line}: match guard without "
+                    f"a following '=>'")
+            if t.type in (TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE):
+                depth += 1
+            elif t.type in (TokenType.RPAREN, TokenType.RBRACKET, TokenType.RBRACE):
+                depth -= 1
+            elif t.type == TokenType.FAT_ARROW and depth == 0:
+                break
+            self._advance()
+        toks = self.tokens[start:self.pos]
+        if not toks:
+            raise ParseError(
+                f"[Syntax Error] Line {if_tok.line}: empty match guard — "
+                f"'if' must be followed by a condition")
+        toks = list(toks) + [Token(TokenType.EOF, '', if_tok.line, 0)]
+        sub = Parser(toks)
+        guard = sub._expr()
+        if not sub._match(TokenType.EOF):
+            bad = sub._cur()
+            raise ParseError(
+                f"[Syntax Error] Line {if_tok.line}: match guard has leftover "
+                f"input starting at {bad.type.name} ({bad.value!r})")
+        for fn in sub.synthetic_fns:      # a guard may contain a lambda/range
+            if fn.name not in self.user_defined_fns:
+                self.user_defined_fns.add(fn.name)
+                self.synthetic_fns.append(fn)
+        return guard
+
+    def _lower_match_guards(self, subject, cases, line: int):
+        """Rewrite guards into `if` chains, so no backend has to know about them.
+
+        A guard needs "test, and if it fails try the next case", which `match`
+        cannot express — it dispatches on the constructor. But every case with
+        the SAME constructor binds the same payload, so they can be collapsed
+        into one case whose body is an if/else chain over the guards. The
+        subject is still evaluated exactly once.
+
+        Falling off the end of a group lands in the `_` case's body, which is
+        therefore copied into the chain's final else.
+        """
+        if not any(c.guard is not None for c in cases):
+            return MatchStatement(subject, cases, line)   # untouched
+
+        import copy
+        order, groups = [], {}
+        for c in cases:
+            if c.pattern_name not in groups:
+                groups[c.pattern_name] = []
+                order.append(c.pattern_name)
+            groups[c.pattern_name].append(c)
+
+        wildcard = groups.get('_', [])
+        wild_fallthrough = None
+        for c in wildcard:
+            if c.guard is None:
+                wild_fallthrough = c.body
+
+        out = []
+        for name in order:
+            if name == '_':
+                continue                       # emitted last, below
+            grp = groups[name]
+            if len(grp) == 1 and grp[0].guard is None:
+                out.append(grp[0])
+                continue
+            out.append(self._merge_guarded(name, grp, wild_fallthrough, copy))
+        if wildcard:
+            out.append(self._merge_guarded('_', wildcard, None, copy)
+                       if len(wildcard) > 1 or wildcard[0].guard is not None
+                       else wildcard[0])
+        return MatchStatement(subject, out, line)
+
+    def _merge_guarded(self, name, grp, fallthrough, copy):
+        """One case per constructor, body = if/else chain over that group."""
+        vars0 = grp[0].pattern_vars
+        for c in grp[1:]:
+            if c.pattern_vars != vars0:
+                # Renaming the body would work, but silently rewriting user
+                # identifiers is the kind of thing that goes wrong quietly.
+                # Asking for one name costs the author nothing.
+                raise ParseError(
+                    f"[Syntax Error] Line {c.line}: guarded '{name}' cases in "
+                    f"one match must bind the same name(s); this one binds "
+                    f"{c.pattern_vars or ['nothing']} but the first binds "
+                    f"{vars0 or ['nothing']}")
+        for i, c in enumerate(grp[:-1]):
+            if c.guard is None:
+                raise ParseError(
+                    f"[Syntax Error] Line {grp[i + 1].line}: this '{name}' case "
+                    f"is unreachable — the unguarded '{name}' case on line "
+                    f"{c.line} already matches everything. Put the guarded "
+                    f"cases first")
+        if grp[-1].guard is None:
+            tail = grp[-1].body                       # the group's own default
+            chain = grp[:-1]
+        else:
+            # every case guarded: fall through to the wildcard, if any
+            tail = copy.deepcopy(fallthrough) if fallthrough else None
+            chain = grp
+        node = tail
+        for c in reversed(chain):
+            node = [If(c.guard, c.body, node)]
+        return MatchCase(name, vars0, node or [], grp[0].line)
 
     # ── assert ──────────────────────────────────────────────
 
@@ -1606,7 +2173,90 @@ class Parser:
                 return self._desugar_any(args[0], args[1])
             if name == 'all' and len(args) == 2:
                 return self._desugar_all(args[0], args[1])
+        if name == 'llm' and len(args) == 3:
+            self._check_llm_options(args[2], id_line)   # 11.16
         return CallExpr(name, args, line=id_line)
+
+    # ── LLM generation controls (roadmap 11.16) ──────────────
+    #
+    #   llm("model", prompt, { temperature: 0.2, max_tokens: 400, seed: 7 })
+    #
+    # Checked here, at the call site, rather than passed through to the
+    # provider. An unrecognised option that reaches an HTTP API is either
+    # ignored or rejected far from the line that wrote it — and a `temprature`
+    # typo that silently produces default-temperature output is exactly the
+    # kind of failure a program cannot notice.
+    _LLM_OPTIONS = {
+        'temperature': 'a number (0.0-2.0)',
+        'top_p':       'a number (0.0-1.0)',
+        'max_tokens':  'an int',
+        'stop':        'a string, or an array of strings',
+        'seed':        'an int',
+        'timeout':     'an int (milliseconds)',
+    }
+
+    def _check_llm_options(self, node, line: int):
+        """The third argument of llm() must be a literal map of known options."""
+        if not isinstance(node, MapLiteral):
+            raise ParseError(
+                f"[Syntax Error] Line {line}: the third argument of llm() is "
+                f"the generation options and must be written as a map literal, "
+                f"e.g. llm(model, prompt, {{ temperature: 0.2 }})")
+        seen = set()
+        for k, v in node.pairs:
+            if isinstance(k, Literal) and k.kind == 'string':
+                key = k.value
+            elif isinstance(k, Identifier):
+                # A bare key is not map syntax in Cryo — it parses as a
+                # variable reference, so it would surface much later as
+                # "undeclared variable 'temperature'", which says nothing
+                # about the real mistake.
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option names are map "
+                    f"keys and must be quoted — write "
+                    f"{{ \"{k.name}\": … }}, not {{ {k.name}: … }}")
+            else:
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option names must be "
+                    f"written literally, so they can be checked here")
+            if key not in self._LLM_OPTIONS:
+                near = ', '.join(sorted(self._LLM_OPTIONS))
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: unknown llm() option "
+                    f"'{key}'. Supported: {near}")
+            if key in seen:
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' is "
+                    f"set twice")
+            seen.add(key)
+            self._check_llm_option_value(key, v, line)
+
+    def _check_llm_option_value(self, key, v, line: int):
+        """Reject a literal of the wrong kind; let expressions through.
+
+        Only literals can be judged here — `seed: n` is legitimate and its type
+        is not knowable at parse time — so this catches the mistakes it can
+        prove and leaves the rest to the provider.
+        """
+        want = self._LLM_OPTIONS[key]
+        if key == 'stop':
+            if isinstance(v, Literal) and v.kind != 'string':
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option 'stop' takes "
+                    f"{want}")
+            return
+        if not isinstance(v, Literal):
+            return                       # an expression: cannot judge it here
+        if key in ('max_tokens', 'seed', 'timeout'):
+            if v.kind != 'int':
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' takes "
+                    f"{want}, got {v.kind}")
+        elif key in ('temperature', 'top_p'):
+            if v.kind not in ('int', 'float'):
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option '{key}' takes "
+                    f"{want}, got {v.kind}")
 
     def _extract_fn_info(self, f, len_params=1):
         if isinstance(f, Lambda) and len(f.params) == len_params:

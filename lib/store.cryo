@@ -1,0 +1,121 @@
+// ============================================================
+//  store.cryo — a persistent JSON document store
+//  Roadmap 11.8
+//
+//  A key/value store that survives a restart, with no database.
+//  It is written ENTIRELY IN CRYO — the only runtime support it
+//  needs is `write_file_atomic`, because durability is the one
+//  part a library cannot implement for itself.
+//
+//  Usage:
+//
+//      import "lib/store.cryo" as store;
+//
+//      store::open("data/app.json");
+//      store::set("greeting", "hello");
+//      print(store::get("greeting"));      // hello
+//      store::save();
+//
+//  On the next run, `open` reads the file back and the data is
+//  there. Nothing else changes.
+//
+//  ── Durability ──
+//  `save` uses write_file_atomic: the data goes to a sibling temp
+//  file which is then renamed over the target. A reader therefore
+//  sees either the previous contents or the new ones — never the
+//  truncated middle that a plain write leaves behind if the
+//  process dies mid-write. Losing the last save is recoverable;
+//  losing the whole store because a write was interrupted is not.
+//
+//  ── Scope ──
+//  Values are strings. That is deliberate: it keeps the store
+//  typed and its JSON form obvious. Encode richer values with
+//  json_encode before storing them.
+//  Not a database: no indexes, no transactions, no concurrent
+//  writers. One process, small documents, honest limits.
+// ============================================================
+
+// Module state (11.1) — the store lives here between calls.
+map<string,string> _data = {};
+string _path = "";
+bool   _open = false;
+
+// ── lifecycle ─────────────────────────────────────────────
+
+// Opens (or creates) the store at `path`. A missing file is not an
+// error: it is simply an empty store, so first run and later runs
+// take the same code path.
+pub fn open(string path) -> bool ={
+    _path = path;
+    _data = {};
+    _open = true;
+    if (!file_exists(path)) {
+        return true;
+    }
+    string raw = trim(read_file(path));
+    if (len(raw) == 0) {
+        return true;          // empty file behaves as an empty store
+    }
+    _data = json_decode(raw) as map<string,string>;
+    return true;
+}
+
+// Writes the store to disk atomically. Returns false if it could
+// not be persisted, so a caller can report the failure rather
+// than believing data was saved.
+pub fn save() -> bool ={
+    if (!_open) {
+        return false;
+    }
+    return write_file_atomic(_path, json_encode(_data));
+}
+
+// ── access ────────────────────────────────────────────────
+
+pub fn set(string key, string value) ={
+    _data[key] = value;
+}
+
+// Returns "" for a missing key. Use `has` to tell an absent key
+// from one whose value is genuinely the empty string.
+pub fn get(string key) -> string ={
+    if (!has(_data, key)) {
+        return "";
+    }
+    return _data[key];
+}
+
+pub fn has_key(string key) -> bool ={
+    return has(_data, key);
+}
+
+pub fn delete(string key) -> bool ={
+    if (!has(_data, key)) {
+        return false;
+    }
+    remove(_data, key);
+    return true;
+}
+
+// Keys come back sorted, because the runtime sorts map keys by
+// their textual form — so iteration order is the same on every
+// engine and every run.
+pub fn keys_of() -> string[] ={
+    return keys(_data);
+}
+
+pub fn count() -> int ={
+    return len(keys(_data));
+}
+
+pub fn clear() ={
+    _data = {};
+}
+
+// ── convenience ───────────────────────────────────────────
+
+// set + save in one call, for the common "record this now" case.
+pub fn put(string key, string value) -> bool ={
+    set(key, value);
+    return save();
+}

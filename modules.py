@@ -4,6 +4,7 @@
 import os
 from typing import Dict, List, Optional, Set, Tuple
 
+from dataclasses import fields
 from ast_nodes import (
     Program, Node, ModuleImport, Import, Library, QualifiedIdentifier,
     FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl, VarDecl, Assignment,
@@ -21,12 +22,103 @@ class ModuleError(Exception):
 
 # declarations that a module exports
 _DECLS = (FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl,
+          VarDecl,            # module state (11.1) is part of a module too
           Import, Library)
 
 
 def _decl_name(n: Node) -> Optional[str]:
     return getattr(n, 'name', None) if isinstance(
-        n, (FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl)) else None
+        n, (FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl,
+            VarDecl)) else None
+
+
+# ── renaming a module's own references (ISSUES/19) ─────────
+#
+# When a module is imported under an alias every one of its declarations is
+# mangled to `alias__name`. Its OWN code still says `name`, so those references
+# have to be rewritten in step or the module refers to symbols that no longer
+# exist — which is precisely how a pub function calling a pub sibling failed
+# with "unknown function".
+
+_NAME_FIELDS = {
+    'Identifier': ('name',),
+    'CallExpr': ('callee',),
+    'Assignment': ('name',),
+    'CompoundAssignment': ('name',),
+    'Increment': ('name',),
+    'StructInit': ('struct_name',),
+}
+_TYPE_FIELDS = {
+    'VarDecl': ('var_type',),
+    'ConstDecl': ('var_type',),
+    'ForEach': ('var_type',),
+    'FunctionDecl': ('return_type',),
+    'CastExpr': ('target_type',),
+}
+
+
+def _bound_names(fn) -> Set[str]:
+    """Names a function binds itself: parameters and local declarations.
+
+    A local of the same name SHADOWS the module's, so it must not be renamed.
+    Without this, a function with its own `count` would have that local
+    rewritten to `store__count` and silently read module state instead.
+    """
+    names = {pn for _pt, pn in getattr(fn, 'params', []) or []}
+
+    def walk(node):
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                walk(x)
+            return
+        if not isinstance(node, Node):
+            return
+        if isinstance(node, (VarDecl, ConstDecl)):
+            names.add(node.name)
+        if isinstance(node, ForEach):
+            names.add(node.var_name)
+        for f in fields(node):
+            walk(getattr(node, f.name))
+
+    walk(getattr(fn, 'body', []) or [])
+    return names
+
+
+def _rename_refs(node, mapping: Dict[str, str]):
+    """Rewrite every reference to one of this module's own declarations."""
+    if isinstance(node, list):
+        return [_rename_refs(x, mapping) for x in node]
+    if isinstance(node, tuple):
+        return tuple(_rename_refs(x, mapping) for x in node)
+    if not isinstance(node, Node):
+        return node
+
+    if isinstance(node, FunctionDecl):
+        # inside a function, drop the names it shadows
+        inner = {k: v for k, v in mapping.items() if k not in _bound_names(node)}
+        params = [(inner.get(pt, pt), pn) for pt, pn in (node.params or [])]
+        return FunctionDecl(
+            node.name, params,
+            inner.get(node.return_type, node.return_type),
+            _rename_refs(node.body, inner),
+            is_tool=node.is_tool, line=node.line,
+            type_params=node.type_params, type_bounds=node.type_bounds,
+            is_pub=node.is_pub)
+
+    kind = type(node).__name__
+    kwargs = {}
+    for f in fields(node):
+        val = getattr(node, f.name)
+        if kind in _NAME_FIELDS and f.name in _NAME_FIELDS[kind] and isinstance(val, str):
+            kwargs[f.name] = mapping.get(val, val)
+        elif kind in _TYPE_FIELDS and f.name in _TYPE_FIELDS[kind] and isinstance(val, str):
+            kwargs[f.name] = mapping.get(val, val)
+        else:
+            kwargs[f.name] = _rename_refs(val, mapping)
+    try:
+        return type(node)(**kwargs)
+    except TypeError:
+        return node
 
 
 def _parse_file(path: str) -> Program:
@@ -64,6 +156,17 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         mod = _parse_file(full)
         mod_dir = os.path.dirname(full)
 
+        # ISSUES/19 — every declaration of an aliased module is mangled and
+        # KEPT, pub or not. Privacy is enforced by name resolution below
+        # (`ns::name` refuses a non-pub symbol), not by deleting the symbol:
+        # deleting it also removed it from the module's own reach.
+        local_rename: Dict[str, str] = {}
+        if alias:
+            for n in mod.statements:
+                nm = _decl_name(n) if isinstance(n, _DECLS) else None
+                if nm:
+                    local_rename[nm] = f"{alias}__{nm}"
+
         for n in mod.statements:
             if isinstance(n, ModuleImport):
                 load(n.path, mod_dir, n.alias)
@@ -74,7 +177,10 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                         mangled = f"{alias}__{name}"
                         is_pub = getattr(n, 'is_pub', False)
                         aliased_exports[(alias, name)] = (mangled, is_pub)
-                        if is_pub:
+                        # rewrite this declaration's own references first, so a
+                        # call to a sibling follows the mangling
+                        n = _rename_refs(n, local_rename)
+                        if True:
                             if isinstance(n, FunctionDecl):
                                 mangled_node = FunctionDecl(mangled, n.params, n.return_type, n.body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
                             elif isinstance(n, StructDecl):
@@ -83,6 +189,8 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                                 mangled_node = EnumDecl(mangled, n.members, line=n.line, is_pub=n.is_pub)
                             elif isinstance(n, ConstDecl):
                                 mangled_node = ConstDecl(n.var_type, mangled, n.value, is_pub=n.is_pub)
+                            elif isinstance(n, VarDecl):
+                                mangled_node = VarDecl(n.var_type, mangled, n.value)
                             else:
                                 mangled_node = n
                             decls.append(mangled_node)
@@ -123,6 +231,22 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                     raise ModuleError(f"[Module Error] '{n.name}' is not pub in module '{n.namespace}'")
                 return Identifier(mangled, line=n.line)
             raise ModuleError(f"[Module Error] unknown symbol '{n.name}' in module '{n.namespace}'")
+
+        # A bare `ns::name` READ. The parser produces an Identifier whose name
+        # still contains '::' (QualifiedIdentifier covers other positions), so
+        # without this a pub module VARIABLE could not be read at all, and a
+        # private one failed with a misleading "undeclared variable".
+        if isinstance(n, Identifier) and '::' in n.name:
+            ns, _, vname = n.name.partition('::')
+            key = (ns, vname)
+            if key in aliased_exports:
+                mangled, is_pub = aliased_exports[key]
+                if not is_pub:
+                    raise ModuleError(
+                        f"[Module Error] '{vname}' is not pub in module '{ns}'")
+                return Identifier(mangled, line=n.line)
+            raise ModuleError(
+                f"[Module Error] unknown symbol '{vname}' in module '{ns}'")
 
         if isinstance(n, CallExpr) and '::' in n.callee:
             parts = n.callee.split('::', 1)

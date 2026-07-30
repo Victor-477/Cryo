@@ -1,0 +1,81 @@
+// ============================================================
+//  Roadmap 11.1 — module state
+//
+//  A top-level `var` is MODULE STATE: every function can read it
+//  and assign it. Before 11.1 top-level declarations were lowered
+//  into `main`, so a function referring to one failed with
+//  "undeclared variable" — which is why every stateful example
+//  had to keep its data inside a foreign block.
+//
+//  On the Pyro VM this uses two opcodes, GETGLOBAL (0x76) and
+//  SETGLOBAL (0x77), over a globals array shared by every frame.
+//  The go backend hoists the declaration to package scope and
+//  node emits it at module scope, so all engines agree.
+// ============================================================
+
+int[] tasks   = ["write", "test"];
+int  completed = 0;
+string title  = "sprint";
+
+// ── reading module state from a function ──
+fn total() -> int ={
+    return len(tasks);
+}
+
+// ── assigning it ──
+fn complete() ={
+    completed = completed + 1;
+}
+
+// ── mutating a module container ──
+fn add(string t) ={
+    tasks.push(t);
+}
+
+// ── compound assignment and increment reach it too ──
+fn bump(int by) ={
+    completed += by;
+    completed++;
+}
+
+// ── a local of the same name SHADOWS the module variable ──
+fn shadowed() -> int ={
+    int completed = 100;
+    completed = completed + 1;
+    return completed;
+}
+
+// ── so does a parameter ──
+fn param_shadows(string title) -> string ={
+    return title;
+}
+
+// ── a function may refer to a variable declared BELOW it:
+//    declaration order constrains initialisation, not visibility ──
+fn late() -> int ={
+    return declared_later;
+}
+
+int declared_later = 42;
+
+fn report() -> string ={
+    return title + ": " + to_string(completed) + "/" + to_string(total());
+}
+
+// ── the program ──
+add("ship");
+print(total());          // 3
+
+complete();
+print(completed);        // 1
+
+bump(2);
+print(completed);        // 4   (1 + 2, then ++)
+
+print(shadowed());       // 101 — the local, not the module variable
+print(completed);        // 4   — module state untouched by the shadow
+
+print(param_shadows("argument"));   // argument
+print(late());           // 42
+print(report());         // sprint: 4/3
+print(tasks);            // [write, test, ship]

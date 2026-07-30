@@ -43,7 +43,7 @@ class TraitDecl(Node):
 
 @dataclass
 class ImplDecl(Node):
-    trait_name:  str
+    trait_name:  Optional[str]
     target_type: str
     methods:     List['FunctionDecl']
     line:        int = 0
@@ -67,6 +67,12 @@ class MatchCase(Node):
     pattern_vars: List[str]   # ex: ["v"]
     body:         List[Node]  # Block instructions
     line:         int = 0
+    # Roadmap 11.4 — `Ok(v) if v > 0 => ...`. The parser lowers guards away
+    # (same-constructor cases collapse into one case holding an if/else chain),
+    # so this only ever holds a value between _match_stmt parsing a case and
+    # _lower_match_guards rewriting it. No code generator sees it set, which is
+    # why guards needed no backend changes.
+    guard:        Optional[Node] = None
 
 @dataclass
 class MatchStatement(Node):
@@ -233,6 +239,18 @@ class QualifiedIdentifier(Node):
 class Library(Node):
     name: str
     lang: str = ""   # foreign language to which the library belongs (e.g.: "c", "go")
+
+@dataclass
+class PermissionsDecl(Node):
+    """Roadmap 11.12 — what the program declares it needs.
+
+    `grants` maps a capability name (read/write/net/exec/env) to the values
+    granted for it. The compiler refuses an undeclared capability, and the
+    same list is embedded in the artifact so the runtime enforces it.
+    """
+    grants: Dict[str, List[str]]
+    line:   int = 0
+
 
 @dataclass
 class ForeignBlock(Node):

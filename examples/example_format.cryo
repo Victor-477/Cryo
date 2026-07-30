@@ -1,0 +1,79 @@
+// ============================================================
+//  Format specs in string interpolation  (roadmap 11.3)
+//
+//      "${expr:[[fill]align][0][width][,][.prec][type]}"
+//
+//  A subset of the Python/Rust format mini-language. Everything is
+//  desugared in the front end, so pyro, go and node all run the
+//  same code and print the same bytes.
+//
+//  Run:  python Burnout/pyro.py run Cryo/examples/example_format.cryo
+// ============================================================
+
+// ── the case that motivated it: an aligned report ────────────
+// Before 11.3 this needed manual pad_start/pad_end on every cell.
+string[] items = ["Widget", "Gasket", "Flange assembly"];
+number[] prices = [4.5, 12.0, 1234.567];
+int[] qty = [3, 12, 1250];
+
+print("${\"ITEM\":<18}${\"QTY\":>7}${\"UNIT\":>12}${\"TOTAL\":>14}");
+print("${\"\":-<51}");
+
+number grand = 0.0;
+for (int i = 0; i < len(items); i = i + 1) {
+    number line = prices[i] * to_number(qty[i]);
+    grand = grand + line;
+    print("${items[i]:<18}${qty[i]:>7,d}${prices[i]:>12,.2f}${line:>14,.2f}");
+}
+print("${\"\":-<51}");
+print("${\"GRAND TOTAL\":<18}${grand:>33,.2f}");
+
+// ── precision ────────────────────────────────────────────────
+number pi = 3.14159265;
+print("");
+print("pi to 2dp     : ${pi:.2f}");
+print("pi to 4dp     : ${pi:.4f}");
+print("pi to 0dp     : ${pi:.0f}");          // no decimal point at all
+print("an int as .2f : ${7:.2f}");           // 7.00
+print("trailing zero : ${0.5:.3f}");         // 0.500, not 0.5
+
+// Rounding is half-away-from-zero, matching round() in the VMs
+// (C's round() and Go's math.Round) rather than Python's banker's
+// rounding — so 0.125 goes up, and -0.125 goes down.
+print("half up       : ${0.125:.2f}");       // 0.13
+print("half down     : ${0.0 - 0.125:.2f}"); // -0.13
+
+// ── thousands separators ─────────────────────────────────────
+print("");
+print("grouped int   : ${1000000:,d}");
+print("grouped float : ${1234567.891:,.2f}");
+print("negative      : ${0 - 1234567:,d}");
+print("under a 1000  : ${999:,d}");          // untouched
+
+// ── width, fill and alignment ────────────────────────────────
+print("");
+print("left    : [${\"cryo\":<10}]");
+print("right   : [${\"cryo\":>10}]");
+print("centre  : [${\"cryo\":^10}]");
+print("dots    : [${\"cryo\":.>10}]");        // any fill char before the align
+print("zeros   : [${42:05d}]");
+print("neg zero: [${0 - 42:05d}]");          // the sign stays in front: -0042
+print("too wide: [${123456:3d}]");           // never truncates a number
+
+// ── percent, and cutting a string ────────────────────────────
+print("");
+print("ratio   : ${0.4567:.1%}");            // 45.7%
+print("whole   : ${0.5:.0%}");               // 50%
+print("cut to 4: ${\"cryogenic\":.4s}");      // cryo
+
+// ── what the spec will NOT do ────────────────────────────────
+// A colon that belongs to a ternary is left alone, so this still
+// prints 10 rather than being read as a width of 2:
+int n = 5;
+print("");
+print("ternary : ${n > 3 ? 10 : 2}");
+
+// A misspelled spec is a compile error, not a spec that silently
+// disappears. Uncomment to see the message:
+//   print("${pi:>4q}");   // unsupported format spec '>4q'
+//   print("${pi:.2}");    // '.2' needs a type: '.2f' or '.2s'

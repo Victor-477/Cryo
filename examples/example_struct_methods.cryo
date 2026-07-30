@@ -1,0 +1,20 @@
+// Cryo Example — Struct methods without a trait (impl StructName)
+
+struct Person {
+    string name;
+    int age;
+}
+
+impl Person {
+    fn greet() -> string ={
+        return "Hello, I am " + this.name;
+    }
+
+    fn celebrate_birthday(int years) -> int ={
+        return this.age + years;
+    }
+}
+
+Person p = Person { name: "Alice", age: 30 };
+print(p.greet());
+print(to_string(p.celebrate_birthday(1)));

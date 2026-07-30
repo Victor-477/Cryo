@@ -1,0 +1,147 @@
+// ============================================================
+//  app.cryo — a task tracker, written entirely in Cryo
+//  Roadmap 11.10 — the reference application
+//
+//  NO FOREIGN BLOCKS ANYWHERE. Every line is Cryo, running on the
+//  Pyro VM or compiled to a standalone binary. It exists to prove
+//  Phase 11 Track B, and to find what is still missing.
+//
+//  What it uses:
+//    11.1  module state — each module keeps its own data
+//    11.6  http_listen / http_accept / http_respond
+//    11.7  file_exists / read_file
+//    11.8  write_file_atomic — a crash cannot truncate the data
+//    10.8  modules with namespaces, and (ISSUES/19) libraries
+//          with private internals behind a pub API
+//
+//  Run:
+//    python Burnout/cryoc.py Cryo/examples/taskapp/app.cryo \
+//        --backend pyro -o build/taskapp.pyro --run
+//
+//    python Burnout/pyro.py build Cryo/examples/taskapp/app.cryo \
+//        -o build/taskapp          # standalone, no VM at runtime
+//
+//  Then open http://localhost:8080/?token=secret
+//
+//    PORT=9000 TASKS_TOKEN=hunter2 TASKS_FILE=my.json taskapp
+//
+//  Auth (when TASKS_TOKEN is set): `Authorization: Bearer <token>`,
+//  or `?token=...` so the browser UI can be opened with a plain URL.
+//
+//  Endpoints:
+//    GET  /                       the UI
+//    GET  /api/tasks              the list
+//    POST /api/tasks              body = the title
+//    POST /api/tasks/complete?id=N
+//    POST /api/tasks/delete?id=N
+//    GET  /api/stats
+// ============================================================
+
+import "tasks.cryo" as tasks;
+import "http.cryo"  as web;
+import "web.cryo"   as ui;
+
+// ── configuration, from the environment ───────────────────
+
+fn config_port() -> int ={
+    string p = env("PORT");
+    if (len(p) == 0) { return 8080; }
+    return to_int(p);
+}
+
+fn config_file() -> string ={
+    string f = env("TASKS_FILE");
+    if (len(f) == 0) { return "tasks.json"; }
+    return f;
+}
+
+fn config_limit() -> int ={
+    return 120;
+}
+
+// ── routing ───────────────────────────────────────────────
+// Returns "<status>|<content-type>|<body>", so one function
+// decides the whole response and `main` only writes it.
+
+fn route(map<string,string> req) -> string ={
+    string method = req["method"];
+    string path   = req["path"];
+    string query  = req["query"];
+    string body   = req["body"];
+
+    if (path == "/" && method == "GET") {
+        return "200|text/html|" + ui::page();
+    }
+
+    if (!web::authorized(req)) {
+        return "401|application/json|" + web::json_error("unauthorized");
+    }
+
+    if (path == "/api/tasks" && method == "GET") {
+        return "200|application/json|" + tasks::to_json();
+    }
+
+    if (path == "/api/tasks" && method == "POST") {
+        string title = trim(body);
+        if (len(title) == 0) {
+            return "400|application/json|" + web::json_error("title is required");
+        }
+        if (len(title) > config_limit()) {
+            return "400|application/json|"
+                 + web::json_error("title must be 120 characters or fewer");
+        }
+        int id = tasks::add(title);
+        return "201|application/json|{\"id\":" + to_string(id) + "}";
+    }
+
+    if (path == "/api/tasks/complete" && method == "POST") {
+        int id = web::param_int(query, "id", 0);
+        if (!tasks::complete(id)) {
+            return "404|application/json|" + web::json_error("no task with that id");
+        }
+        return "200|application/json|{\"ok\":true}";
+    }
+
+    if (path == "/api/tasks/delete" && method == "POST") {
+        int id = web::param_int(query, "id", 0);
+        if (!tasks::remove_task(id)) {
+            return "404|application/json|" + web::json_error("no task with that id");
+        }
+        return "200|application/json|{\"ok\":true}";
+    }
+
+    if (path == "/api/stats" && method == "GET") {
+        return "200|application/json|" + tasks::stats_json();
+    }
+
+    return "404|application/json|" + web::json_error("no such route");
+}
+
+// ── the server ────────────────────────────────────────────
+
+int port = config_port();
+string data_file = config_file();
+
+web::set_token(env("TASKS_TOKEN"));
+tasks::load(data_file);
+
+if (!http_listen(port)) {
+    print("could not bind port " + to_string(port));
+} else {
+    print("taskapp listening on http://localhost:" + to_string(port));
+    print("  storing " + to_string(tasks::count()) + " task(s) in " + data_file);
+
+    while (true) {
+        map<string,string> req = http_accept();
+        // http_accept always returns a map; an empty method means the
+        // connection failed or the request was malformed.
+        if (len(req["method"]) > 0) {
+            string res = route(req);
+            int bar1 = find(res, "|");
+            string status = res[0..bar1];
+            string rest = res[bar1 + 1..];
+            int bar2 = find(rest, "|");
+            http_respond(to_int(status), rest[0..bar2], rest[bar2 + 1..]);
+        }
+    }
+}
