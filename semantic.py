@@ -67,10 +67,28 @@ BUILTINS: Set[str] = {
 class _Scope:
     def __init__(self):
         self.stack: List[Set[str]] = [set()]
+        # 11.34 — the DECLARED type of each name, when it has one. Not a type
+        # checker: just enough to answer "is this thing an enum" at the one
+        # place that has to refuse. Kept parallel to `stack` so it pushes and
+        # pops with it.
+        self.types: List[Dict[str, str]] = [{}]
 
-    def push(self): self.stack.append(set())
-    def pop(self):  self.stack.pop()
-    def declare(self, name: str): self.stack[-1].add(name)
+    def push(self):
+        self.stack.append(set()); self.types.append({})
+
+    def pop(self):
+        self.stack.pop(); self.types.pop()
+
+    def declare(self, name: str, var_type: str = None):
+        self.stack[-1].add(name)
+        if var_type:
+            self.types[-1][name] = var_type
+
+    def type_of(self, name: str):
+        for layer in reversed(self.types):
+            if name in layer:
+                return layer[name]
+        return None
     def has(self, name: str) -> bool:
         return any(name in s for s in self.stack)
 
@@ -203,7 +221,7 @@ class _Checker:
         if isinstance(n, (VarDecl, ConstDecl)):
             if n.value is not None:
                 self.check_expr(n.value, scope)
-            scope.declare(n.name)
+            scope.declare(n.name, getattr(n, 'var_type', None))
         elif isinstance(n, Assignment):
             if not self._known_var(n.name, scope):
                 self.err(0, f"[Semantic Error] assignment to undeclared variable '{n.name}'")
@@ -393,6 +411,65 @@ class _Checker:
                 or name in self.enum_members or name in self.type_names
                 or name in self.fn_arity)   # function name = 1st class value
 
+    def _data_enum_of(self, n: Node, scope: _Scope):
+        """The enum name, if `n` is a value of a data-carrying enum.
+
+        Only two shapes are recognised, and deliberately so: a variable with a
+        declared enum type, and a direct call to a variant constructor. This is
+        not a type checker and must not pretend to be one — guessing wrong here
+        would reject a correct program, which is far worse than missing a case.
+        """
+        if isinstance(n, Identifier):
+            t = scope.type_of(n.name)
+            # Data-carrying only. A payload-less enum compiles to an integer
+            # constant on every backend, so `??` on one is merely pointless
+            # rather than broken — and refusing it would reject code that
+            # works today for no gain.
+            if t and t in self.enum_defs and any(
+                    m.fields for m in self.enum_defs[t].members):
+                return t
+            return None
+        if isinstance(n, CallExpr):
+            enum = self.member_to_enum.get(n.callee)
+            if enum and any(m.fields for m in self.enum_defs[enum].members):
+                return enum
+        return None
+
+    def _check_coalesce(self, n: BinaryExpr, scope: _Scope):
+        """`a ?? b` where `a` is a data-carrying enum: refuse it (11.34).
+
+        `??` answers "is this null". An `Err("no")` is not null, so the
+        operator did the only thing it could and returned the value itself —
+        which on pyro and node meant printing the tagged map,
+        `{tag: Err, val0: no}`, leaking the representation into user output;
+        on go it did not compile at all.
+
+        It is tempting to make `r ?? 9` mean "the Ok payload, else 9". The
+        compiler cannot: `Result`, `Ok` and `Err` are ordinary user
+        declarations here — the language has no built-in Result and the parser
+        deliberately avoids those names (see _llm_outcome_enum) — so nothing
+        marks which variant is the successful one. Picking the first variant,
+        or the one called `Ok`, would be inventing a convention the language
+        does not otherwise have, and it would silently do the wrong thing for
+        an enum that happens to list its failure case first.
+
+        So this refuses, and names the construct that does work. `match` knows
+        which variant it has because the program says so.
+        """
+        enum = self._data_enum_of(n.left, scope)
+        if not enum:
+            return
+        line = getattr(n, 'line', 0) or getattr(n.left, 'line', 0)
+        self.err(line,
+                 f"[Semantic Error] '??' cannot be used on '{enum}', which is an "
+                 f"enum with data. '??' asks whether a value is null, and an "
+                 f"enum value never is — so it would just hand back the value "
+                 f"itself. Use `match` to say what each variant means:\n"
+                 f"    match (value) {{\n"
+                 f"        Ok(v)  => …\n"
+                 f"        Err(e) => …\n"
+                 f"    }}")
+
     def check_expr(self, n: Node, scope: _Scope):
         if n is None:
             return
@@ -439,6 +516,8 @@ class _Checker:
             for a in n.args:
                 self.check_expr(a, scope)
         elif isinstance(n, BinaryExpr):
+            if n.op == '??':
+                self._check_coalesce(n, scope)
             self.check_expr(n.left, scope); self.check_expr(n.right, scope)
         elif isinstance(n, UnaryExpr):
             self.check_expr(n.operand, scope)
