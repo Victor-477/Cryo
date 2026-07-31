@@ -17,6 +17,7 @@
 # ============================================================
 from typing import Dict, List, Set, Tuple
 
+import diagnostics as _dx          # 11.24 — suggestions and carets
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
@@ -73,6 +74,13 @@ class _Scope:
     def has(self, name: str) -> bool:
         return any(name in s for s in self.stack)
 
+    def visible(self) -> Set[str]:
+        """Every name in scope — the candidate pool for a suggestion."""
+        out: Set[str] = set()
+        for layer in self.stack:
+            out |= layer
+        return out
+
 
 # Roadmap 11.12 — which permission each gated builtin requires. Mirrors the
 # runtime gates in pyro_runtime.c / main.go; a builtin missing from here would
@@ -89,8 +97,13 @@ GATED_BUILTINS = {
 
 
 class _Checker:
-    def __init__(self, program: Program):
+    def __init__(self, program: Program, source: str = None, path: str = None):
         self.program = program
+        # 11.24 — the source text, so an error can be shown against the line it
+        # is about instead of merely numbered. Optional: the checker still
+        # works when handed only an AST.
+        self.source = source
+        self.path = path
         self.errors: List[str] = []
         self.fn_arity: Dict[str, int] = {}
         self.enum_members: Set[str] = set()     # 'Nivel_ALTO'
@@ -106,8 +119,11 @@ class _Checker:
         self.type_names: Set[str] = set()        # struct/enum/schema (usable in schema_of etc.)
         self.loop_depth = 0
 
-    def err(self, line: int, msg: str):
-        self.errors.append((int(line or 0), msg))
+    def err(self, line: int, msg: str, needle: str = None, note: str = ''):
+        # 11.24 — `needle` is the text to underline on that line, and `note`
+        # the suggestion. Both are optional so the dozens of existing call
+        # sites keep working unchanged.
+        self.errors.append((int(line or 0), msg, needle, note))
 
     # ── top-level declaration collection ───────────────────────
     def collect(self):
@@ -162,14 +178,14 @@ class _Checker:
 
     def run(self):
         self.analyze()
-        if self.errors:
-            def fmt(e):
-                line, msg = e
-                return (f"Line {line}: " if line else "") + msg
-            raise SemanticError(
-                "semantic analysis found "
-                f"{len(self.errors)} problem(s):\n  - "
-                + "\n  - ".join(fmt(e) for e in self.errors))
+        if not self.errors:
+            return
+        # Every problem the pass found, each shown against its own line.
+        # Reporting one at a time costs a recompile per mistake.
+        n = len(self.errors)
+        head = f"semantic analysis found {n} problem{'s' if n != 1 else ''}:"
+        raise SemanticError(
+            head + "\n\n" + _dx.render_all(self.source, self.errors, self.path))
 
     def check_function(self, fn: FunctionDecl):
         scope = _Scope()
@@ -364,6 +380,13 @@ class _Checker:
                      f"it to the permissions block, e.g. "
                      f"permissions {{ {need} = \"...\"; }}")
 
+    def _var_candidates(self, scope: _Scope):
+        """Exactly what _known_var accepts — so a suggestion always names
+        something the reader can actually write here."""
+        return (list(scope.visible()) + list(self.global_consts)
+                + list(self.global_vars) + list(self.enum_members)
+                + list(self.type_names) + list(self.fn_arity))
+
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
                 or name in self.global_vars
@@ -375,13 +398,24 @@ class _Checker:
             return
         if isinstance(n, Identifier):
             if not self._known_var(n.name, scope):
-                self.err(n.line, f"[Semantic Error] undeclared variable '{n.name}'")
+                # 11.24 — the pool is what is actually reachable here: names
+                # in scope, module state, constants and enum members. A
+                # suggestion drawn from anything wider would point at
+                # something the reader still could not use.
+                self.err(n.line,
+                         f"[Semantic Error] undeclared variable '{n.name}'",
+                         needle=n.name,
+                         note=_dx.hint(n.name, self._var_candidates(scope)))
         elif isinstance(n, CallExpr):
             self.check_permission(n.callee, n.line)   # 11.12
             if n.callee in BUILTINS or scope.has(n.callee):
                 pass   # builtin or indirect call via function type variable
             elif n.callee not in self.fn_arity:
-                self.err(n.line, f"[Semantic Error] unknown function '{n.callee}'")
+                self.err(n.line,
+                         f"[Semantic Error] unknown function '{n.callee}'",
+                         needle=n.callee,
+                         note=_dx.hint(n.callee,
+                                       list(self.fn_arity) + sorted(BUILTINS)))
             elif len(n.args) != self.fn_arity[n.callee]:
                 self.err(n.line,
                          f"function '{n.callee}' expects "
@@ -430,11 +464,25 @@ class _Checker:
         # Literal and others: nothing to check
 
 
-def check(program: Program) -> None:
-    """Runs semantic analysis; raises SemanticError if there are problems."""
-    _Checker(program).run()
+def check(program: Program, source: str = None, path: str = None) -> None:
+    """Runs semantic analysis; raises SemanticError if there are problems.
+
+    `source`/`path` are optional so every existing caller keeps working; when
+    they are given, each error is rendered against the line it is about.
+    """
+    _Checker(program, source, path).run()
 
 
 def findings(program: Program):
-    """Returns the list of (line, message) without raising — used by LSP."""
-    return _Checker(program).analyze()
+    """(line, message) pairs without raising — used by the LSP.
+
+    Errors carry an underline target and a hint since 11.24; this keeps the
+    two-field shape the LSP expects, with the hint folded into the message so
+    the suggestion still reaches the editor.
+    """
+    out = []
+    for e in _Checker(program).analyze():
+        line, msg = e[0], e[1]
+        note = e[3] if len(e) > 3 else ''
+        out.append((line, msg + (f" —{note}" if note else '')))
+    return out
