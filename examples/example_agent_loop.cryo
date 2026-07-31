@@ -1,0 +1,96 @@
+// ============================================================
+//  Agent loop  (roadmap 11.20)
+//
+//      match agent_try(model, task, opts) {
+//          LlmOk(answer)        => ...
+//          LlmFailed(kind, why) => ...
+//      }
+//
+//  An agent is a loop: the model asks for a tool, the runtime
+//  runs it, the result goes back, repeat until an answer. What
+//  11.20 changed is what happens when that does not go smoothly.
+//
+//  Build (the LLM layer targets the go backend):
+//      python Burnout/cryoc.py Cryo/examples/example_agent_loop.cryo \
+//             --backend go -o /tmp/agent.go
+// ============================================================
+
+// ── the tools ────────────────────────────────────────────────
+// A `tool fn` is an ordinary function; its JSON Schema is derived
+// from the signature, so there is nothing to keep in step by hand.
+
+tool fn add(int a, int b) -> int ={
+    return a + b;
+}
+
+tool fn divide(int a, int b) -> int ={
+    // No guard on b. If the model passes 0 this aborts — and that
+    // used to take the whole program with it. Now it comes back as
+    // {"error": "tool \"divide\" failed: ... DivByZero ..."} and
+    // the model gets to try something else.
+    return a / b;
+}
+
+tool fn lookup(string sku) -> string ={
+    if (sku == "A1") { return "widget"; }
+    return "unknown sku";
+}
+
+// ── the loop ─────────────────────────────────────────────────
+match agent_try("gpt-4o-mini", "What is 12 divided by 4, plus 7?", {
+    "steps": 6,
+    "tools": ["add", "divide"],
+    "temperature": 0.0
+}) {
+    LlmOk(answer) => {
+        print("answer: ${answer}");
+    }
+    // The step budget is a real outcome now. It used to end the
+    // loop with an empty string — the same thing an agent that
+    // simply had nothing to say returns.
+    LlmFailed(kind, why) if kind == "step_budget" => {
+        print("gave up: ${why}");
+    }
+    LlmFailed(kind, why) => {
+        print("[${kind}] ${why}");
+    }
+}
+
+// ── several tools at once ────────────────────────────────────
+// When the model asks for more than one tool in a step, they run
+// TOGETHER. It chose them without seeing any of their results,
+// so they cannot depend on each other, and running them one after
+// the other only adds latency. Nothing to enable — reply with
+// `tool_calls: [...]` and it happens.
+match agent_try("gpt-4o-mini", "Look up A1 and B2 and compare them.", {
+    "steps": 4,
+    "tools": ["lookup"]
+}) {
+    LlmOk(answer) => print("comparison: ${answer}");
+    LlmFailed(kind, why) => print("[${kind}] ${why}");
+}
+
+// ── long runs ────────────────────────────────────────────────
+// Tool results accumulate, and a long run eventually exceeds what
+// the model will accept. `max_context` caps the conversation in
+// bytes; when it is reached the OLDEST tool exchanges are dropped.
+// The task itself is never dropped — losing it leaves the model
+// working on a question it can no longer see.
+match agent_try("gpt-4o-mini", "Audit every SKU and summarise.", {
+    "steps": 40,
+    "max_context": 32000,
+    "tools": ["lookup"]
+}) {
+    LlmOk(summary) => print(summary);
+    LlmFailed(kind, why) => print("[${kind}] ${why}");
+}
+
+// ── notes ────────────────────────────────────────────────────
+// * A failing tool never ends the run. An unknown name, arguments
+//   that will not parse, or a tool that aborts all come back as
+//   {"error": ...} for the model to read and correct.
+// * `agent(...)` still exists and still returns "" on any failure;
+//   agent_try is the door when you need to know which failure.
+// * The outcome type is shared with llm_try (11.19), so the same
+//   kinds apply — transport, timeout, rate_limited, server_error,
+//   refused — plus step_budget.

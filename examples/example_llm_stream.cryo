@@ -43,9 +43,9 @@ print("assembled: ${full}");
 print("");
 
 // ── the underlying calls ─────────────────────────────────────
-// The for-each form is sugar over these three. Use them directly
-// when you need to do something between tokens — stop early,
-// count, or buffer until a sentence ends.
+// The for-each form is sugar over these. Use them directly when
+// you need to do something between tokens — stop early, count,
+// or buffer until a sentence ends.
 int h = llm_stream("gpt-4o-mini", "Count from one to twenty.", {
     "timeout": 10000
 });
@@ -55,7 +55,7 @@ while (llm_next(h)) {
     seen = seen + 1;
     print("${seen:>3}: ${t}");
     if (seen >= 5) {
-        // Leaving early: close the stream. The producer runs
+        // Leaving early: close the stream. The request runs
         // concurrently, and without this it stays blocked on a
         // full buffer — harmless in a script, a leak per request
         // in a server.

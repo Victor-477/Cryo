@@ -17,6 +17,8 @@
 #  can be unit-tested without touching the filesystem, and it is shared
 #  by both output modes of 10.13 (see `render`).
 # ============================================================
+import re
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -176,12 +178,35 @@ def render_html(mod: FrontendModule) -> str:
     CSS and JS are inlined rather than linked so the result opens correctly
     from a `file://` path; a linked stylesheet would work over http only.
     """
+    script = mod.script.code if mod.script else ''
+    _warn_if_calls_cryo(script)
     return _document(
         title=mod.title,
         style=mod.style.code if mod.style else '',
         body=mod.page.code,
-        script=mod.script.code if mod.script else '',
+        script=script,
     )
+
+
+_CRYO_CALL = re.compile(r'\bcryo\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)')
+
+
+def _warn_if_calls_cryo(script: str) -> None:
+    """`--emit html` inlines the javascript verbatim and ships no binary, so
+    the global `cryo` does not exist. A block that calls `cryo.something()`
+    therefore produces a page that looks right and dies on first interaction
+    with "cryo is not defined" — a failure the compiler can see coming and the
+    author cannot, since the page renders perfectly.
+    """
+    m = _CRYO_CALL.search(script) if script else None
+    if not m:
+        return
+    print(f"[Cryo front-end] warning: the javascript block calls "
+          f"`cryo.{m.group(1)}(...)`, but --emit html ships no binary, so "
+          f"`cryo` will be undefined in the browser.\n"
+          f"                 Use --emit pyro to compile this program's "
+          f"functions to app.wasm and expose them as `cryo`.",
+          file=sys.stderr)
 
 
 def render_pyro(mod: FrontendModule, binary: str = 'app.wasm') -> str:

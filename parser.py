@@ -42,6 +42,8 @@ _BUILTIN_NAMES = {
     'url_decode', 'url_encode',
     'asset', 'asset_names',
     'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
+    'llm_call', 'llm_try',                                # 11.19 outcomes
+    'agent_call', 'agent_try',                            # 11.20 agent
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
     'true', 'false', 'null'
@@ -1159,17 +1161,17 @@ class Parser:
     def _desugar_stream_loop(self, vtype, vname, call, body):
         """`for (string t in llm_stream(...))` -> a lazy while loop (11.17).
 
-        Streaming cannot use 11.5's `iter()` protocol: that returns a
-        materialised collection, and waiting for every token before the loop
-        starts is precisely what streaming exists to avoid. So the loop is
-        driven by advance/read instead —
+        Streaming deliberately does NOT use 11.5's `iter()` protocol: that
+        returns a materialised collection, and waiting for every token before
+        the loop body runs once is precisely what streaming exists to avoid.
+        So the loop is driven by advance/read instead —
 
             int h = llm_stream(model, prompt, opts);
             while (llm_next(h)) { string t = llm_token(h); ... }
 
-        The handle is an `int`, deliberately: an `any` cannot be passed to a
-        typed parameter on the go backend (see 11.31), and go is the only
-        backend the LLM layer targets.
+        The handle is an `int` on purpose: an `any` cannot cross a typed
+        parameter on the go backend (11.31), and go is the only backend the
+        LLM layer targets.
         """
         h = f"__stream_{self._gen_id()}"
         return Block([
@@ -2205,7 +2207,74 @@ class Parser:
                 return self._desugar_all(args[0], args[1])
         if name == 'llm' and len(args) == 3:
             self._check_llm_options(args[2], id_line)   # 11.16
+        if name in ('llm_call', 'llm_stream') and len(args) == 3:
+            self._check_llm_options(args[2], id_line)
+        if name == 'llm_try' and 'llm_try' not in self.user_defined_fns:
+            return self._llm_try(args, id_line, 'llm_call')      # 11.19
+        if name == 'agent_try' and 'agent_try' not in self.user_defined_fns:
+            return self._llm_try(args, id_line, 'agent_call')    # 11.20
         return CallExpr(name, args, line=id_line)
+
+    # ── llm_try: the outcome as something you can match on (11.19) ──
+    #
+    #   match llm_try("model", "prompt", { "retries": 3 }) {
+    #       LlmOk(text)           => print(text);
+    #       LlmFailed(kind, why) if kind == "rate_limited" => backOff();
+    #       LlmFailed(kind, why)  => print("failed: ${kind}");
+    #   }
+    #
+    # Built entirely in the front end. `llm_call` is the one primitive the
+    # backend adds — it returns [kind, text|detail] — and everything above it
+    # is a synthetic enum plus one wrapper function per call site. The options
+    # are baked into the wrapper because 11.16 already requires them to be a
+    # map literal.
+    #
+    # The variants are NOT called Ok/Err: enum members land in the same
+    # namespace as the program's own, and a project with `enum Result { Ok…`
+    # is entirely likely. A silent clash is worse than a longer name.
+
+    def _llm_try(self, args, line: int, primitive: str = 'llm_call'):
+        if len(args) not in (2, 3):
+            raise ParseError(
+                f"[Syntax Error] Line {line}: this takes 2 arguments "
+                f"(model, prompt), or 3 with the options map")
+        if len(args) == 3:
+            self._check_llm_options(args[2], line)
+        self._llm_outcome_enum()
+        opts = args[2] if len(args) == 3 else MapLiteral([])
+        name = f"__cryo_llm_try_{self._gen_id()}"
+        self.user_defined_fns.add(name)
+        r = '__lt_r'
+        body = [
+            VarDecl('string[]', r,
+                    CallExpr(primitive, [Identifier('m'), Identifier('p'), opts],
+                             line=line)),
+            If(BinaryExpr('==', IndexAccess(Identifier(r), Literal('int', 0)),
+                          Literal('string', '')),
+               [Return(CallExpr('LlmOk',
+                                [IndexAccess(Identifier(r), Literal('int', 1))],
+                                line=line))],
+               None),
+            Return(CallExpr('LlmFailed',
+                            [IndexAccess(Identifier(r), Literal('int', 0)),
+                             IndexAccess(Identifier(r), Literal('int', 1))],
+                            line=line)),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('string', 'm'), ('string', 'p')],
+                         'LlmOutcome', body))
+        return CallExpr(name, [args[0], args[1]], line=line)
+
+    def _llm_outcome_enum(self):
+        """Declare `enum LlmOutcome { LlmOk(string), LlmFailed(string, string) }`
+        once, the first time llm_try is used."""
+        if getattr(self, '_llm_enum_done', False):
+            return
+        self._llm_enum_done = True
+        self.synthetic_fns.append(EnumDecl('LlmOutcome', [
+            EnumMember('LlmOk', ['string']),
+            EnumMember('LlmFailed', ['string', 'string']),
+        ]))
 
     # ── LLM generation controls (roadmap 11.16) ──────────────
     #
@@ -2223,6 +2292,11 @@ class Parser:
         'stop':        'a string, or an array of strings',
         'seed':        'an int',
         'timeout':     'an int (milliseconds)',
+        'repair':      'an int (how many times to re-ask on a bad reply)',
+        'retries':     'an int (transport retries, with backoff)',
+        'steps':       'an int (agent_try: how many tool rounds)',
+        'max_context': 'an int (agent_try: message budget, in bytes)',
+        'tools':       'an array of tool names (agent_try)',
     }
 
     def _check_llm_options(self, node, line: int):
@@ -2269,6 +2343,12 @@ class Parser:
         prove and leaves the rest to the provider.
         """
         want = self._LLM_OPTIONS[key]
+        if key == 'tools':
+            if not isinstance(v, ArrayLiteral):
+                raise ParseError(
+                    f"[Syntax Error] Line {line}: llm() option 'tools' takes "
+                    f"{want}, e.g. [\"search\", \"fetch\"]")
+            return
         if key == 'stop':
             if isinstance(v, Literal) and v.kind != 'string':
                 raise ParseError(
@@ -2277,7 +2357,8 @@ class Parser:
             return
         if not isinstance(v, Literal):
             return                       # an expression: cannot judge it here
-        if key in ('max_tokens', 'seed', 'timeout'):
+        if key in ('max_tokens', 'seed', 'timeout', 'repair', 'retries',
+                   'steps', 'max_context'):
             if v.kind != 'int':
                 raise ParseError(
                     f"[Syntax Error] Line {line}: llm() option '{key}' takes "
