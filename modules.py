@@ -121,6 +121,16 @@ def _rename_refs(node, mapping: Dict[str, str]):
         return node
 
 
+# 11.23 — set by the compiler to a Burnout.cache.ParseCache, and to a list that
+# collects (path, source) for every file actually read. The list is what the
+# artifact key is built from: it is the exact set of inputs this compilation
+# depended on, so a cached artifact can only be reused when all of them match.
+# Both stay None when the cache is off, and this module never imports Burnout —
+# the front end does not depend on the compiler driver.
+PARSE_CACHE = None
+READ_SOURCES = None
+
+
 def _parse_file(path: str) -> Program:
     from lexer import Lexer
     from parser import Parser
@@ -129,6 +139,15 @@ def _parse_file(path: str) -> Program:
             src = f.read()
     except OSError as e:
         raise ModuleError(f"[Module Error] could not read module '{path}': {e}")
+    if READ_SOURCES is not None:
+        READ_SOURCES.append((path, src))
+    if PARSE_CACHE is not None:
+        hit = PARSE_CACHE.get(src)
+        if hit is not None:
+            return hit
+        ast = Parser(Lexer(src).tokenize()).parse()
+        PARSE_CACHE.put(src, ast)
+        return ast
     return Parser(Lexer(src).tokenize()).parse()
 
 
