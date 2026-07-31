@@ -11,7 +11,7 @@ from ast_nodes import (
     CompoundAssignment, IndexAssignment, Increment, Return, If, While, For, DoWhile,
     ForEach, TryCatch, Block, Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr,
-    FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier
+    FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier, carry_meta
 )
 
 
@@ -97,13 +97,15 @@ def _rename_refs(node, mapping: Dict[str, str]):
         # inside a function, drop the names it shadows
         inner = {k: v for k, v in mapping.items() if k not in _bound_names(node)}
         params = [(inner.get(pt, pt), pn) for pt, pn in (node.params or [])]
-        return FunctionDecl(
+        fn = FunctionDecl(
             node.name, params,
             inner.get(node.return_type, node.return_type),
             _rename_refs(node.body, inner),
             is_tool=node.is_tool, line=node.line,
             type_params=node.type_params, type_bounds=node.type_bounds,
             is_pub=node.is_pub)
+        carry_meta(node, fn)
+        return fn
 
     kind = type(node).__name__
     kwargs = {}
@@ -116,9 +118,11 @@ def _rename_refs(node, mapping: Dict[str, str]):
         else:
             kwargs[f.name] = _rename_refs(val, mapping)
     try:
-        return type(node)(**kwargs)
+        new = type(node)(**kwargs)
     except TypeError:
         return node
+    carry_meta(node, new)
+    return new
 
 
 # 11.23 — set by the compiler to a Burnout.cache.ParseCache, and to a list that
@@ -238,7 +242,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
             rest.append(n)
 
     # Transform qualified names ns::member -> mangled name ns__member
-    def transform_node(n: Node) -> Node:
+    def _transform_raw(n: Node) -> Node:
         if n is None:
             return None
 
@@ -411,6 +415,25 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
             return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
 
         return n
+
+    def transform_node(n: Node) -> Node:
+        """_transform_raw, with the source position carried across.
+
+        _transform_raw rebuilds nodes to rewrite `ns::name` references, and it
+        passed `line=` on only a handful of them — CallExpr, Identifier, Lambda
+        — because `line` is a declared field on 16 of the 56 node classes and a
+        plain attribute on the other 40. Every statement rebuilt here therefore
+        arrived at the code generator with no line, and the .pyro debug section
+        came out nearly empty: three entries for a twenty-line program. Stack
+        traces and line breakpoints both read that section.
+
+        Doing it here rather than at each of the ~20 constructor calls means a
+        node type added later cannot reintroduce the bug by forgetting one.
+        """
+        out = _transform_raw(n)
+        if out is not n and isinstance(n, Node) and isinstance(out, Node):
+            carry_meta(n, out)
+        return out
 
     transformed_decls = [transform_node(d) for d in decls]
     transformed_rest = [transform_node(r) for r in rest]

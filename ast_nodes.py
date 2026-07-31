@@ -1,13 +1,43 @@
 # ============================================================
 #  Cryo Compiler - AST Nodes  (v0.2)
 # ============================================================
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Optional, List, Any, Tuple, Dict
 
 
 @dataclass
 class Node:
     pass
+
+
+def carry_meta(src, dst):
+    """Copy a node's source position onto a node rebuilt from it.
+
+    Several passes rewrite the tree by CONSTRUCTING replacement nodes rather
+    than mutating them — module resolution rewrites `ns::name`, monomorphize
+    substitutes type parameters. Each such constructor has to pass `line=`
+    explicitly, and they only did for a handful of node classes, because `line`
+    is a declared field on 16 of the 56 classes here and a plain attribute the
+    parser attaches on the other 40.
+
+    The result was silent and easy to miss: the program still compiled and ran
+    correctly, but arrived at the code generator with no line on anything
+    inside a function body, so the .pyro debug section held 3 entries for a
+    20-line program. That section is what stack traces and line breakpoints
+    read — a stack trace pointing at the wrong line is worse than none.
+
+    Call this after rebuilding a node, rather than adding `line=` to each
+    constructor call, so a node type added later cannot reintroduce it.
+    """
+    names = {f.name for f in fields(src)}
+    for k, v in vars(src).items():
+        if k not in names:
+            setattr(dst, k, v)
+    # And when the class DOES declare `line` but the rebuild forgot to pass it:
+    # the field default is 0, which must not be left standing over a real line.
+    ln = getattr(src, 'line', 0)
+    if ln and not getattr(dst, 'line', 0):
+        setattr(dst, 'line', ln)
 
 @dataclass
 class Program(Node):

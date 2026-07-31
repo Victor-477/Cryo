@@ -10,7 +10,7 @@ from ast_nodes import (
     Increment, Return, If, While, For, DoWhile, ForEach, Block,
     BinaryExpr, TernaryExpr, UnaryExpr,
     CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
-    ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier
+    ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier, carry_meta
 )
 
 
@@ -143,6 +143,18 @@ def lower_traits(program: Program) -> Program:
 
     # 4. Transform AST to rewrite trait method calls
     def transform_node(node: Node) -> Node:
+        """_transform_raw, with the source position carried across.
+
+        See ast_nodes.carry_meta: the rebuilds below pass `line=` on only a few
+        node classes, which emptied the .pyro debug section that stack traces
+        and line breakpoints read.
+        """
+        out = _transform_raw(node)
+        if out is not node and isinstance(node, Node) and isinstance(out, Node):
+            carry_meta(node, out)
+        return out
+
+    def _transform_raw(node: Node) -> Node:
         if node is None:
             return None
 

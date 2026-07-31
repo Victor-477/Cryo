@@ -47,7 +47,7 @@ from ast_nodes import (
     MatchCase, BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, MethodCallExpr,
     CallValueExpr, FieldAccess, IndexAccess, ArrayLiteral, MapLiteral,
     StructInit, Lambda, Identifier, Literal, CastExpr, UnwrapExpr, TryExpr,
-    SpawnExpr, AwaitExpr, Assert, SafetyBlock, ForeignBlock,
+    SpawnExpr, AwaitExpr, Assert, SafetyBlock, ForeignBlock, carry_meta,
 )
 
 _I64_MIN = -(1 << 63)
@@ -281,6 +281,20 @@ class _Rewriter:
         return node
 
     def stmt(self, node):
+        """_stmt_raw, with the source position carried across.
+
+        See ast_nodes.carry_meta. Substitution rebuilds every statement it
+        touches and none of the constructors below pass `line=`, so an
+        optimized build reached the code generator with the positions stripped
+        and produced a .pyro whose debug section — the one stack traces and
+        line breakpoints read — was nearly empty.
+        """
+        out = self._stmt_raw(node)
+        if out is not node and isinstance(node, Node) and isinstance(out, Node):
+            carry_meta(node, out)
+        return out
+
+    def _stmt_raw(self, node):
         if node is None:
             return None
         if isinstance(node, VarDecl):
@@ -459,6 +473,18 @@ def _prune_dead(body, reads, module_names):
 
 
 def _prune_inside(s, reads, module_names):
+    """_prune_inside_raw, with the source position carried across.
+
+    See ast_nodes.carry_meta — pruning a dead local out of a loop body must not
+    also drop the loop's own line number.
+    """
+    out = _prune_inside_raw(s, reads, module_names)
+    if out is not s and isinstance(s, Node) and isinstance(out, Node):
+        carry_meta(s, out)
+    return out
+
+
+def _prune_inside_raw(s, reads, module_names):
     if isinstance(s, If):
         return If(s.condition, _prune_dead(s.then_body, reads, module_names),
                   _prune_dead(s.else_body, reads, module_names)
