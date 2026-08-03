@@ -2,12 +2,31 @@
 //  Cryo self-hosting — Parser written in Cryo (Phase 9.3, stage 2)
 //
 //  Recursive-descent: tokens (from lexer.cryo) -> AST serialized as an
-//  S-expression. Replicates the SAME precedence and the same shapes as
-//  the reference parser (cryo/parser.py), for a subset: function
-//  declarations, var decl, assignment, return, if/else, while,
-//  expression-statement; expressions with the precedence chain
-//  || < && < ==,!= < <,>,<=,>= < +,- < *,/,% < unary -,! ; primaries
-//  int/float/string/bool/ident/call/parentheses.
+//  S-expression. Replicates the SAME precedence and the same shapes as the
+//  reference parser (cryo/parser.py), and test_selfhost.py compares the two
+//  statement by statement against the reference AST as the oracle.
+//
+//  COVERED
+//    statements   fn, var, assignment (plain, compound, ++/--, a[i] = v),
+//                 return, if/else-if/else, while, C-style for, for-in,
+//                 range for, break, continue, struct, enum, match
+//    expressions  the full precedence chain, matching the reference:
+//                 ternary < || < && < ?? < | < ^ < & < ==,!= < <,>,<=,>=
+//                          < <<,>> < +,- < *,/,% < unary -,!,~ < postfix
+//    postfix      a[i], a[i..j] slices, a.f, chained
+//    primaries    int/float/string/bool/null/ident/call/parens,
+//                 array literals, new S{...}, string interpolation
+//
+//  NOT COVERED — and the reason is the same for all of them: each is a
+//  DESUGARING in the reference, not just a shape. try/catch, switch, lambdas
+//  (map/filter/reduce lower to synthetic functions), map literals, `as` casts,
+//  imports, generics and traits. Matching those means reproducing the
+//  lowering, not adding a parse rule.
+//
+//  Two behaviours here are desugarings that WERE reproduced, because they are
+//  common enough that skipping them would make the comparison misleading:
+//  a range for-loop becomes a C-style for, and an interpolated string becomes
+//  a concatenation.
 //
 //  The cursor is an int[] pos "box" (arrays are by-reference), so the
 //  functions share the position without mutable global variables.
@@ -27,6 +46,13 @@ fn pv(string[] tv, int[] pos) -> string ={
     if (pos[0] < len(tv)) { return tv[pos[0]]; }
     return "";
 }
+// token k places ahead — the two-token lookahead above is not enough to tell
+// `for (int i = 0; …)` from `for (int v in xs)`, or a struct-typed declaration
+// from an index assignment (11.28).
+fn ptn(string[] tt, int[] pos, int k) -> string ={
+    if (pos[0] + k < len(tt)) { return tt[pos[0] + k]; }
+    return "EOF";
+}
 fn adv(int[] pos) -> void ={
     pos[0] = pos[0] + 1;
 }
@@ -34,10 +60,47 @@ fn isTypeTok(string t) -> bool ={
     return t == "TYPE_INT" || t == "TYPE_NUMBER" || t == "TYPE_STRING"
         || t == "TYPE_BOOL" || t == "TYPE_VOID";
 }
+// index just past the ']' that closes the '[' at `start`. Used to decide
+// whether `a[i]` begins an assignment or is just an expression: the answer is
+// the token AFTER the bracket, and there is no bound on what is inside it.
+fn afterBracket(string[] tt, int start) -> int ={
+    int depth = 0;
+    int i = start;
+    while (i < len(tt)) {
+        if (tt[i] == "LBRACKET") { depth = depth + 1; }
+        if (tt[i] == "RBRACKET") {
+            depth = depth - 1;
+            if (depth == 0) { return i + 1; }
+        }
+        i = i + 1;
+    }
+    return i;
+}
+fn isCompoundAssign(string t) -> bool ={
+    return t == "PLUS_ASSIGN" || t == "MINUS_ASSIGN" || t == "STAR_ASSIGN"
+        || t == "SLASH_ASSIGN" || t == "PERCENT_ASSIGN";
+}
 
 // ── expressions (increasing precedence) ──────────────────────
 fn pExpr(string[] tt, string[] tv, int[] pos) -> string ={
-    return pOr(tt, tv, pos);
+    return pTernary(tt, tv, pos);
+}
+
+// The chain below mirrors the reference exactly (11.28):
+//   ternary < || < && < ?? < | < ^ < & < ==,!= < <,>,<=,>= < <<,>> < +,- < *,/,%
+// Precedence is not cosmetic here — a level in the wrong place parses
+// `a & b == c` into the other tree and the S-expressions diverge, which is
+// precisely what the oracle comparison catches.
+fn pTernary(string[] tt, string[] tv, int[] pos) -> string ={
+    string cond = pOr(tt, tv, pos);
+    if (pt(tt, pos) == "QUESTION") {
+        adv(pos);
+        string a = pTernary(tt, tv, pos);
+        if (pt(tt, pos) == "COLON") { adv(pos); }
+        string b = pTernary(tt, tv, pos);
+        return "(tern " + cond + " " + a + " " + b + ")";
+    }
+    return cond;
 }
 
 fn pOr(string[] tt, string[] tv, int[] pos) -> string ={
@@ -50,8 +113,44 @@ fn pOr(string[] tt, string[] tv, int[] pos) -> string ={
     return left;
 }
 fn pAnd(string[] tt, string[] tv, int[] pos) -> string ={
-    string left = pEq(tt, tv, pos);
+    string left = pCoal(tt, tv, pos);
     while (pt(tt, pos) == "AND") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pCoal(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pCoal(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pBitOr(tt, tv, pos);
+    while (pt(tt, pos) == "NULL_COAL") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pBitOr(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pBitOr(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pBitXor(tt, tv, pos);
+    while (pt(tt, pos) == "PIPE") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pBitXor(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pBitXor(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pBitAnd(tt, tv, pos);
+    while (pt(tt, pos) == "CARET") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pBitAnd(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pBitAnd(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pEq(tt, tv, pos);
+    while (pt(tt, pos) == "AMP") {
         string op = pv(tv, pos); adv(pos);
         string right = pEq(tt, tv, pos);
         left = "(bin " + op + " " + left + " " + right + ")";
@@ -68,9 +167,18 @@ fn pEq(string[] tt, string[] tv, int[] pos) -> string ={
     return left;
 }
 fn pCmp(string[] tt, string[] tv, int[] pos) -> string ={
-    string left = pAdd(tt, tv, pos);
+    string left = pShift(tt, tv, pos);
     while (pt(tt, pos) == "LT" || pt(tt, pos) == "GT"
         || pt(tt, pos) == "LEQ" || pt(tt, pos) == "GEQ") {
+        string op = pv(tv, pos); adv(pos);
+        string right = pShift(tt, tv, pos);
+        left = "(bin " + op + " " + left + " " + right + ")";
+    }
+    return left;
+}
+fn pShift(string[] tt, string[] tv, int[] pos) -> string ={
+    string left = pAdd(tt, tv, pos);
+    while (pt(tt, pos) == "SHL" || pt(tt, pos) == "SHR") {
         string op = pv(tv, pos); adv(pos);
         string right = pAdd(tt, tv, pos);
         left = "(bin " + op + " " + left + " " + right + ")";
@@ -97,24 +205,161 @@ fn pMul(string[] tt, string[] tv, int[] pos) -> string ={
 }
 fn pUnary(string[] tt, string[] tv, int[] pos) -> string ={
     string t = pt(tt, pos);
-    if (t == "MINUS" || t == "NOT") {
+    if (t == "MINUS" || t == "NOT" || t == "TILDE") {
         string op = pv(tv, pos); adv(pos);
         string operand = pUnary(tt, tv, pos);
         return "(un " + op + " " + operand + ")";
     }
     return pPrimary(tt, tv, pos);
 }
+// A string with `${…}` is NOT a string in the reference AST — it is a
+// concatenation, and matching that was the last divergence in stage 2 (11.28).
+//
+// The fragment inside the braces is lexed and parsed on its own, which is what
+// the reference does too: a sub-parser over just that text. Nested braces are
+// counted so `${ m["a"] }` and `${ f({x: 1}) }` close on the right one.
+fn parseFragment(string frag) -> string ={
+    string[] ft = [];
+    string[] fv = [];
+    lex(frag, ft, fv);
+    int[] fp = [0];
+    return pExpr(ft, fv, fp);
+}
+
+fn pStrLit(string[] tt, string[] tv, int[] pos) -> string ={
+    // The needle is written "\${" — escaped. A Cryo parser written in
+    // Cryo has to name the interpolation marker as DATA, and until 11.39 that
+    // was impossible: the literal interpolated itself and this file would not
+    // compile.
+    string v = pv(tv, pos); adv(pos);
+    if (find(v, "\${") < 0) { return "(str " + v + ")"; }
+
+    string acc = "";
+    bool have = false;
+    int i = 0;
+    int n = len(v);
+    while (i < n) {
+        string rest = substr(v, i, n - i);
+        int j = find(rest, "\${");
+        if (j < 0) {
+            if (len(rest) > 0) {
+                if (have) { acc = "(bin + " + acc + " (str " + rest + "))"; }
+                else      { acc = "(str " + rest + ")"; have = true; }
+            }
+            i = n;
+        } else {
+            if (j > 0) {
+                string lit = substr(rest, 0, j);
+                if (have) { acc = "(bin + " + acc + " (str " + lit + "))"; }
+                else      { acc = "(str " + lit + ")"; have = true; }
+            }
+            int k = j + 2;
+            int depth = 1;
+            while (k < len(rest) && depth > 0) {
+                string c = substr(rest, k, 1);
+                if (c == "{") { depth = depth + 1; }
+                if (c == "}") { depth = depth - 1; }
+                k = k + 1;
+            }
+            string frag = substr(rest, j + 2, k - j - 3);
+            string term = "(call to_string " + parseFragment(frag) + ")";
+            if (have) {
+                acc = "(bin + " + acc + " " + term + ")";
+            } else {
+                // The reference forces string context from the first term:
+                // `"" + to_string(x)`, so `"${a}${b}"` cannot add two numbers.
+                acc = "(bin + (str ) " + term + ")";
+                have = true;
+            }
+            i = i + k;
+        }
+    }
+    if (!have) { return "(str )"; }
+    return acc;
+}
+
+// `a[i]` and `a.f`, applied left-to-right after a primary and chainable, so
+// `m.items[0].name` nests the way the reference parser nests it (11.28).
+fn pPostfix(string[] tt, string[] tv, int[] pos, string base) -> string ={
+    string e = base;
+    bool more = true;
+    while (more) {
+        if (pt(tt, pos) == "LBRACKET") {
+            adv(pos);
+            // `a[..b]` — an open start is 0, and is checked BEFORE parsing an
+            // index so the leading `..` is not read as a broken expression.
+            if (pt(tt, pos) == "RANGE" || pt(tt, pos) == "RANGE_INCL") {
+                string incl0 = pt(tt, pos); adv(pos);
+                string end0 = pExpr(tt, tv, pos);
+                if (incl0 == "RANGE_INCL") { end0 = "(bin + " + end0 + " (int 1))"; }
+                if (pt(tt, pos) == "RBRACKET") { adv(pos); }
+                e = "(call slice " + e + " (int 0) " + end0 + ")";
+            } else {
+                string ix = pExpr(tt, tv, pos);
+                if (pt(tt, pos) == "RANGE" || pt(tt, pos) == "RANGE_INCL") {
+                    string incl = pt(tt, pos); adv(pos);
+                    string end = pExpr(tt, tv, pos);
+                    if (incl == "RANGE_INCL") { end = "(bin + " + end + " (int 1))"; }
+                    if (pt(tt, pos) == "RBRACKET") { adv(pos); }
+                    // the reference lowers a slice to the `slice` native rather
+                    // than inventing a node, so every backend gets it for free
+                    e = "(call slice " + e + " " + ix + " " + end + ")";
+                } else {
+                    if (pt(tt, pos) == "RBRACKET") { adv(pos); }
+                    e = "(idx " + e + " " + ix + ")";
+                }
+            }
+        } else if (pt(tt, pos) == "DOT") {
+            adv(pos);
+            string f = pv(tv, pos); adv(pos);
+            e = "(field " + e + " " + f + ")";
+        } else {
+            more = false;
+        }
+    }
+    return e;
+}
+
 fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
     string t = pt(tt, pos);
-    if (t == "INT_LIT")   { string v = pv(tv, pos); adv(pos); return "(int " + v + ")"; }
-    if (t == "FLOAT_LIT") { string v = pv(tv, pos); adv(pos); return "(float " + v + ")"; }
-    if (t == "STR_LIT")   { string v = pv(tv, pos); adv(pos); return "(str " + v + ")"; }
-    if (t == "BOOL_LIT")  { string v = pv(tv, pos); adv(pos); return "(bool " + v + ")"; }
+    if (t == "INT_LIT")   { string v = pv(tv, pos); adv(pos); return pPostfix(tt, tv, pos, "(int " + v + ")"); }
+    if (t == "FLOAT_LIT") { string v = pv(tv, pos); adv(pos); return pPostfix(tt, tv, pos, "(float " + v + ")"); }
+    if (t == "STR_LIT")   { return pPostfix(tt, tv, pos, pStrLit(tt, tv, pos)); }
+    if (t == "BOOL_LIT")  { string v = pv(tv, pos); adv(pos); return pPostfix(tt, tv, pos, "(bool " + v + ")"); }
+    if (t == "NULL")      { adv(pos); return "(null)"; }
+    // array literal
+    if (t == "LBRACKET") {
+        adv(pos);
+        string els = "";
+        while (pt(tt, pos) != "RBRACKET" && pt(tt, pos) != "EOF") {
+            string e = pExpr(tt, tv, pos);
+            els = els + " " + e;
+            if (pt(tt, pos) == "COMMA") { adv(pos); }
+        }
+        if (pt(tt, pos) == "RBRACKET") { adv(pos); }
+        return pPostfix(tt, tv, pos, "(arr" + els + ")");
+    }
+    // struct construction: new P{ x: 1, s: "h" }
+    if (t == "NEW") {
+        adv(pos);
+        string sname = pv(tv, pos); adv(pos);
+        if (pt(tt, pos) == "LBRACE") { adv(pos); }
+        string fs = "";
+        while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+            string fname = pv(tv, pos); adv(pos);
+            if (pt(tt, pos) == "COLON") { adv(pos); }
+            string fval = pExpr(tt, tv, pos);
+            fs = fs + " (fv " + fname + " " + fval + ")";
+            if (pt(tt, pos) == "COMMA") { adv(pos); }
+        }
+        if (pt(tt, pos) == "RBRACE") { adv(pos); }
+        return pPostfix(tt, tv, pos, "(new " + sname + fs + ")");
+    }
     if (t == "LPAREN") {
         adv(pos);
         string e = pExpr(tt, tv, pos);
         if (pt(tt, pos) == "RPAREN") { adv(pos); }
-        return e;
+        return pPostfix(tt, tv, pos, e);
     }
     if (t == "IDENT") {
         string name = pv(tv, pos); adv(pos);
@@ -127,16 +372,22 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
                 if (pt(tt, pos) == "COMMA") { adv(pos); }
             }
             if (pt(tt, pos) == "RPAREN") { adv(pos); }
-            return "(call " + name + args + ")";
+            return pPostfix(tt, tv, pos, "(call " + name + args + ")");
         }
-        return "(id " + name + ")";
+        return pPostfix(tt, tv, pos, "(id " + name + ")");
     }
     return "(err " + t + ")";
 }
 
-// ── types (subset: primitive or ident, no []/? ) ──────
+// ── types: primitive or ident, with []/? suffixes ─────
 fn pType(string[] tt, string[] tv, int[] pos) -> string ={
     string v = pv(tv, pos); adv(pos);
+    // `[]` may repeat (int[][]); `?` may not, and binds outermost
+    while (pt(tt, pos) == "LBRACKET" && pt2(tt, pos) == "RBRACKET") {
+        adv(pos); adv(pos);
+        v = v + "[]";
+    }
+    if (pt(tt, pos) == "QUESTION") { adv(pos); v = v + "?"; }
     return v;
 }
 
@@ -147,14 +398,58 @@ fn pStmt(string[] tt, string[] tv, int[] pos) -> string ={
     if (t == "RETURN") { return pReturn(tt, tv, pos); }
     if (t == "IF")     { return pIf(tt, tv, pos); }
     if (t == "WHILE")  { return pWhile(tt, tv, pos); }
+    if (t == "FOR")    { return pFor(tt, tv, pos); }
+    if (t == "STRUCT") { return pStruct(tt, tv, pos); }
+    if (t == "ENUM")   { return pEnum(tt, tv, pos); }
+    if (t == "MATCH")  { return pMatch(tt, tv, pos); }
+    if (t == "BREAK")    { adv(pos); if (pt(tt, pos) == "SEMICOLON") { adv(pos); } return "(break)"; }
+    if (t == "CONTINUE") { adv(pos); if (pt(tt, pos) == "SEMICOLON") { adv(pos); } return "(continue)"; }
     if (isTypeTok(t))  { return pVarDecl(tt, tv, pos); }
     if (t == "IDENT") {
         string nt = pt2(tt, pos);
         if (nt == "ASSIGN") { return pAssign(tt, tv, pos); }
         if (nt == "IDENT")  { return pVarDecl(tt, tv, pos); }
+        if (isCompoundAssign(nt)) { return pCompound(tt, tv, pos); }
+        if (nt == "PLUS_PLUS" || nt == "MINUS_MINUS") { return pIncr(tt, tv, pos); }
+        if (nt == "LBRACKET") {
+            // `P[] ps` declares; `a[i] = v` assigns; `a[i];` is an expression.
+            // Only the token after the closing bracket separates them, so the
+            // bracket has to be matched rather than guessed at.
+            if (ptn(tt, pos, 2) == "RBRACKET" && ptn(tt, pos, 3) == "IDENT") {
+                return pVarDecl(tt, tv, pos);
+            }
+            int j = afterBracket(tt, pos[0] + 1);
+            if (j < len(tt)) {
+                if (tt[j] == "ASSIGN") { return pIndexAssign(tt, tv, pos); }
+            }
+        }
         return pExprStmt(tt, tv, pos);
     }
     return pExprStmt(tt, tv, pos);
+}
+
+fn pCompound(string[] tt, string[] tv, int[] pos) -> string ={
+    string name = pv(tv, pos); adv(pos);
+    string op = pv(tv, pos); adv(pos);
+    string e = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(cassign " + op + " " + name + " " + e + ")";
+}
+fn pIncr(string[] tt, string[] tv, int[] pos) -> string ={
+    string name = pv(tv, pos); adv(pos);
+    string op = pv(tv, pos); adv(pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(incr " + op + " " + name + ")";
+}
+fn pIndexAssign(string[] tt, string[] tv, int[] pos) -> string ={
+    string name = pv(tv, pos); adv(pos);
+    adv(pos);                                   // '['
+    string ix = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "RBRACKET") { adv(pos); }
+    if (pt(tt, pos) == "ASSIGN") { adv(pos); }
+    string v = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(setidx (id " + name + ") " + ix + " " + v + ")";
 }
 
 // collects statements until '}' (consuming it); prefixes each with a space
@@ -243,6 +538,139 @@ fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
     string body = pStmtsUntilBrace(tt, tv, pos);   // '={' already consumed
     return "(fn " + name + " (params" + params + ") " + ret + " (body" + body + "))";
 }
+// `for` is two statements sharing a keyword. The reference parser produces a
+// For for the C-style header and a ForEach for `x in xs`, and the two are only
+// distinguishable by scanning past the loop variable to look for `in` — which
+// is why ptn() exists.
+fn pFor(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // FOR
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+
+    bool isEach = false;
+    if (pt(tt, pos) == "IDENT" && pt2(tt, pos) == "IN") { isEach = true; }
+    if (isTypeTok(pt(tt, pos)) && ptn(tt, pos, 2) == "IN") { isEach = true; }
+    if (pt(tt, pos) == "IDENT" && ptn(tt, pos, 2) == "IN" && pt2(tt, pos) == "IDENT") {
+        isEach = true;
+    }
+
+    if (isEach) {
+        // An untyped `for (v in xs)` is `any` in the reference AST, not absent
+        string vty = "any";
+        if (pt(tt, pos) != "IDENT" || pt2(tt, pos) != "IN") {
+            vty = pType(tt, tv, pos);
+        }
+        string vname = pv(tv, pos); adv(pos);
+        if (pt(tt, pos) == "IN") { adv(pos); }
+        string it = pExpr(tt, tv, pos);
+        // `for (int i in a..b)` is NOT a ForEach in the reference AST — it is
+        // desugared into the C-style loop, so it has to be desugared here too
+        // or the two trees differ on a very common form.
+        if (pt(tt, pos) == "RANGE" || pt(tt, pos) == "RANGE_INCL") {
+            string incl = pt(tt, pos); adv(pos);
+            string hi = pExpr(tt, tv, pos);
+            if (pt(tt, pos) == "RPAREN") { adv(pos); }
+            string rbody = pBlock(tt, tv, pos);
+            string cmp = "<";
+            if (incl == "RANGE_INCL") { cmp = "<="; }
+            return "(for (var " + vty + " " + vname + " " + it + ") (bin " + cmp
+                 + " (id " + vname + ") " + hi + ") (assign " + vname
+                 + " (bin + (id " + vname + ") (int 1))) (body" + rbody + "))";
+        }
+        if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        string body = pBlock(tt, tv, pos);
+        return "(foreach " + vty + " " + vname + " " + it + " (body" + body + "))";
+    }
+
+    // C-style: any of the three parts may be empty
+    string init = "nil";
+    if (pt(tt, pos) != "SEMICOLON") { init = pStmt(tt, tv, pos); }
+    else { adv(pos); }
+    string cond = "nil";
+    if (pt(tt, pos) != "SEMICOLON") { cond = pExpr(tt, tv, pos); }
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    string upd = "nil";
+    if (pt(tt, pos) != "RPAREN") { upd = pStmt(tt, tv, pos); }
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    string body2 = pBlock(tt, tv, pos);
+    return "(for " + init + " " + cond + " " + upd + " (body" + body2 + "))";
+}
+
+fn pStruct(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // STRUCT
+    string name = pv(tv, pos); adv(pos);
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string fs = "";
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        string fty = pType(tt, tv, pos);
+        string fname = pv(tv, pos); adv(pos);
+        fs = fs + " (f " + fty + " " + fname + ")";
+        if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    return "(struct " + name + " (fields" + fs + "))";
+}
+
+fn pEnum(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // ENUM
+    string name = pv(tv, pos); adv(pos);
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string ms = "";
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        string mname = pv(tv, pos); adv(pos);
+        string payload = "";
+        if (pt(tt, pos) == "LPAREN") {            // a variant carrying data
+            adv(pos);
+            while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+                string fty = pType(tt, tv, pos);
+                payload = payload + " " + fty;
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+            }
+            if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        }
+        ms = ms + " (m " + mname + payload + ")";
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+        if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    return "(enum " + name + ms + ")";
+}
+
+fn pMatch(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // MATCH
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+    string subj = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string cs = "";
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        string pname = pv(tv, pos); adv(pos);
+        string vars = "";
+        if (pt(tt, pos) == "LPAREN") {
+            adv(pos);
+            while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+                string vn = pv(tv, pos); adv(pos);
+                vars = vars + " " + vn;
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+            }
+            if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        }
+        if (pt(tt, pos) == "FAT_ARROW") { adv(pos); }
+        // an arm is either a block or a single statement
+        string body = "";
+        if (pt(tt, pos) == "LBRACE") {
+            body = pBlock(tt, tv, pos);
+        } else {
+            string one = pStmt(tt, tv, pos);
+            body = " " + one;
+        }
+        cs = cs + " (case " + pname + " (vars" + vars + ") (body" + body + "))";
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    return "(match " + subj + cs + ")";
+}
+
 fn pExprStmt(string[] tt, string[] tv, int[] pos) -> string ={
     // the reference parser returns the raw expression as a statement
     string e = pExpr(tt, tv, pos);
