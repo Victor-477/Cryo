@@ -163,6 +163,7 @@ class FunctionDecl(Node):
     return_type: Optional[str]
     body:        List[Node]
     is_tool:     bool = False   # 'tool fn' — exposed to LLMs (Phase 3)
+    is_test:     bool = False   # 'test fn' — collected by `cryoc test` (12.1)
     line:        int = 0
     type_params: List[str] = field(default_factory=list)
     type_bounds: Dict[str, str] = field(default_factory=dict)

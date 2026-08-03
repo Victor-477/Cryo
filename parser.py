@@ -254,6 +254,10 @@ class Parser:
                 return self._var_decl()
             return self._fn(is_pub=is_pub)
         if tok.type == TokenType.TOOL:    return self._tool(is_pub=is_pub)
+        # 12.1 — `test fn …`. Contextual: only special right before `fn`.
+        if (tok.type == TokenType.IDENT and tok.value == 'test'
+                and self._peek(1).type == TokenType.FN):
+            return self._test_fn(is_pub=is_pub)
         if tok.type == TokenType.STRUCT:  return self._struct(is_pub=is_pub)
         if tok.type == TokenType.SCHEMA:  return self._struct(is_pub=is_pub)   # schema = struct
         if tok.type == TokenType.ENUM:    return self._enum(is_pub=is_pub)
@@ -449,7 +453,19 @@ class Parser:
         self._expect(TokenType.TOOL)      # 'tool fn ...' — exposed to LLMs
         return self._fn(is_tool=True, is_pub=is_pub)
 
-    def _fn(self, is_tool=False, is_pub=False):
+    def _test_fn(self, is_pub=False):
+        """`test fn name() ={ … }` — a test, collected by `cryoc test` (12.1).
+
+        `test` is a CONTEXTUAL keyword: it is only special immediately before
+        `fn`, and stays an ordinary identifier everywhere else. Making it a real
+        keyword would break `int test = 0;` in any program that already has
+        one, and a test framework that invalidates existing code to introduce
+        itself has started badly.
+        """
+        self._advance()                   # the identifier 'test'
+        return self._fn(is_test=True, is_pub=is_pub)
+
+    def _fn(self, is_tool=False, is_pub=False, is_test=False):
         fn_line = self._cur().line
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
@@ -483,7 +499,7 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool, is_test=is_test, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 
     def _body(self):
         stmts = []
