@@ -58,6 +58,14 @@ fn kw(string s) -> string ={
     if (s == "assert")   { return "ASSERT"; }
     if (s == "safe")     { return "SAFE"; }
     if (s == "unsafe")   { return "UNSAFE"; }
+    // 11.28 — keywords the reference lexer has and this one did not. They
+    // lexed as plain identifiers, which is the quiet kind of divergence: the
+    // token stream stayed the same LENGTH, so only a name-by-name comparison
+    // against the reference catches it.
+    if (s == "pub")         { return "PUB"; }
+    if (s == "trait")       { return "TRAIT"; }
+    if (s == "impl")        { return "IMPL"; }
+    if (s == "permissions") { return "PERMISSIONS"; }
     if (s == "do")       { return "DO"; }
     if (s == "in")       { return "IN"; }
     if (s == "map")      { return "MAP"; }
@@ -110,6 +118,11 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         // next character (lookahead)
         string d = "";
         if (i + 1 < n) { d = src[i + 1]; }
+        // 11.28 — a THIRD character, needed by "..=", "<<=" and ">>=".
+        // Without it those lexed as ".." + "=" and "<<" + "=", which parses
+        // as something else entirely rather than failing.
+        string e = "";
+        if (i + 2 < n) { e = src[i + 2]; }
 
         // line comment
         if (c == "/" && d == "/") {
@@ -175,6 +188,13 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
             continue;
         }
 
+        // three-character operators — these MUST come before the
+        // two-character ones below, or "..=" is eaten as ".." and "<<=" as
+        // "<<", and the trailing "=" then reads as an assignment (11.28).
+        if (c == "." && d == "." && e == "=") { pushTok(tt, tv, "RANGE_INCL", "..="); i = i + 3; continue; }
+        if (c == "<" && d == "<" && e == "=") { pushTok(tt, tv, "SHL_ASSIGN", "<<="); i = i + 3; continue; }
+        if (c == ">" && d == ">" && e == "=") { pushTok(tt, tv, "SHR_ASSIGN", ">>="); i = i + 3; continue; }
+
         // two-character operators
         if (c == "=" && d == "{") { pushTok(tt, tv, "BODY_ASSIGN", "={"); i = i + 2; continue; }
         if (c == "-" && d == ">") { pushTok(tt, tv, "ARROW", "->");       i = i + 2; continue; }
@@ -195,6 +215,14 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "*" && d == "=") { pushTok(tt, tv, "STAR_ASSIGN", "*=");    i = i + 2; continue; }
         if (c == "/" && d == "=") { pushTok(tt, tv, "SLASH_ASSIGN", "/=");   i = i + 2; continue; }
         if (c == "%" && d == "=") { pushTok(tt, tv, "PERCENT_ASSIGN", "%="); i = i + 2; continue; }
+        // 11.28 — the rest of the compound assignments, the range, and the
+        // module separator. `..` has to be tested before the single ".", and
+        // `::` before the single ":".
+        if (c == "&" && d == "=") { pushTok(tt, tv, "AMP_ASSIGN", "&=");     i = i + 2; continue; }
+        if (c == "|" && d == "=") { pushTok(tt, tv, "PIPE_ASSIGN", "|=");    i = i + 2; continue; }
+        if (c == "^" && d == "=") { pushTok(tt, tv, "CARET_ASSIGN", "^=");   i = i + 2; continue; }
+        if (c == "." && d == ".") { pushTok(tt, tv, "RANGE", "..");          i = i + 2; continue; }
+        if (c == ":" && d == ":") { pushTok(tt, tv, "COLON_COLON", "::");    i = i + 2; continue; }
 
         // single-character operators/punctuation
         if (c == "+") { pushTok(tt, tv, "PLUS", "+");       i = i + 1; continue; }
@@ -216,6 +244,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
         if (c == "}") { pushTok(tt, tv, "RBRACE", "}");     i = i + 1; continue; }
         if (c == "[") { pushTok(tt, tv, "LBRACKET", "[");   i = i + 1; continue; }
         if (c == "]") { pushTok(tt, tv, "RBRACKET", "]");   i = i + 1; continue; }
+        if (c == "~") { pushTok(tt, tv, "TILDE", "~");      i = i + 1; continue; }
         if (c == ";") { pushTok(tt, tv, "SEMICOLON", ";");  i = i + 1; continue; }
         if (c == ",") { pushTok(tt, tv, "COMMA", ",");      i = i + 1; continue; }
         if (c == ":") { pushTok(tt, tv, "COLON", ":");      i = i + 1; continue; }
