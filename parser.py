@@ -43,6 +43,7 @@ _BUILTIN_NAMES = {
     'asset', 'asset_names',
     'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'llm_call', 'llm_try',                                # 11.19 outcomes
+    'or_else',                                            # 11.4 Result default
     'agent_call', 'agent_try',                            # 11.20 agent
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
@@ -2213,7 +2214,58 @@ class Parser:
             return self._llm_try(args, id_line, 'llm_call')      # 11.19
         if name == 'agent_try' and 'agent_try' not in self.user_defined_fns:
             return self._llm_try(args, id_line, 'agent_call')    # 11.20
+        if name == 'or_else' and 'or_else' not in self.user_defined_fns:
+            return self._or_else(args, id_line)                  # 11.4
         return CallExpr(name, args, line=id_line)
+
+    # ── or_else: a Result's value, or a default (11.4) ──────
+    #
+    #   int port = or_else(parse_port(s), 8080);
+    #
+    # Lowered to one shared helper holding a `match`, so no code generator
+    # learns anything new — the same route 11.4's guards took.
+    #
+    # IT HARD-CODES `Ok`, AND THAT IS A LANGUAGE DECISION, NOT AN OVERSIGHT.
+    # `Result`, `Ok` and `Err` are ordinary user declarations here; nothing
+    # marks which variant means success. The precedent is `?` propagation,
+    # which has tested `tag == "Ok"` since Phase 8.3 — so the convention
+    # already exists, and `or_else` joins it rather than inventing a second
+    # one. 11.34 refused `??` on the same enums for the opposite reason, and
+    # the two are consistent on INTENT: `?` and `or_else` are Result tools and
+    # writing one declares the shape, whereas `??` is the null operator, used
+    # on ordinary optionals everywhere, where silently adopting Result
+    # semantics would change what an existing operator means.
+    #
+    # The wildcard arm rather than `Err(e)`: an enum may have more than two
+    # variants, and every non-Ok one should take the default rather than fall
+    # through a non-exhaustive match.
+    def _or_else(self, args, line: int):
+        if len(args) != 2:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: or_else takes 2 arguments "
+                f"(the Result, and the value to use when it is not Ok)")
+        return CallExpr(self._or_else_helper(), args, line=line)
+
+    def _or_else_helper(self) -> str:
+        name = '__cryo_or_else'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        r, d, v = '__oe_r', '__oe_d', '__oe_v'
+        body = [
+            MatchStatement(Identifier(r), [
+                MatchCase('Ok', [v], [Return(Identifier(v))]),
+                MatchCase('_', [], [Return(Identifier(d))]),
+            ]),
+            # Unreachable — the wildcard covers everything — but every backend
+            # wants a terminating return on a non-void function, and relying on
+            # each one's flow analysis to prove the match total is a worse bet
+            # than one extra instruction.
+            Return(Identifier(d)),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('any', r), ('any', d)], 'any', body))
+        return name
 
     # ── llm_try: the outcome as something you can match on (11.19) ──
     #
