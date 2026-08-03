@@ -193,6 +193,21 @@ class Token:
         return f"Token({self.type.name}, {self.value!r}, {self.line}:{self.col})"
 
 
+# 11.39 — what a `\$` escape leaves behind, so the parser can tell a literal
+# `${…}` from a live interpolation.
+#
+# It STANDS IN FOR the '$' rather than sitting in front of it. Keeping the '$'
+# and marking it would not work: `${` still matches, so the interpolation fires
+# anyway — which is the first way I got this wrong.
+#
+# NUL rather than a backslash, which is the second way: `\\${x}` is an escaped
+# backslash followed by a REAL interpolation, and it unescapes to a backslash
+# then `${` — byte-identical to what a backslash-marked `\${x}` would leave.
+# The two become indistinguishable and one silently takes the other's meaning.
+# NUL cannot occur in Cryo source, so it cannot collide with anything.
+ESC_DOLLAR = '\x00'
+
+
 class LexerError(Exception):
     pass
 
@@ -289,7 +304,26 @@ class Lexer:
             if self._peek() == '\\':
                 self._advance()
                 esc = self._advance()
-                s += {'n': '\n', 't': '\t', '\\': '\\', '"': '"', "'": "'"}.get(esc, esc)
+                # 11.39 — `\$` has to survive as an ESCAPE rather than collapse
+                # to a bare '$'. The parser re-scans this value for `${…}` and
+                # interpolates whatever it finds, so unescaping here left it no
+                # way to tell `\${x}` from `${x}` — and there was then no way to
+                # write a literal `${…}` in a Cryo string at all. Neither pass
+                # was wrong on its own; the information was simply dropped
+                # between them.
+                #
+                # The marker is NUL, not a backslash. A backslash cannot work:
+                # `\\${x}` (an escaped backslash, then a REAL interpolation)
+                # unescapes to a backslash followed by `${`, which is
+                # byte-identical to what `\${x}` would leave — the two cases
+                # become indistinguishable and one of them silently gets the
+                # wrong answer. NUL cannot appear in Cryo source, so it cannot
+                # collide with anything. Consumed in parser._string_literal.
+                if esc == '$':
+                    s += ESC_DOLLAR
+                else:
+                    s += {'n': '\n', 't': '\t', '\\': '\\',
+                          '"': '"', "'": "'"}.get(esc, esc)
             else:
                 s += self._advance()
         if self.pos >= len(self.source):

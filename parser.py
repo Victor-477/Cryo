@@ -95,6 +95,16 @@ class ParseError(Exception):
     pass
 
 
+def _unesc_dollar(s: str) -> str:
+    """Turn the 11.39 marker back into a plain '$'.
+
+    Applied to LITERAL chunks only. An interpolated expression is re-lexed from
+    its own source text, so it never sees the marker.
+    """
+    from lexer import ESC_DOLLAR
+    return s.replace(ESC_DOLLAR, '$')
+
+
 class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
@@ -611,24 +621,42 @@ class Parser:
 
     # ── string interpolation: "total: ${x}" ──────────────
 
+    @staticmethod
+    def _find_interp(s: str, start: int) -> int:
+        """Index of the next LIVE `${` at or after `start`, or -1.
+
+        An escaped one carries the 11.39 marker in place of its `$`, so it does
+        not match here at all — no backslash counting, and no way to confuse
+        `\\\\${x}` (an escaped backslash followed by a REAL interpolation) with
+        `\\${x}` (a literal). A backslash marker got that wrong: both unescape
+        to a backslash followed by `${`, so the two became indistinguishable
+        and one of them silently took the other's meaning.
+        """
+        return s.find('${', start)
+
     def _string_literal(self, s: str, line: int):
         """String literal; with `${expr}` becomes concatenation with to_string(expr).
 
         `${expr:spec}` (11.3) applies a format spec — see _split_fmt_spec.
         """
-        if '${' not in s:
-            return Literal('string', s)
+        # 11.39 — `\$` reaches here still escaped (see lexer._read_string), and
+        # is the one thing that is NOT an interpolation. Both jobs happen here:
+        # `_find_interp` skips an escaped `${`, and `_unesc_dollar` turns the
+        # marker back into a plain '$' in every literal chunk — including the
+        # whole-string case below, which is the common one.
+        if not self._find_interp(s, 0) >= 0:
+            return Literal('string', _unesc_dollar(s))
         from lexer import Lexer as _Lexer   # local import (no cycle)
         parts = []
         i = 0
         while True:
-            j = s.find('${', i)
+            j = self._find_interp(s, i)
             if j < 0:
                 if i < len(s):
-                    parts.append(Literal('string', s[i:]))
+                    parts.append(Literal('string', _unesc_dollar(s[i:])))
                 break
             if j > i:
-                parts.append(Literal('string', s[i:j]))
+                parts.append(Literal('string', _unesc_dollar(s[i:j])))
             # finds the matching '}' respecting nested braces
             depth, k = 1, j + 2
             while k < len(s) and depth:
