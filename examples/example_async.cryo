@@ -1,7 +1,9 @@
 // ============================================================
-//  Phase 2 example — concurrency (async) + HTTP (Go backend)
-//  spawn/await + Future<T> lower to goroutines + channels.
+//  Phase 2 example — concurrency (async) + HTTP
+//  spawn/await + Future<T>. On go they lower to goroutines + channels; on
+//  pyro the VM runs them on its own cooperative scheduler (roadmap 12.5).
 //  Run: python burnout/cryoc.py cryo/examples/example_async.cryo --backend go --run
+//       python burnout/cryoc.py cryo/examples/example_async.cryo --backend pyro --run
 // ============================================================
 
 // Simulates an expensive task (and.g. an LLM call or I/O)
