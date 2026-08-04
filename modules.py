@@ -134,6 +134,15 @@ def _rename_refs(node, mapping: Dict[str, str]):
 PARSE_CACHE = None
 READ_SOURCES = None
 
+# 12.3 — the package manifest governing this build. Left None, in which case it
+# is discovered from the importing file's directory the FIRST time an `@` import
+# is seen; a test or a driver can set it to a packages.Manifest to pin it.
+#
+# Lazy on purpose. A project with no `@` import never reads a cryo.toml, never
+# pays for it, and cannot be broken by one — which is the property that lets
+# 12.3 be added without auditing what it does to every existing project.
+PACKAGE_MANIFEST = None
+
 
 def _parse_file(path: str) -> Program:
     from lexer import Lexer
@@ -165,8 +174,21 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
     aliased_exports: Dict[Tuple[str, str], Tuple[str, bool]] = {}
 
     def load(path: str, importer_dir: str, alias: Optional[str] = None):
-        full = os.path.normpath(os.path.join(importer_dir, path))
-        full = os.path.abspath(full)
+        full = None
+        if path.startswith('@'):
+            # `import "@dep/file.cryo"` — resolved against the manifest rather
+            # than the importing file's directory.
+            import packages
+            try:
+                mf = PACKAGE_MANIFEST
+                if mf is None:
+                    mf = packages.load(importer_dir)
+                full = packages.resolve_import(path, importer_dir, mf)
+            except packages.PackageError as e:
+                raise ModuleError(f"[Module Error] {e}")
+        if full is None:
+            full = os.path.normpath(os.path.join(importer_dir, path))
+            full = os.path.abspath(full)
         if full in loaded:
             return                       # dedup
         if full in loading:
