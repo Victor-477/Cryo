@@ -1,0 +1,489 @@
+// ============================================================
+//  Cryo self-hosting — semantic analysis, written in Cryo (13.2)
+//
+//  WHY THIS EXISTS
+//
+//  The self-hosted front end had a lexer, a parser and a code
+//  generator, and no analyser at all. It therefore emitted a `.pyro`
+//  for EVERY program, including ones the reference compiler rejects —
+//  and the bytecode it produced was not merely useless:
+//
+//     print(x);                  // x undeclared
+//         reference: [Semantic Error] undeclared variable 'x'
+//         self-host: emitted, ran, printed 0
+//
+//     nosuch(1);                 // no such function
+//         reference: [Semantic Error] unknown function 'nosuch'
+//         self-host: emitted a call to function index 65535, and the
+//                    VM died with a Go runtime panic —
+//                    "index out of range [65535] with length 1"
+//
+//     fn f(int a) ... f(1, 2);   // wrong arity
+//         reference: rejected
+//         self-host: emitted, ran, printed 1
+//
+//  Self-hosting is only complete when the two compilers agree on what
+//  is an ERROR, not just on what is valid. A compiler that turns a
+//  typo into a silent 0 is worse than one that cannot compile at all,
+//  because nothing tells you to look.
+//
+//  WHAT IS CHECKED — and the list is deliberately the reference's, not
+//  a better one. The reference ACCEPTS `int a = "hi"` and `Foo a = 1`
+//  (no type checking at declaration, no unknown-type check), so this
+//  does too: agreeing means matching its answers, including the ones
+//  that look lenient. Diverging "helpfully" is still diverging.
+//
+//    * undeclared variable
+//    * assignment to an undeclared variable
+//    * unknown function
+//    * wrong argument count for a user function
+//    * `break` / `continue` outside a loop or switch
+//
+//  HOW: a single pass over the token stream, the same shape as
+//  codegen.cryo. Scopes are pushed and popped on braces; a map literal
+//  or a struct initialiser opens and closes one too, which is harmless
+//  because nothing is declared inside them.
+// ============================================================
+
+// ── the builtins a call may name ────────────────────────────
+fn isBuiltin(string n) -> bool ={
+    // Mirrors BUILTINS in cryo/semantic.py, verbatim. Not the self-hosted
+    // codegen's shorter native table: the question here is what the LANGUAGE
+    // defines, not what this back end can emit. Trimming it to what
+    // codegen.cryo supports would reject `agent(...)` — which the reference
+    // accepts — and the whole point is agreeing on the answer.
+    if (n == "print" || n == "input" || n == "input_int" || n == "input_num") { return true; }
+    if (n == "len" || n == "assert" || n == "throw") { return true; }
+    if (n == "to_string" || n == "to_int" || n == "to_number") { return true; }
+    if (n == "sqrt" || n == "pow" || n == "abs" || n == "min" || n == "max") { return true; }
+    if (n == "floor" || n == "ceil" || n == "round") { return true; }
+    if (n == "clamp" || n == "sign" || n == "gcd" || n == "hypot") { return true; }
+    if (n == "has" || n == "keys" || n == "remove" || n == "sort") { return true; }
+    if (n == "reverse" || n == "slice" || n == "index_of") { return true; }
+    if (n == "concat" || n == "count" || n == "sum") { return true; }
+    if (n == "upper" || n == "lower" || n == "trim" || n == "contains") { return true; }
+    if (n == "find" || n == "find_first" || n == "replace" || n == "substr") { return true; }
+    if (n == "split" || n == "join" || n == "starts_with" || n == "ends_with") { return true; }
+    if (n == "repeat" || n == "pad_start" || n == "pad_end") { return true; }
+    if (n == "now_ms" || n == "monotonic_ms" || n == "random") { return true; }
+    if (n == "random_int" || n == "seed") { return true; }
+    if (n == "http_listen" || n == "http_accept" || n == "http_respond") { return true; }
+    if (n == "file_exists" || n == "is_dir" || n == "list_dir") { return true; }
+    if (n == "make_dir" || n == "delete_file" || n == "file_size") { return true; }
+    if (n == "write_file" || n == "env" || n == "exec") { return true; }
+    if (n == "write_file_atomic" || n == "url_decode" || n == "url_encode") { return true; }
+    if (n == "llm_stream" || n == "llm_next" || n == "llm_token" || n == "llm_close") { return true; }
+    if (n == "llm_call" || n == "llm_try") { return true; }
+    if (n == "agent_call" || n == "agent_try") { return true; }
+    if (n == "asset" || n == "asset_names") { return true; }
+    if (n == "json_encode" || n == "json_decode") { return true; }
+    if (n == "http_get" || n == "http_post" || n == "sleep") { return true; }
+    if (n == "write_bytes" || n == "read_file" || n == "args" || n == "http_serve") { return true; }
+    if (n == "schema_of" || n == "llm" || n == "tools" || n == "tools_json") { return true; }
+    if (n == "tool_get" || n == "agent") { return true; }
+    if (n == "skills" || n == "skill_get" || n == "skill_has" || n == "skills_json") { return true; }
+    if (n == "pyro_exec" || n == "pyro_env" || n == "pyro_args") { return true; }
+    if (n == "pyro_time" || n == "pyro_read" || n == "pyro_write") { return true; }
+    if (n == "pyro_write_file" || n == "pyro_open" || n == "pyro_exit") { return true; }
+    // iteration and higher-order helpers, and the built-in LLM outcome enum's
+    // constructors — the reference declares that enum itself, so a program can
+    // name LlmOk/LlmFailed without declaring anything.
+    if (n == "enumerate" || n == "pairs" || n == "map" || n == "filter") { return true; }
+    if (n == "reduce" || n == "range" || n == "zip") { return true; }
+    if (n == "LlmOk" || n == "LlmFailed") { return true; }
+    return false;
+}
+
+fn isTypeTokS(string t) -> bool ={
+    return t == "TYPE_INT" || t == "TYPE_NUMBER" || t == "TYPE_STRING"
+        || t == "TYPE_BOOL" || t == "TYPE_VOID" || t == "MAP" || t == "FUTURE";
+}
+
+fn indexOfStr(string[] xs, string want) -> int ={
+    int i = 0;
+    while (i < len(xs)) {
+        if (xs[i] == want) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Bounded lookup: only the first `n` entries are live.
+//
+// The scope stack grows and never shrinks; `n` is where the live part ends.
+// It was written with slice() at first, which reads better — but slice() is
+// used nowhere else in the self-hosted compiler, and self-compiling a version
+// that used it produced bytecode that crashed the VM with a stack underflow.
+// Counters need no new codegen path at all.
+fn indexOfStrN(string[] xs, string want, int n) -> int ={
+    int i = 0;
+    while (i < n && i < len(xs)) {
+        if (xs[i] == want) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn pushAt(string[] xs, int n, string v) -> int ={
+    if (n < len(xs)) { xs[n] = v; } else { xs.push(v); }
+    return n + 1;
+}
+
+// ── pre-scan: what names exist at all ───────────────────────
+//
+// Declaration order does not constrain visibility at the top level — a
+// function may call one declared below it — so every name is collected
+// before a single use is checked.
+fn scanDecls(string[] tt, string[] tv, string[] fnNames, int[] fnArity,
+             string[] typeNames, string[] members) ={
+    int i = 0;
+    while (i < len(tt)) {
+        if (tt[i] == "FN" && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
+            fnNames.push(tv[i + 1]);
+            // count parameters: each is <type> <ident>, separated by commas
+            int j = i + 2;
+            int argc = 0;
+            if (j < len(tt) && tt[j] == "LPAREN") {
+                j = j + 1;
+                int depth = 1;
+                bool sawOne = false;
+                int ang = 0;
+                while (j < len(tt) && depth > 0) {
+                    if (tt[j] == "LPAREN") { depth = depth + 1; }
+                    if (tt[j] == "RPAREN") { depth = depth - 1; if (depth == 0) { j = j + 1; break; } }
+                    // A comma inside <...> separates TYPE arguments, not
+                    // parameters: `map<string, number> t, string s` is two
+                    // parameters, and counting the inner comma reported three.
+                    if (tt[j] == "LT") { ang = ang + 1; }
+                    if (tt[j] == "GT") { ang = ang - 1; }
+                    if (depth == 1 && ang == 0) {
+                        if (tt[j] == "COMMA") { argc = argc + 1; }
+                        else { sawOne = true; }
+                    }
+                    j = j + 1;
+                }
+                if (sawOne) { argc = argc + 1; }
+            }
+            fnArity.push(argc);
+        }
+        if ((tt[i] == "STRUCT" || tt[i] == "ENUM" || tt[i] == "TRAIT"
+             || tt[i] == "SCHEMA")
+            && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
+            typeNames.push(tv[i + 1]);
+            if (tt[i] == "ENUM") {
+                // members: idents at brace depth 1, each optionally followed
+                // by a payload list. Both spellings are usable as values.
+                int k = i + 2;
+                if (k < len(tt) && tt[k] == "LBRACE") {
+                    k = k + 1;
+                    while (k < len(tt) && tt[k] != "RBRACE") {
+                        if (tt[k] == "IDENT") {
+                            members.push(tv[k]);
+                            members.push(tv[i + 1] + "_" + tv[k]);
+                            // skip a payload list so its TYPES are not read
+                            // as further members
+                            if (k + 1 < len(tt) && tt[k + 1] == "LPAREN") {
+                                int d2 = 0;
+                                k = k + 1;
+                                while (k < len(tt)) {
+                                    if (tt[k] == "LPAREN") { d2 = d2 + 1; }
+                                    if (tt[k] == "RPAREN") { d2 = d2 - 1; if (d2 == 0) { break; } }
+                                    k = k + 1;
+                                }
+                            }
+                        }
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// ── the pass ────────────────────────────────────────────────
+//
+// `scope` holds declared variable names; `mark` records the size of the
+// scope at each open brace, so closing one truncates back to it.
+fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
+    string[] fnNames = [];
+    int[] fnArity = [];
+    string[] typeNames = [];
+    string[] members = [];
+    scanDecls(tt, tv, fnNames, fnArity, typeNames, members);
+
+    string[] scope = [];
+    int scopeN = 0;                 // live length of `scope`
+    int[] mark = [];
+    int markN = 0;                  // live length of `mark`
+    int loopDepth = 0;
+    int[] loopMark = [];
+    int loopN = 0;
+
+    int i = 0;
+    while (i < len(tt)) {
+        string t = tt[i];
+        string v = tv[i];
+
+        if (t == "LBRACE") {
+            if (markN < len(mark)) { mark[markN] = scopeN; } else { mark.push(scopeN); }
+            markN = markN + 1;
+            i = i + 1;
+            continue;
+        }
+        if (t == "RBRACE") {
+            if (markN > 0) {
+                markN = markN - 1;
+                scopeN = mark[markN];
+            }
+            if (loopN > 0 && loopMark[loopN - 1] == markN) {
+                loopN = loopN - 1;
+                loopDepth = loopDepth - 1;
+            }
+            i = i + 1;
+            continue;
+        }
+        if (t == "WHILE" || t == "FOR" || t == "SWITCH") {
+            loopDepth = loopDepth + 1;
+            if (loopN < len(loopMark)) { loopMark[loopN] = markN; } else { loopMark.push(markN); }
+            loopN = loopN + 1;
+            i = i + 1;
+            continue;
+        }
+        if (t == "BREAK" || t == "CONTINUE") {
+            if (loopDepth <= 0) {
+                errs.push("'" + lower(t) + "' outside loop/switch");
+            }
+            i = i + 1;
+            continue;
+        }
+
+        // a function's parameters are declarations
+        if (t == "FN" && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
+            scopeN = 0;              // a function body sees no outer locals
+            markN = 0;
+            int j = i + 2;
+            if (j < len(tt) && tt[j] == "LPAREN") {
+                j = j + 1;
+                while (j < len(tt) && tt[j] != "RPAREN") {
+                    if (tt[j] == "IDENT" && (j + 1 >= len(tt)
+                        || tt[j + 1] == "COMMA" || tt[j + 1] == "RPAREN")) {
+                        scopeN = pushAt(scope, scopeN, tv[j]);
+                    }
+                    j = j + 1;
+                }
+            }
+            i = j;
+            continue;
+        }
+
+        // `const T NAME = …` — the type rule below starts one token later.
+        if (t == "CONST") { i = i + 1; continue; }
+
+        // `this` inside a struct method is bound by the language.
+        if (t == "IDENT" && v == "this") { i = i + 1; continue; }
+
+        // `_` is the match wildcard, not a variable. The lexer classes it as
+        // an identifier because `_` is a legal leading character, so without
+        // this every `_ => { … }` arm reported an undeclared variable.
+        if (t == "IDENT" && v == "_") { i = i + 1; continue; }
+
+        // A generic parameter list on a declaration — `fn f<T>(T x)` — binds T
+        // as a TYPE, so the names inside it are not variables.
+        if (t == "LT" && i > 0 && tt[i - 1] == "IDENT" && i + 1 < len(tt)
+            && tt[i + 1] == "IDENT") {
+            int j = i + 1;
+            while (j < len(tt) && tt[j] != "GT" && tt[j] != "LPAREN") {
+                if (tt[j] == "IDENT") { typeNames.push(tv[j]); }
+                j = j + 1;
+            }
+            if (j < len(tt) && tt[j] == "GT") { i = j + 1; continue; }
+        }
+
+        // `catch (T e)` and `catch (e)` bind e.
+        if (t == "CATCH") {
+            int j = i + 1;
+            if (j < len(tt) && tt[j] == "LPAREN") {
+                j = j + 1;
+                while (j < len(tt) && tt[j] != "RPAREN") {
+                    if (tt[j] == "IDENT" && (j + 1 >= len(tt) || tt[j + 1] == "RPAREN")) {
+                        scopeN = pushAt(scope, scopeN, tv[j]);
+                    }
+                    j = j + 1;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+
+        // A match arm binds its payload: `Ok(v) =>`. The names live for the
+        // arm's body; pushing them into the enclosing scope is more permissive
+        // than the reference, which is the safe direction for a check whose
+        // false positives would break every real program.
+        if (t == "FAT_ARROW") {
+            i = i + 1;
+            continue;
+        }
+        if (t == "IDENT" && indexOfStr(members, v) >= 0
+            && i + 1 < len(tt) && tt[i + 1] == "LPAREN") {
+            int j = i + 2;
+            bool arm = false;
+            int k = j;
+            int d = 1;
+            while (k < len(tt) && d > 0) {
+                if (tt[k] == "LPAREN") { d = d + 1; }
+                if (tt[k] == "RPAREN") { d = d - 1; if (d == 0) { break; } }
+                k = k + 1;
+            }
+            if (k + 1 < len(tt) && (tt[k + 1] == "FAT_ARROW" || tt[k + 1] == "IF")) {
+                arm = true;
+            }
+            if (arm) {
+                while (j < k) {
+                    if (tt[j] == "IDENT") { scopeN = pushAt(scope, scopeN, tv[j]); }
+                    j = j + 1;
+                }
+                i = k + 1;
+                continue;
+            }
+        }
+
+        // A LAMBDA's parameters: `(int x) => …` / `(int a, int b) => …`
+        if (t == "LPAREN") {
+            int j = i + 1;
+            int d = 1;
+            while (j < len(tt) && d > 0) {
+                if (tt[j] == "LPAREN") { d = d + 1; }
+                if (tt[j] == "RPAREN") { d = d - 1; if (d == 0) { break; } }
+                j = j + 1;
+            }
+            if (j + 1 < len(tt) && tt[j + 1] == "FAT_ARROW") {
+                int k2 = i + 1;
+                while (k2 < j) {
+                    if (tt[k2] == "IDENT" && (tt[k2 + 1] == "COMMA" || tt[k2 + 1] == "RPAREN")) {
+                        scopeN = pushAt(scope, scopeN, tv[k2]);
+                    }
+                    k2 = k2 + 1;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+
+        // A parenthesised FUNCTION TYPE opening a declaration:
+        //     (fn(int)->int)[] ops = [dbl, inc];
+        // Without this the whole thing read as an expression and `ops` was
+        // never declared, so every later use was reported undeclared — three
+        // errors from one unhandled type spelling.
+        if (t == "LPAREN" && i + 1 < len(tt) && tt[i + 1] == "FN") {
+            int j = i + 1;
+            int depth = 1;
+            while (j < len(tt) && depth > 0) {
+                j = j + 1;
+                if (tt[j] == "LPAREN") { depth = depth + 1; }
+                if (tt[j] == "RPAREN") { depth = depth - 1; }
+            }
+            j = j + 1;
+            while (j < len(tt) && (tt[j] == "LBRACKET" || tt[j] == "RBRACKET"
+                   || tt[j] == "QUESTION")) {
+                j = j + 1;
+            }
+            if (j < len(tt) && tt[j] == "IDENT") {
+                scopeN = pushAt(scope, scopeN, tv[j]);
+                i = j + 1;
+                continue;
+            }
+        }
+
+        // <type> <ident>  declares. Covers primitives, map<>, future<> and a
+        // user type used as a type (`P p = ...`).
+        if (isTypeTokS(t) || (t == "IDENT" && indexOfStr(typeNames, v) >= 0)) {
+            int j = i + 1;
+            // step over [] ? and <...> so the NAME is found
+            while (j < len(tt) && (tt[j] == "LBRACKET" || tt[j] == "RBRACKET"
+                   || tt[j] == "QUESTION" || tt[j] == "LT" || tt[j] == "GT"
+                   || tt[j] == "COMMA" || isTypeTokS(tt[j])
+                   || (tt[j] == "IDENT" && indexOfStr(typeNames, tv[j]) >= 0))) {
+                j = j + 1;
+            }
+            if (j < len(tt) && tt[j] == "IDENT") {
+                scopeN = pushAt(scope, scopeN, tv[j]);
+                i = j + 1;
+                continue;
+            }
+        }
+
+        if (t == "IDENT") {
+            // `xs.push(1)` is a METHOD, not a function: the name after a
+            // dot is never resolved against the function table.
+            if (i > 0 && tt[i - 1] == "DOT") {
+                i = i + 1;
+                continue;
+            }
+            // a call?
+            if (i + 1 < len(tt) && tt[i + 1] == "LPAREN") {
+                int fi = indexOfStr(fnNames, v);
+                if (fi < 0 && !isBuiltin(v) && indexOfStr(members, v) < 0
+                    && indexOfStr(typeNames, v) < 0 && indexOfStrN(scope, v, scopeN) < 0) {
+                    errs.push("unknown function '" + v + "'");
+                } else {
+                    if (fi >= 0) {
+                        // count the arguments actually passed
+                        int j = i + 2;
+                        int depth = 1;
+                        int argc = 0;
+                        bool saw = false;
+                        while (j < len(tt) && depth > 0) {
+                            if (tt[j] == "LPAREN" || tt[j] == "LBRACKET" || tt[j] == "LBRACE") {
+                                depth = depth + 1;
+                            }
+                            if (tt[j] == "RPAREN" || tt[j] == "RBRACKET" || tt[j] == "RBRACE") {
+                                depth = depth - 1;
+                                if (depth == 0) { break; }
+                            }
+                            if (depth == 1) {
+                                if (tt[j] == "COMMA") { argc = argc + 1; }
+                                else { saw = true; }
+                            }
+                            j = j + 1;
+                        }
+                        if (saw) { argc = argc + 1; }
+                        if (argc != fnArity[fi]) {
+                            errs.push("function '" + v + "' expects "
+                                      + to_string(fnArity[fi]) + " argument(s), got "
+                                      + to_string(argc));
+                        }
+                    }
+                }
+                i = i + 1;
+                continue;
+            }
+            // A field KEY in `new P { x: 3 }` or a map literal is not a
+            // variable. Keyed on the PRECEDING token rather than on the colon
+            // alone: `cond ? y : z` also puts an ident before a colon, and
+            // skipping that one would hide a genuinely undeclared `y`.
+            if (i + 1 < len(tt) && tt[i + 1] == "COLON"
+                && i > 0 && (tt[i - 1] == "LBRACE" || tt[i - 1] == "COMMA")) {
+                i = i + 1;
+                continue;
+            }
+            // a plain use, or an assignment target
+            bool known = indexOfStrN(scope, v, scopeN) >= 0
+                      || indexOfStr(fnNames, v) >= 0
+                      || indexOfStr(members, v) >= 0
+                      || indexOfStr(typeNames, v) >= 0
+                      || isBuiltin(v);
+            if (!known) {
+                if (i + 1 < len(tt) && tt[i + 1] == "ASSIGN") {
+                    errs.push("assignment to undeclared variable '" + v + "'");
+                } else {
+                    // a field name after '.' is not a variable
+                    if (i > 0 && tt[i - 1] == "DOT") { }
+                    else { errs.push("undeclared variable '" + v + "'"); }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return len(errs) == 0;
+}

@@ -19,6 +19,16 @@ fn isDigit(string c) -> bool ={
     return contains("0123456789", c);
 }
 
+// 13.2 — the value of a digit in a given base, or -1.
+// `contains` is used rather than a comparison chain because `find` already
+// returns the position, which IS the value for a base-16 digit string.
+fn digitVal(string c, int base) -> int ={
+    if (c == "") { return 0 - 1; }
+    int v = find("0123456789abcdef", lower(c));
+    if (v < 0 || v >= base) { return 0 - 1; }
+    return v;
+}
+
 fn isAlpha(string c) -> bool ={
     if (c == "") { return false; }
     return contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c);
@@ -161,10 +171,38 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
             continue;
         }
 
-        // number (decimal int or float)
+        // number (decimal int or float, or a based literal)
         if (isDigit(c)) {
+            // 13.2 — `0x`, `0b` and `0o` prefixes, and `_` separators.
+            //
+            // Without these `0xF0` lexed as INT_LIT "0" followed by the
+            // IDENT "xF0", so the self-hosted compiler silently compiled
+            // `0xF0 | 0x0F` into something else entirely — no error, just a
+            // different program. The reference normalises a based literal to
+            // its DECIMAL value in the token, so this has to as well or the
+            // two token streams stop matching.
+            if (c == "0" && i + 1 < n) {
+                string p = lower(src[i + 1]);
+                int base = 0;
+                if (p == "x") { base = 16; }
+                if (p == "b") { base = 2; }
+                if (p == "o") { base = 8; }
+                if (base > 0 && i + 2 < n && digitVal(src[i + 2], base) >= 0) {
+                    int val = 0;
+                    i = i + 2;
+                    while (i < n) {
+                        if (src[i] == "_") { i = i + 1; continue; }
+                        int d = digitVal(src[i], base);
+                        if (d < 0) { break; }
+                        val = val * base + d;
+                        i = i + 1;
+                    }
+                    pushTok(tt, tv, "INT_LIT", to_string(val));
+                    continue;
+                }
+            }
             int start = i;
-            while (i < n && isDigit(src[i])) { i = i + 1; }
+            while (i < n && (isDigit(src[i]) || src[i] == "_")) { i = i + 1; }
             bool isFloat = false;
             if (i < n && src[i] == ".") {
                 if (i + 1 < n && isDigit(src[i + 1])) {
@@ -173,7 +211,7 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
                     while (i < n && isDigit(src[i])) { i = i + 1; }
                 }
             }
-            string num = substr(src, start, i - start);
+            string num = replace(substr(src, start, i - start), "_", "");
             if (isFloat) { pushTok(tt, tv, "FLOAT_LIT", num); }
             else         { pushTok(tt, tv, "INT_LIT", num); }
             continue;
