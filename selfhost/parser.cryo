@@ -17,16 +17,25 @@
 //    primaries    int/float/string/bool/null/ident/call/parens,
 //                 array literals, new S{...}, string interpolation
 //
-//  NOT COVERED — and the reason is the same for all of them: each is a
-//  DESUGARING in the reference, not just a shape. try/catch, switch, lambdas
-//  (map/filter/reduce lower to synthetic functions), map literals, `as` casts,
-//  imports, generics and traits. Matching those means reproducing the
-//  lowering, not adding a parse rule.
+//  ADDED IN 12.6  try/catch/finally, switch (incl. stacked labels), lambdas,
+//                 map literals, `as` casts, imports (with alias), traits,
+//                 spawn/await, and a type grammar that can spell `map<K,V>`,
+//                 `future<T>` and `fn(T)->R`.
 //
-//  Two behaviours here are desugarings that WERE reproduced, because they are
-//  common enough that skipping them would make the comparison misleading:
-//  a range for-loop becomes a C-style for, and an interpolated string becomes
-//  a concatenation.
+//  11.28 recorded these as "each is a DESUGARING, not just a shape". That was
+//  true of exactly one — `=> expr` lowers to a body of [Return(expr)], so
+//  emitting the bare expression diverges from the oracle — and overstated for
+//  the rest, which turned out to be ordinary parse rules once the TYPE grammar
+//  could spell a parameterised type. `map<string,int> m = …` was not failing
+//  on the literal at all; the statement never reached pVarDecl, because `map`
+//  was not a type token.
+//
+//  Desugarings reproduced here, because skipping them would make the oracle
+//  comparison misleading: a range for-loop becomes a C-style for, an
+//  interpolated string becomes a concatenation, and `=> expr` becomes a return.
+//
+//  STILL OUT  generics (`fn f<T>`), which need the type-argument list on both
+//             the declaration and the call site.
 //
 //  The cursor is an int[] pos "box" (arrays are by-reference), so the
 //  functions share the position without mutable global variables.
@@ -58,7 +67,10 @@ fn adv(int[] pos) -> void ={
 }
 fn isTypeTok(string t) -> bool ={
     return t == "TYPE_INT" || t == "TYPE_NUMBER" || t == "TYPE_STRING"
-        || t == "TYPE_BOOL" || t == "TYPE_VOID";
+        || t == "TYPE_BOOL" || t == "TYPE_VOID"
+        // 12.6 — the parameterised type keywords. Without these a
+        // `map<string,int> m = …` statement never reached pVarDecl at all.
+        || t == "MAP" || t == "FUTURE";
 }
 // index just past the ']' that closes the '[' at `start`. Used to decide
 // whether `a[i]` begins an assignment or is just an expression: the answer is
@@ -92,7 +104,7 @@ fn pExpr(string[] tt, string[] tv, int[] pos) -> string ={
 // `a & b == c` into the other tree and the S-expressions diverge, which is
 // precisely what the oracle comparison catches.
 fn pTernary(string[] tt, string[] tv, int[] pos) -> string ={
-    string cond = pOr(tt, tv, pos);
+    string cond = pCast(tt, tv, pos);
     if (pt(tt, pos) == "QUESTION") {
         adv(pos);
         string a = pTernary(tt, tv, pos);
@@ -101,6 +113,20 @@ fn pTernary(string[] tt, string[] tv, int[] pos) -> string ={
         return "(tern " + cond + " " + a + " " + b + ")";
     }
     return cond;
+}
+
+// 12.6 — `x as T`. The reference puts the cast BETWEEN ternary and ||, so it
+// binds looser than every binary operator: `a || b as int` casts the whole
+// disjunction, not just b. Getting this level wrong still parses, which is why
+// the oracle comparison is the only thing that can catch it.
+fn pCast(string[] tt, string[] tv, int[] pos) -> string ={
+    string e = pOr(tt, tv, pos);
+    while (pt(tt, pos) == "AS") {
+        adv(pos);
+        string ty = pType(tt, tv, pos);
+        e = "(cast " + e + " " + ty + ")";
+    }
+    return e;
 }
 
 fn pOr(string[] tt, string[] tv, int[] pos) -> string ={
@@ -320,6 +346,47 @@ fn pPostfix(string[] tt, string[] tv, int[] pos, string base) -> string ={
     return e;
 }
 
+// 12.6 — does an LPAREN here open a lambda parameter list?
+// Scans to the matching RPAREN (tracking nesting) and reports whether the next
+// token is `=>`.
+fn isLambdaAhead(string[] tt, int[] pos) -> bool ={
+    int i = pos[0] + 1;
+    int depth = 1;
+    while (i < len(tt) && depth > 0) {
+        if (tt[i] == "LPAREN")  { depth = depth + 1; }
+        if (tt[i] == "RPAREN")  { depth = depth - 1; }
+        if (tt[i] == "EOF")     { return false; }
+        i = i + 1;
+    }
+    if (i < len(tt)) { return tt[i] == "FAT_ARROW"; }
+    return false;
+}
+
+// `(T n, ...) => expr` or `=> { ... }`.
+// The expression form is a DESUGARING, not a shape: the reference turns
+// `=> e` into a body of [Return(e)], so emitting the bare expression here
+// would diverge from the oracle even though the source looks the same.
+fn pLambda(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // LPAREN
+    string params = "";
+    while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+        string pty = pType(tt, tv, pos);
+        string pname = pv(tv, pos); adv(pos);
+        params = params + " (p " + pty + " " + pname + ")";
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+    }
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    if (pt(tt, pos) == "FAT_ARROW") { adv(pos); }
+    string body = "";
+    if (pt(tt, pos) == "LBRACE") {
+        body = pBlock(tt, tv, pos);
+    } else {
+        string e = pExpr(tt, tv, pos);
+        body = " (return " + e + ")";
+    }
+    return "(lam (params" + params + ") (body" + body + "))";
+}
+
 fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
     string t = pt(tt, pos);
     if (t == "INT_LIT")   { string v = pv(tv, pos); adv(pos); return pPostfix(tt, tv, pos, "(int " + v + ")"); }
@@ -355,7 +422,29 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
         if (pt(tt, pos) == "RBRACE") { adv(pos); }
         return pPostfix(tt, tv, pos, "(new " + sname + fs + ")");
     }
+    // 12.6 — map literal `{k: v, ...}` in expression position.
+    // 12.5's concurrency, which the parser had never been taught.
+    if (t == "SPAWN") { adv(pos); return "(spawn " + pUnary(tt, tv, pos) + ")"; }
+    if (t == "AWAIT") { adv(pos); return "(await " + pUnary(tt, tv, pos) + ")"; }
+    if (t == "LBRACE") {
+        adv(pos);
+        string ps = "";
+        while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+            string k = pExpr(tt, tv, pos);
+            if (pt(tt, pos) == "COLON") { adv(pos); }
+            string v = pExpr(tt, tv, pos);
+            ps = ps + " (kv " + k + " " + v + ")";
+            if (pt(tt, pos) == "COMMA") { adv(pos); }
+        }
+        if (pt(tt, pos) == "RBRACE") { adv(pos); }
+        return pPostfix(tt, tv, pos, "(map" + ps + ")");
+    }
     if (t == "LPAREN") {
+        // 12.6 — `(int n) => …` is a lambda; `(a + b)` is grouping. Both start
+        // with LPAREN, so the two are told apart by scanning to the matching
+        // RPAREN and looking for `=>` after it. Guessing from the first token
+        // is not enough: `(x)` could be either until that arrow is seen.
+        if (isLambdaAhead(tt, pos)) { return pLambda(tt, tv, pos); }
         adv(pos);
         string e = pExpr(tt, tv, pos);
         if (pt(tt, pos) == "RPAREN") { adv(pos); }
@@ -376,12 +465,55 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
         }
         return pPostfix(tt, tv, pos, "(id " + name + ")");
     }
+    // A token no rule claims must still CONSUME something. Returning without
+    // advancing left the caller's loop looking at the same token forever — a
+    // parser that hangs on unexpected input is worse than one that reports it,
+    // and this is exactly how `spawn` (unknown here until now) hung the VM
+    // instead of producing an error node.
+    adv(pos);
     return "(err " + t + ")";
 }
 
 // ── types: primitive or ident, with []/? suffixes ─────
+//
+// 12.6 — the type grammar also has to cover `map<K,V>`, `future<T>` and the
+// function type `fn(T,U)->R`, because the reference stores the type as a STRING
+// and the S-expression carries it verbatim: "map<string,int>", no spaces. Any
+// difference in spelling is a mismatch even when the parse is right.
 fn pType(string[] tt, string[] tv, int[] pos) -> string ={
+    if (pt(tt, pos) == "FN") {
+        // function type: fn(T, U) -> R
+        adv(pos);
+        string ft = "fn(";
+        if (pt(tt, pos) == "LPAREN") { adv(pos); }
+        bool firstp = true;
+        while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+            string at = pType(tt, tv, pos);
+            if (!firstp) { ft = ft + ","; }
+            ft = ft + at;
+            firstp = false;
+            if (pt(tt, pos) == "COMMA") { adv(pos); }
+        }
+        if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        ft = ft + ")";
+        if (pt(tt, pos) == "ARROW") { adv(pos); ft = ft + "->" + pType(tt, tv, pos); }
+        return ft;
+    }
     string v = pv(tv, pos); adv(pos);
+    if (pt(tt, pos) == "LT") {
+        adv(pos);
+        v = v + "<";
+        bool firsta = true;
+        while (pt(tt, pos) != "GT" && pt(tt, pos) != "EOF") {
+            string at = pType(tt, tv, pos);
+            if (!firsta) { v = v + ","; }
+            v = v + at;
+            firsta = false;
+            if (pt(tt, pos) == "COMMA") { adv(pos); }
+        }
+        if (pt(tt, pos) == "GT") { adv(pos); }
+        v = v + ">";
+    }
     // `[]` may repeat (int[][]); `?` may not, and binds outermost
     while (pt(tt, pos) == "LBRACKET" && pt2(tt, pos) == "RBRACKET") {
         adv(pos); adv(pos);
@@ -394,7 +526,12 @@ fn pType(string[] tt, string[] tv, int[] pos) -> string ={
 // ── statements ──────────────────────────────────────────────
 fn pStmt(string[] tt, string[] tv, int[] pos) -> string ={
     string t = pt(tt, pos);
-    if (t == "FN")     { return pFn(tt, tv, pos); }
+    // 12.6 — `fn` opens a declaration (`fn name(...)`) OR a function TYPE
+    // (`fn(int)->int f = …`). The token after it is what separates them.
+    if (t == "FN") {
+        if (pt2(tt, pos) == "LPAREN") { return pVarDecl(tt, tv, pos); }
+        return pFn(tt, tv, pos);
+    }
     if (t == "RETURN") { return pReturn(tt, tv, pos); }
     if (t == "IF")     { return pIf(tt, tv, pos); }
     if (t == "WHILE")  { return pWhile(tt, tv, pos); }
@@ -402,6 +539,10 @@ fn pStmt(string[] tt, string[] tv, int[] pos) -> string ={
     if (t == "STRUCT") { return pStruct(tt, tv, pos); }
     if (t == "ENUM")   { return pEnum(tt, tv, pos); }
     if (t == "MATCH")  { return pMatch(tt, tv, pos); }
+    if (t == "TRY")    { return pTry(tt, tv, pos); }
+    if (t == "SWITCH") { return pSwitch(tt, tv, pos); }
+    if (t == "IMPORT") { return pImport(tt, tv, pos); }
+    if (t == "TRAIT")  { return pTrait(tt, tv, pos); }
     if (t == "BREAK")    { adv(pos); if (pt(tt, pos) == "SEMICOLON") { adv(pos); } return "(break)"; }
     if (t == "CONTINUE") { adv(pos); if (pt(tt, pos) == "SEMICOLON") { adv(pos); } return "(continue)"; }
     if (isTypeTok(t))  { return pVarDecl(tt, tv, pos); }
@@ -669,6 +810,132 @@ fn pMatch(string[] tt, string[] tv, int[] pos) -> string ={
     }
     if (pt(tt, pos) == "RBRACE") { adv(pos); }
     return "(match " + subj + cs + ")";
+}
+
+// ── 12.6: try / catch / finally ─────────────────────────
+fn pTry(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // TRY
+    string body = pBlock(tt, tv, pos);
+    string cty = "-";
+    string cname = "-";
+    string cbody = "";
+    if (pt(tt, pos) == "CATCH") {
+        adv(pos);
+        if (pt(tt, pos) == "LPAREN") { adv(pos); }
+        // `catch (string e)` carries a type; `catch (e)` does not, and the
+        // reference leaves catch_type null in that case.
+        if (pt2(tt, pos) == "IDENT") {
+            cty = pType(tt, tv, pos);
+            cname = pv(tv, pos); adv(pos);
+        } else {
+            cname = pv(tv, pos); adv(pos);
+        }
+        if (pt(tt, pos) == "RPAREN") { adv(pos); }
+        cbody = pBlock(tt, tv, pos);
+    }
+    string outp = "(try (body" + body + ") (catch " + cty + " " + cname + " (body" + cbody + "))";
+    if (pt(tt, pos) == "FINALLY") {
+        adv(pos);
+        string fbody = pBlock(tt, tv, pos);
+        outp = outp + " (finally (body" + fbody + "))";
+    }
+    return outp + ")";
+}
+
+// ── 12.6: switch ────────────────────────────────────────
+// Stacked labels share one body — `case a: case b: body` is ONE SwitchCase
+// with two values in the reference, not two cases. Emitting two would parse
+// the same source into a different tree.
+fn pSwitch(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // SWITCH
+    if (pt(tt, pos) == "LPAREN") { adv(pos); }
+    string subj = pExpr(tt, tv, pos);
+    if (pt(tt, pos) == "RPAREN") { adv(pos); }
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string cs = "";
+    string dflt = "";
+    bool hasDefault = false;
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        if (pt(tt, pos) == "CASE") {
+            string vals = "";
+            // collect every stacked label before the body
+            while (pt(tt, pos) == "CASE") {
+                adv(pos);
+                string v = pExpr(tt, tv, pos);
+                vals = vals + " " + v;
+                if (pt(tt, pos) == "COLON") { adv(pos); }
+            }
+            string body = "";
+            while (pt(tt, pos) != "CASE" && pt(tt, pos) != "DEFAULT"
+                   && pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+                string one = pStmt(tt, tv, pos);
+                body = body + " " + one;
+            }
+            cs = cs + " (case (vals" + vals + ") (body" + body + "))";
+        } else {
+            if (pt(tt, pos) == "DEFAULT") {
+                adv(pos);
+                if (pt(tt, pos) == "COLON") { adv(pos); }
+                hasDefault = true;
+                while (pt(tt, pos) != "CASE" && pt(tt, pos) != "DEFAULT"
+                       && pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+                    string one = pStmt(tt, tv, pos);
+                    dflt = dflt + " " + one;
+                }
+            } else {
+                adv(pos);
+            }
+        }
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    string outp = "(switch " + subj + cs;
+    if (hasDefault) { outp = outp + " (default (body" + dflt + "))"; }
+    return outp + ")";
+}
+
+// ── 12.6: import ────────────────────────────────────────
+fn pImport(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // IMPORT
+    string path = pv(tv, pos); adv(pos);        // STR_LIT
+    string alias = "-";
+    if (pt(tt, pos) == "AS") {
+        adv(pos);
+        alias = pv(tv, pos); adv(pos);
+    }
+    if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+    return "(import " + path + " " + alias + ")";
+}
+
+// ── 12.6: trait ─────────────────────────────────────────
+// Method SIGNATURES only: `fn cmp(int o) -> int;` with no body.
+fn pTrait(string[] tt, string[] tv, int[] pos) -> string ={
+    adv(pos);                                   // TRAIT
+    string name = pv(tv, pos); adv(pos);
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string ms = "";
+    while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+        if (pt(tt, pos) == "FN") {
+            adv(pos);
+            string mname = pv(tv, pos); adv(pos);
+            if (pt(tt, pos) == "LPAREN") { adv(pos); }
+            string params = "";
+            while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
+                string pty = pType(tt, tv, pos);
+                string pname = pv(tv, pos); adv(pos);
+                params = params + " (p " + pty + " " + pname + ")";
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+            }
+            if (pt(tt, pos) == "RPAREN") { adv(pos); }
+            string ret = "void";
+            if (pt(tt, pos) == "ARROW") { adv(pos); ret = pType(tt, tv, pos); }
+            if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+            ms = ms + " (m " + mname + " (params" + params + ") " + ret + ")";
+        } else {
+            adv(pos);
+        }
+    }
+    if (pt(tt, pos) == "RBRACE") { adv(pos); }
+    return "(trait " + name + ms + ")";
 }
 
 fn pExprStmt(string[] tt, string[] tv, int[] pos) -> string ={
