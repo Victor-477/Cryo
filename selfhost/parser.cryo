@@ -452,6 +452,17 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
     }
     if (t == "IDENT") {
         string name = pv(tv, pos); adv(pos);
+        // 13.3 — an explicit type-argument list on a call.
+        string targs = "";
+        if (pt(tt, pos) == "LT" && isTypeArgsAhead(tt, pos)) {
+            adv(pos);
+            while (pt(tt, pos) != "GT" && pt(tt, pos) != "EOF") {
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+                else { targs = targs + " " + pType(tt, tv, pos); }
+            }
+            if (pt(tt, pos) == "GT") { adv(pos); }
+            targs = " (targs" + targs + ")";
+        }
         if (pt(tt, pos) == "LPAREN") {
             adv(pos);
             string args = "";
@@ -461,7 +472,7 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
                 if (pt(tt, pos) == "COMMA") { adv(pos); }
             }
             if (pt(tt, pos) == "RPAREN") { adv(pos); }
-            return pPostfix(tt, tv, pos, "(call " + name + args + ")");
+            return pPostfix(tt, tv, pos, "(call " + name + targs + args + ")");
         }
         return pPostfix(tt, tv, pos, "(id " + name + ")");
     }
@@ -661,9 +672,55 @@ fn pWhile(string[] tt, string[] tv, int[] pos) -> string ={
     string body = pBlock(tt, tv, pos);
     return "(while " + cond + " (body" + body + "))";
 }
+// 13.3 — a type-parameter list: `<T>`, `<A, B>`, `<T: Ord>`.
+// Returns " (tparams T)" or "" — emitted only when non-empty so every
+// non-generic declaration keeps the shape 11.28 and 12.6 already assert.
+// A bound travels with its parameter (`T:Ord`) rather than in a second list,
+// because the reference keeps them in step and splitting them here would let
+// the two drift without the oracle noticing.
+fn pTypeParams(string[] tt, string[] tv, int[] pos) -> string ={
+    if (pt(tt, pos) != "LT") { return ""; }
+    adv(pos);
+    string ps = "";
+    while (pt(tt, pos) != "GT" && pt(tt, pos) != "EOF") {
+        if (pt(tt, pos) == "IDENT") {
+            string nm = pv(tv, pos); adv(pos);
+            if (pt(tt, pos) == "COLON") {
+                adv(pos);
+                nm = nm + ":" + pv(tv, pos);
+                adv(pos);
+            }
+            ps = ps + " " + nm;
+        } else {
+            adv(pos);
+        }
+        if (pt(tt, pos) == "COMMA") { adv(pos); }
+    }
+    if (pt(tt, pos) == "GT") { adv(pos); }
+    if (ps == "") { return ""; }
+    return " (tparams" + ps + ")";
+}
+
+// Does an LT here open a type-ARGUMENT list on a call — `id<int>(42)` — or is
+// it a comparison? Only the token after the matching GT separates them, the
+// same shape of question as the lambda lookahead.
+fn isTypeArgsAhead(string[] tt, int[] pos) -> bool ={
+    int i = pos[0] + 1;
+    while (i < len(tt)) {
+        if (tt[i] == "GT") { return i + 1 < len(tt) && tt[i + 1] == "LPAREN"; }
+        if (tt[i] != "IDENT" && tt[i] != "COMMA" && !isTypeTok(tt[i])
+            && tt[i] != "LBRACKET" && tt[i] != "RBRACKET") {
+            return false;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
     adv(pos);   // FN
     string name = pv(tv, pos); adv(pos);   // IDENT
+    string tps = pTypeParams(tt, tv, pos);          // 13.3
     if (pt(tt, pos) == "LPAREN") { adv(pos); }
     string params = "";
     while (pt(tt, pos) != "RPAREN" && pt(tt, pos) != "EOF") {
@@ -677,7 +734,7 @@ fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
     if (pt(tt, pos) == "ARROW") { adv(pos); ret = pType(tt, tv, pos); }
     if (pt(tt, pos) == "BODY_ASSIGN") { adv(pos); }
     string body = pStmtsUntilBrace(tt, tv, pos);   // '={' already consumed
-    return "(fn " + name + " (params" + params + ") " + ret + " (body" + body + "))";
+    return "(fn " + name + tps + " (params" + params + ") " + ret + " (body" + body + "))";
 }
 // `for` is two statements sharing a keyword. The reference parser produces a
 // For for the C-style header and a ForEach for `x in xs`, and the two are only
@@ -739,6 +796,7 @@ fn pFor(string[] tt, string[] tv, int[] pos) -> string ={
 fn pStruct(string[] tt, string[] tv, int[] pos) -> string ={
     adv(pos);                                   // STRUCT
     string name = pv(tv, pos); adv(pos);
+    string tps = pTypeParams(tt, tv, pos);          // 13.3
     if (pt(tt, pos) == "LBRACE") { adv(pos); }
     string fs = "";
     while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
@@ -749,7 +807,7 @@ fn pStruct(string[] tt, string[] tv, int[] pos) -> string ={
         if (pt(tt, pos) == "COMMA") { adv(pos); }
     }
     if (pt(tt, pos) == "RBRACE") { adv(pos); }
-    return "(struct " + name + " (fields" + fs + "))";
+    return "(struct " + name + tps + " (fields" + fs + "))";
 }
 
 fn pEnum(string[] tt, string[] tv, int[] pos) -> string ={
