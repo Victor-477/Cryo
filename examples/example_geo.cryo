@@ -1,7 +1,14 @@
 // Example module with pub exports and private items (Phase 10.8)
+//
+// ISSUES/19 — the private items below are not decoration: `area` calls a
+// private helper, `scaled_area` reads private module state, and `bump_scale`
+// is a pub accessor over state that has no pub spelling of its own. That is
+// the shape of a real library, and it is exactly what used to fail: private
+// declarations were DROPPED from the program rather than hidden, so a pub
+// function that used one could not compile.
 
 pub fn area(number width, number height) -> number ={
-    return width * height;
+    return _rect(width, height);
 }
 
 pub struct Point {
@@ -9,6 +16,25 @@ pub struct Point {
     number y;
 }
 
+// Private module state. There is no `pub` spelling for a variable, so it is
+// reachable only through the accessors below — the right default for state.
+number _scale = 1.0;
+
+// A private helper, called by a pub sibling.
+fn _rect(number w, number h) -> number ={
+    return w * h;
+}
+
 fn secret_constant() -> number ={
     return 42.0;
+}
+
+// State survives the import and persists across calls into the module.
+pub fn bump_scale() -> number ={
+    _scale = _scale + 1.0;
+    return _scale;
+}
+
+pub fn scaled_area(number width, number height) -> number ={
+    return _rect(width, height) * _scale;
 }

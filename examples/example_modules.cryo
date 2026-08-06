@@ -8,3 +8,16 @@ print(a);
 geo::Point pt = geo::Point { x: 10.0, y: 20.0 };
 print(pt.x);
 print(pt.y);
+
+// ISSUES/19 — a module with INTERNALS. `area` above already went through a
+// private helper; these go through private module STATE as well, and prove it
+// persists across calls rather than resetting on each one.
+print(geo::scaled_area(2.0, 5.0));   // 10 * 1.0
+print(geo::bump_scale());            // 2.0
+print(geo::scaled_area(2.0, 5.0));   // 10 * 2.0
+print(geo::bump_scale());            // 3.0
+
+// What stays out of reach: `geo::_rect(...)`, `geo::_scale` and
+// `geo::secret_constant()` are all a Module Error from here. Privacy comes
+// from name resolution — the declarations exist, they just do not answer to
+// `geo::`.
