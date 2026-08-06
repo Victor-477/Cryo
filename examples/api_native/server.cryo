@@ -85,8 +85,9 @@ if (!http_listen(8080)) {
         map<string,string> req = http_accept();
         // http_accept ALWAYS returns a map; an empty method means the
         // connection failed or the request was malformed, so there is
-        // nothing to answer. (It is not `null` on purpose — see the note
-        // in the docs about container/null equality.)
+        // nothing to answer. Returning a map rather than `null` keeps the
+        // caller from having to unwrap anything; `req == null` would work
+        // correctly now (ISSUES/18), it is simply not the API.
         if (len(req["method"]) > 0) {
             string body = route(req["method"], req["path"], req["body"]);
             http_respond(200, "application/json", body);
