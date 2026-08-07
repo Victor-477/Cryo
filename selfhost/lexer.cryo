@@ -157,6 +157,11 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
                     string e = src[i + 1];
                     if (e == "n")       { s = s + "\n"; }
                     else if (e == "t")  { s = s + "\t"; }
+                    // \r, in step with the reference lexer. The token streams
+                    // have to stay byte-identical, so an escape added on one
+                    // side and not the other is a silent divergence — and this
+                    // one was missing on BOTH, which is why it went unnoticed.
+                    else if (e == "r")  { s = s + "\r"; }
                     else if (e == "\"") { s = s + "\""; }
                     else if (e == "\\") { s = s + "\\"; }
                     else                { s = s + e; }

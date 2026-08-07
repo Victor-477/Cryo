@@ -46,6 +46,10 @@ fn cadv(int[] pos) -> void ={
 fn charCode(string c) -> int ={
     if (c == "\t") { return 9; }
     if (c == "\n") { return 10; }
+    // \r joins them for the reason 9.4 recorded: a control character is
+    // outside the printable table below, so without an entry here it falls
+    // back to '?' and the constant is silently the wrong string.
+    if (c == "\r") { return 13; }
     string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
     int idx = find(tbl, c);
     if (idx < 0) { return 63; }   // '?' for a character outside the table

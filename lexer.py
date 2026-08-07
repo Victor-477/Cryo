@@ -322,7 +322,18 @@ class Lexer:
                 if esc == '$':
                     s += ESC_DOLLAR
                 else:
-                    s += {'n': '\n', 't': '\t', '\\': '\\',
+                    # `r` was missing, and the fallback below turns an unknown
+                    # escape into the character itself — so `"\r"` lexed as the
+                    # LETTER r, silently. No literal could contain a carriage
+                    # return, which is what every line of CRLF text ends with.
+                    # Found by 13.5's trim_start/trim_end tests, where
+                    # trim(s) and trim_start(trim_end(s)) disagreed on a string
+                    # whose "\r" was not one.
+                    #
+                    # `\0` is deliberately NOT here: NUL is the ESC_DOLLAR
+                    # marker above, and a literal one would be indistinguishable
+                    # from an escaped `${`.
+                    s += {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
                           '"': '"', "'": "'"}.get(esc, esc)
             else:
                 s += self._advance()

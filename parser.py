@@ -2250,6 +2250,8 @@ class Parser:
                 return self._desugar_any(args[0], args[1])
             if name == 'all' and len(args) == 2:
                 return self._desugar_all(args[0], args[1])
+            if name in self._STR_HELPERS:                        # 13.5
+                return self._desugar_str_builtin(name, args, id_line)
         if name == 'llm' and len(args) == 3:
             self._check_llm_options(args[2], id_line)   # 11.16
         if name in ('llm_call', 'llm_stream') and len(args) == 3:
@@ -2478,6 +2480,136 @@ class Parser:
             return 'any', 'any[]'
         else:
             return 'any', 'any', 'any[]'
+
+    # ── 13.5: string builtins with no new native ────────────
+    #
+    # Architecture rule 2, taken literally. A new native has to be added in SIX
+    # places that cannot disagree (codegen_pyro.NATIVES, main.go, pyro_runtime.c,
+    # selfhost/codegen.cryo's nativeId, semantic.py's BUILTINS and — since 13.2 —
+    # selfhost/semantic.cryo's isBuiltin), and a half-applied id allocation does
+    # not fail loudly: it makes the backends silently disagree about what
+    # `NATIVE <id>` means. A front-end lowering costs none of that and reaches
+    # all six backends at once.
+    #
+    # These lower to a synthetic function written as ordinary Cryo, parsed by a
+    # sub-parser. Writing them as SOURCE rather than as hand-built AST is the
+    # point: what the helper does is readable here, and it is checked by the
+    # same parser everything else goes through.
+    #
+    # ROADMAP CORRECTION — 13.5 lists `trim_start`/`trim_end` under "needing an
+    # id", on the grounds that no composition of the existing natives strips one
+    # end. That is true of COMPOSITION and not of lowering: a helper that walks
+    # the string with len/substr needs no native at all, and it is here. What
+    # genuinely still needs an id is anything the language cannot express over
+    # its own primitives — a regex engine, and a clock for date formatting.
+    #
+    # NOT DONE, deliberately: `format(...)`. 11.3 already put a format
+    # mini-language in string interpolation (`"${v:>10,.2f}"`), so a `format`
+    # builtin would be a second spelling of it, and Cryo has no varargs to give
+    # it the signature people would expect. `join` over a map is left out for
+    # the same reason it was never specified: whether it joins keys, values or
+    # "k=v" pairs is a decision, not a detail, and guessing it here would be
+    # harder to change later than leaving it unwritten.
+    _STR_HELPERS = {
+        # lines: split on "\n", tolerate CRLF, and do NOT hand back a phantom
+        # empty last line for text that ends with a newline — which is how
+        # every file read from disk ends.
+        'lines': ('__cryo_lines', 'string[]', r'''
+fn __cryo_lines(string s) -> string[] ={
+    string[] out = [];
+    string[] raw = split(s, "\n");
+    int n = len(raw);
+    if (n > 0) { if (raw[n - 1] == "") { n = n - 1; } }
+    int i = 0;
+    while (i < n) {
+        string ln = raw[i];
+        int m = len(ln);
+        if (m > 0) { if (ln[m - 1] == "\r") { ln = substr(ln, 0, m - 1); } }
+        out.push(ln);
+        i = i + 1;
+    }
+    return out;
+}
+'''),
+        'chars': ('__cryo_chars', 'string[]', r'''
+fn __cryo_chars(string s) -> string[] ={
+    return split(s, "");
+}
+'''),
+        # title_case follows Python's str.title(): the first letter of each word
+        # is upper, the REST of the word is lower, so "hELLO" becomes "Hello"
+        # rather than "HELLO". A word boundary is any whitespace, not only a
+        # space — otherwise a tab-separated line would title only its first cell.
+        'title_case': ('__cryo_title_case', 'string', r'''
+fn __cryo_title_case(string s) -> string ={
+    string out = "";
+    int n = len(s);
+    int i = 0;
+    bool at_start = true;
+    while (i < n) {
+        string c = s[i];
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") {
+            out = out + c;
+            at_start = true;
+        } else {
+            if (at_start) { out = out + upper(c); } else { out = out + lower(c); }
+            at_start = false;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+'''),
+        # The same character set trim() strips, so trim(s) and
+        # trim_start(trim_end(s)) agree — a difference there would be the worst
+        # kind, since nothing would ever report it.
+        'trim_start': ('__cryo_trim_start', 'string', r'''
+fn __cryo_trim_start(string s) -> string ={
+    int n = len(s);
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") { break; }
+        i = i + 1;
+    }
+    return substr(s, i, n - i);
+}
+'''),
+        'trim_end': ('__cryo_trim_end', 'string', r'''
+fn __cryo_trim_end(string s) -> string ={
+    int n = len(s);
+    while (n > 0) {
+        string c = s[n - 1];
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") { break; }
+        n = n - 1;
+    }
+    return substr(s, 0, n);
+}
+'''),
+    }
+
+    def _desugar_str_builtin(self, name, args, line):
+        helper, _ret, source = self._STR_HELPERS[name]
+        if len(args) != 1:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: {name} takes 1 argument "
+                f"(the string), not {len(args)}")
+        if helper not in self.user_defined_fns:
+            self.user_defined_fns.add(helper)
+            from lexer import Lexer as _Lexer      # local import (no cycle)
+            sub = Parser(_Lexer(source).tokenize())
+            prog = sub.parse()
+            # The helper's own body may desugar further (the `while` does not,
+            # today — but adopting the sub-parser's synthetics is what keeps
+            # that from becoming a silent missing-function later).
+            for fn in sub.synthetic_fns:
+                if fn.name not in self.user_defined_fns:
+                    self.user_defined_fns.add(fn.name)
+                    self.synthetic_fns.append(fn)
+            for st in prog.statements:
+                if isinstance(st, FunctionDecl):
+                    self.synthetic_fns.append(st)
+        return CallExpr(helper, args, line=line)
 
     def _desugar_map(self, arr, f):
         elem_t, arr_t = self._extract_fn_info(f, 1)
