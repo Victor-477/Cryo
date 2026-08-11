@@ -95,6 +95,23 @@ class ParseError(Exception):
     pass
 
 
+class ParseErrors(ParseError):
+    """More than one syntax error from a single parse (roadmap 13.6).
+
+    A ParseError so that every existing `except ParseError` keeps working — a
+    caller that does not know about recovery still gets a syntax error, and the
+    joined text is readable on its own. Callers that want them separately read
+    `.errors`.
+    """
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        super().__init__(
+            f"the parser found {len(self.errors)} problems:\n  - "
+            + "\n  - ".join(e.replace('[Syntax Error] ', '')
+                            for e in self.errors))
+
+
 def _unesc_dollar(s: str) -> str:
     """Turn the 11.39 marker back into a plain '$'.
 
@@ -112,6 +129,14 @@ class Parser:
         self.synthetic_fns = []
         self.user_defined_fns = set()
         self._gen_id_count = 0
+        # 13.6 — syntax errors collected during recovery, raised together at the
+        # end of parse(). One list per Parser: a sub-parser (an interpolation
+        # fragment, a synthetic helper) has its own and cannot leak into this
+        # one. `_err_at` is the token position each was reported at, so a rule
+        # that fails twice at the same place is recorded once.
+        self._errors = []
+        self._err_at = set()
+        self._stopped = False
 
     def _gen_id(self):
         self._gen_id_count += 1
@@ -219,10 +244,141 @@ class Parser:
 
     # ── program ────────────────────────────────────────────
 
+    # ── 13.6: report every syntax error, not just the first ──
+    #
+    # 11.24 made the semantic passes accumulate; the parser never got the same
+    # treatment, so five typos took five compiles. It now recovers at a
+    # statement boundary and keeps going.
+    #
+    # Recovery is only worth having if the EXTRA errors are real. A parser that
+    # resumes in the wrong place invents cascades, and a list of ten problems
+    # where nine are noise is worse than one true problem — you stop reading
+    # them. Three things keep that in check: resynchronising to a boundary the
+    # author would recognise (after a `;`, past a `}`, or at a token that can
+    # only begin a statement), never reporting twice at the same token, and a
+    # cap, because past a certain point the parse has lost the thread and the
+    # honest advice is to fix these and recompile.
+    #
+    # A SINGLE error still raises exactly what it always did. That is not
+    # laziness about the common case: every existing test, and every message in
+    # the docs, is written against that shape, and changing it to a one-item
+    # list would be a churn with no reader benefit.
+    _MAX_ERRORS = 10
+
+    # Tokens that can only START a statement, so seeing one means the previous
+    # statement is over however badly it ended.
+    def _sync_starts(self):
+        names = ('FN', 'STRUCT', 'ENUM', 'TRAIT', 'IMPL', 'IF', 'WHILE', 'FOR',
+                 'DO', 'RETURN', 'IMPORT', 'LIBRARY', 'SWITCH', 'TRY', 'MATCH',
+                 'BREAK', 'CONTINUE', 'CONST', 'THROW', 'SKILL', 'TEST',
+                 'PERMISSIONS')
+        out = set()
+        for n in names:
+            t = getattr(TokenType, n, None)
+            if t is not None:
+                out.add(t)
+        return out | set(TYPE_TOKENS)
+
+    def _record(self, err, before) -> bool:
+        """Collect one syntax error. False means stop parsing.
+
+        Deduplicated by the token position the failing statement STARTED at, so
+        a rule that unwinds through several frames reporting as it goes leaves
+        one entry rather than one per frame.
+
+        `_stopped` latches once the cap is hit. Without it the cap leaks: the
+        block that gives up still has to unwind past its own `}`, every frame
+        on the way out records again, and a 12-error file reported 13 problems
+        with the "stopping here" line in the middle of them.
+        """
+        if self._stopped:
+            return False
+        if before not in self._err_at:
+            self._err_at.add(before)
+            self._errors.append(str(err))
+        if len(self._errors) >= self._MAX_ERRORS:
+            self._stopped = True
+            self._errors.append(
+                "[Syntax Error] ... stopping here; fix these and "
+                "compile again to see whether more remain")
+            return False
+        return True
+
+    def _synchronize(self, before):
+        # Progress is not optional: a rule that failed without consuming
+        # anything would otherwise be retried forever.
+        if self.pos == before:
+            self._advance()
+        sync = self._sync_starts()
+        while not self._match(TokenType.EOF):
+            if self.tokens[self.pos - 1].type == TokenType.SEMICOLON:
+                return
+            if self._match(TokenType.RBRACE):
+                self._advance()      # a closed block is a boundary too
+                return
+            if self._cur().type in sync:
+                return
+            self._advance()
+
+    def _sync_in_body(self, before, stops=()):
+        """Resynchronise INSIDE a block, without leaving it.
+
+        The difference from `_synchronize` is the whole point of this routine:
+        it stops *before* the `}` that closes the current block instead of
+        consuming it. Leaving the block here is what invents cascades — an
+        error inside an `if` used to unwind the entire function and resume at
+        top level on the `} else {`, reporting a perfectly good `else` as a
+        second problem. Stopping at the brace lets `_body` return normally, so
+        the enclosing `if` still gets to see its own `else`.
+
+        Nested braces are counted, so a broken statement containing a complete
+        inner block skips over it rather than mistaking the inner `}` for the
+        end of this one.
+
+        `stops` are extra tokens that end a statement list in the caller's
+        grammar — `case`/`default` in a switch — so recovery there stops at the
+        next arm rather than running through it.
+        """
+        if self.pos == before:
+            self._advance()          # progress, as above
+        sync = set(self._sync_starts()) | set(stops)
+        depth = 0
+        while not self._match(TokenType.EOF):
+            if depth == 0 and self.tokens[self.pos - 1].type == TokenType.SEMICOLON:
+                return
+            t = self._cur().type
+            if t == TokenType.LBRACE:
+                depth += 1
+            elif t == TokenType.RBRACE:
+                if depth == 0:
+                    return           # this block's own `}` — leave it in place
+                depth -= 1
+            elif depth == 0 and t in sync:
+                return
+            self._advance()
+
     def parse(self):
         stmts = []
         while not self._match(TokenType.EOF):
-            stmts.append(self._stmt())
+            # After a failed statement we can be left facing the `}` of the
+            # block it was in. At the top level that token can never begin a
+            # statement, so parsing it just reports the abandoned block a
+            # second time — the cascade recovery exists to avoid. Only while
+            # recovering: an unbalanced `}` in an otherwise clean file is still
+            # a real error and is still reported.
+            if self._errors and self._match(TokenType.RBRACE):
+                self._advance()
+                continue
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._synchronize(before)
+        if self._errors:
+            raise (ParseError(self._errors[0]) if len(self._errors) == 1
+                   else ParseErrors(self._errors))
         if self.synthetic_fns:
             stmts.extend(self.synthetic_fns)
         return Program(stmts)
@@ -502,9 +658,24 @@ class Parser:
         return FunctionDecl(name, params, ret, body, is_tool=is_tool, is_test=is_test, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 
     def _body(self):
+        # 13.6 — a bad statement is contained HERE, at the boundary the author
+        # would recognise, rather than unwinding the whole declaration. Without
+        # this the first error in a function body threw the parser back to the
+        # top level mid-body, where it resumed on tokens that cannot begin a
+        # top-level statement and reported them as further problems.
+        #
+        # The errors go on `self` instead of propagating, because the block is
+        # not the place that decides how to report: parse() raises once, with
+        # all of them, having seen the rest of the file too.
         stmts = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):
-            stmts.append(self._stmt())
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._sync_in_body(before)
         self._expect(TokenType.RBRACE)
         return stmts
 
@@ -1405,10 +1576,19 @@ class Parser:
         return Switch(subject, cases, default_body)
 
     def _case_body(self):
+        # 13.6 — same containment as _body, but a switch arm ends at the next
+        # `case`/`default` as well as at the `}`, so recovery must stop there
+        # too or a broken statement swallows the following arm.
+        ends = (TokenType.CASE, TokenType.DEFAULT)
         stmts = []
-        while not self._match(TokenType.CASE, TokenType.DEFAULT,
-                              TokenType.RBRACE, TokenType.EOF):
-            stmts.append(self._stmt())
+        while not self._match(*ends, TokenType.RBRACE, TokenType.EOF):
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._sync_in_body(before, stops=ends)
         return stmts
 
     # ── match ───────────────────────────────────────────────
@@ -1432,11 +1612,13 @@ class Parser:
             guard = self._match_guard() if self._match(TokenType.IF) else None
             self._expect(TokenType.FAT_ARROW)
             if self._match(TokenType.LBRACE):
-                self._advance()
-                body = []
-                while not self._match(TokenType.RBRACE, TokenType.EOF):
-                    body.append(self._stmt())
-                self._expect(TokenType.RBRACE)
+                # 13.6 — _block() rather than an inline statement loop, so an
+                # arm body recovers like any other block. Its own loop had no
+                # recovery, so one bad statement in an arm unwound the whole
+                # match and left the parser reading the NEXT arm's `Err(e) =>`
+                # as a top-level expression — reporting a valid `=>` as a
+                # second problem.
+                body = self._block()
             else:
                 body = [self._stmt()]
             cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line, guard))
