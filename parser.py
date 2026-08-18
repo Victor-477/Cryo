@@ -104,12 +104,27 @@ class ParseErrors(ParseError):
     `.errors`.
     """
 
-    def __init__(self, errors):
+    #: Appended when the cap fires. NOT one of `errors`: it is a notice about
+    #: the list, not a mistake in the program, and counting it as one made a
+    #: 12-mistake file report "found 11 problems" while listing 10 and a note.
+    #: Callers render it from `truncated`.
+    CAP_NOTICE = ("... stopping here; fix these and compile again to see "
+                  "whether more remain")
+
+    def __init__(self, errors, truncated=False):
         self.errors = list(errors)
-        super().__init__(
-            f"the parser found {len(self.errors)} problems:\n  - "
-            + "\n  - ".join(e.replace('[Syntax Error] ', '')
-                            for e in self.errors))
+        self.truncated = bool(truncated)
+        n = len(self.errors)
+        # "at least" when the cap cut the list off. The parser did find n, and
+        # there may be more it never reached; a flat "found n" there would be
+        # the same off-by-one in words rather than in arithmetic.
+        head = ("the parser found at least %d problem%s:" % (n, '' if n == 1 else 's')
+                if self.truncated
+                else "the parser found %d problem%s:" % (n, '' if n == 1 else 's'))
+        body = "\n  - ".join(e.replace('[Syntax Error] ', '')
+                             for e in self.errors)
+        super().__init__(head + "\n  - " + body
+                         + ("\n  " + self.CAP_NOTICE if self.truncated else ""))
 
 
 def _unesc_dollar(s: str) -> str:
@@ -137,6 +152,7 @@ class Parser:
         self._errors = []
         self._err_at = set()
         self._stopped = False
+        self._truncated = False   # the cap fired; see ParseErrors.CAP_NOTICE
 
     def _gen_id(self):
         self._gen_id_count += 1
@@ -297,10 +313,11 @@ class Parser:
             self._err_at.add(before)
             self._errors.append(str(err))
         if len(self._errors) >= self._MAX_ERRORS:
+            # Latched, and recorded as a FLAG rather than as another entry
+            # in the list: the notice is about the report, not a mistake in
+            # the program, and appending it made the count one too high.
             self._stopped = True
-            self._errors.append(
-                "[Syntax Error] ... stopping here; fix these and "
-                "compile again to see whether more remain")
+            self._truncated = True
             return False
         return True
 
@@ -377,8 +394,11 @@ class Parser:
                     break
                 self._synchronize(before)
         if self._errors:
-            raise (ParseError(self._errors[0]) if len(self._errors) == 1
-                   else ParseErrors(self._errors))
+            # A lone error keeps the exact one-error shape it has always
+            # had — unless the cap fired, where the notice has to survive.
+            if len(self._errors) == 1 and not self._truncated:
+                raise ParseError(self._errors[0])
+            raise ParseErrors(self._errors, self._truncated)
         if self.synthetic_fns:
             stmts.extend(self.synthetic_fns)
         return Program(stmts)
