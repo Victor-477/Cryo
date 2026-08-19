@@ -56,12 +56,18 @@ _SUPPORTS = {
     'go':   {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
              'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
+    # .NET brings containers, optionals and exceptions with it, so the C#
+    # backend starts where the C one needed a hand-written runtime to get. What
+    # it does NOT have is the Pyro layer (llm/http/machine) or first-class
+    # functions, and those refuse with a message naming a backend that does.
+    'csharp': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
+               'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn', 'input'},
 }
 
 # foreign languages that each backend can emit
 _LANG_OF = {
     'go': {'go'}, 'node': {'node', 'js', 'javascript'}, 'c': {'c'},
-    'pyro': set(), 'asm': set(),
+    'pyro': set(), 'asm': set(), 'csharp': {'c#', 'cs', 'csharp', 'dotnet'},
     # The front-end backend is the only one that emits a page. It was missing
     # from these tables entirely, so `--backend auto` could never choose it and
     # a program built out of >html(/>CSS( blocks was handed to go — which drops
@@ -75,7 +81,7 @@ _LANG_OF = {
 _PAGE_LANGS = {'html', 'css'}
 
 # preference order: more lightweight/native first
-_PREF = ['pyro', 'go', 'node', 'c', 'asm']
+_PREF = ['pyro', 'go', 'node', 'c', 'csharp', 'asm']
 
 
 def _walk(node: Any):
