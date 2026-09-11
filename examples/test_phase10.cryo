@@ -1,0 +1,130 @@
+// ============================================================
+//  Cryo Test Suite — Phase 10 Modern Features (10.1 - 10.10)
+//
+//  Tests range-based for loops, collection operations,
+//  comprehensions, extended stdlib, slices, and postfix calls.
+//  Run with:
+//      python Burnout/cryoc.py test Cryo/examples/test_phase10.cryo --backend pyro
+//      python Burnout/pyro.py test Cryo/examples/test_phase10.cryo
+// ============================================================
+
+// ── 10.1: Range-based for loops ─────────────────────────────
+test fn test_range_loops() ={
+    int sum_excl = 0;
+    for (int i in 1..5) {
+        sum_excl = sum_excl + i;
+    }
+    assert(sum_excl == 10, "1..5 exclusive range sum == 10 (1+2+3+4)");
+
+    int sum_incl = 0;
+    for (int j in 1..=5) {
+        sum_incl = sum_incl + j;
+    }
+    assert(sum_incl == 15, "1..=5 inclusive range sum == 15 (1+2+3+4+5)");
+}
+
+// ── 10.2: Collection operations ─────────────────────────────
+test fn test_collection_operations() ={
+    int[] nums = [40, 10, 30, 20];
+    int[] s = sort(nums);
+    assert(s[0] == 10, "sort min is 10");
+    assert(s[3] == 40, "sort max is 40");
+
+    int[] r = reverse(s);
+    assert(r[0] == 40, "reverse first is 40");
+    assert(r[3] == 10, "reverse last is 10");
+
+    int idx = index_of(nums, 30);
+    assert(idx == 2, "index_of 30 is 2");
+
+    int[] part = slice(nums, 1, 3);
+    assert(len(part) == 2, "slice len == 2");
+    assert(part[0] == 10, "slice[0] == 10");
+    assert(part[1] == 30, "slice[1] == 30");
+
+    int[] base = [1, 2, 3];
+    int[] doubled = map(base, (int x) => x * 2);
+    assert(doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6, "map doubled");
+
+    int[] seq = [1, 2, 3, 4, 5, 6];
+    int[] evens = filter(seq, (int x) => x % 2 == 0);
+    assert(len(evens) == 3, "filter evens len == 3");
+    assert(evens[0] == 2 && evens[1] == 4 && evens[2] == 6, "filter evens values");
+
+    int[] small = [1, 2, 3, 4];
+    int total = reduce(small, (int acc, int x) => acc + x, 0);
+    assert(total == 10, "reduce sum == 10");
+
+    int[] mixed = [1, 3, 5, 6];
+    assert(any(mixed, (int x) => x % 2 == 0), "any has even");
+    assert(!all(mixed, (int x) => x % 2 == 0), "all are not even");
+
+    int[] all_even = [2, 4, 6];
+    assert(all(all_even, (int x) => x % 2 == 0), "all are even");
+}
+
+// ── 10.3: Comprehensions and Iterators ───────────────────────
+test fn test_comprehensions_and_iterators() ={
+    any[] squares_even = [x * x for int x in 1..=5 if x % 2 == 0];
+    assert(len(squares_even) == 2, "squares_even len == 2");
+    assert(squares_even[0] == 4, "2^2 == 4");
+    assert(squares_even[1] == 16, "4^2 == 16");
+
+    string[] words = ["alpha", "beta", "gamma"];
+    int count_iter = 0;
+    for (i, v in enumerate(words)) {
+        if (i == 0) { assert(v == "alpha", "enumerate 0 == alpha"); }
+        if (i == 2) { assert(v == "gamma", "enumerate 2 == gamma"); }
+        count_iter = count_iter + 1;
+    }
+    assert(count_iter == 3, "enumerate iterated 3 times");
+}
+
+// ── 10.4: Extended Standard Library ─────────────────────────
+test fn test_extended_stdlib() ={
+    assert(clamp(15, 0, 10) == 10, "clamp 15 to 10");
+    assert(clamp(-5, 0, 10) == 0, "clamp -5 to 0");
+    assert(clamp(7, 0, 10) == 7, "clamp 7 in 0..10");
+
+    assert(sign(42) == 1, "sign(42) == 1");
+    assert(sign(-42) == -1, "sign(-42) == -1");
+    assert(sign(0) == 0, "sign(0) == 0");
+
+    assert(gcd(48, 18) == 6, "gcd(48, 18) == 6");
+    assert(hypot(3.0, 4.0) == 5.0, "hypot(3, 4) == 5");
+
+    assert(starts_with("cryolang", "cryo"), "starts_with cryo");
+    assert(ends_with("cryolang", "lang"), "ends_with lang");
+    assert(repeat("abc", 3) == "abcabcabc", "repeat abc x3");
+
+    assert(pad_start("42", 5, "0") == "00042", "pad_start 00042");
+    assert(pad_end("hi", 4, ".") == "hi..", "pad_end hi..");
+
+    int[] to_sum = [10, 20, 30, 40];
+    assert(sum(to_sum) == 100, "sum == 100");
+
+    int[] to_count = [1, 2, 1, 3, 1];
+    assert(count(to_count, 1) == 3, "count 1s == 3");
+}
+
+// ── 10.9: Ranges & Slices as values ─────────────────────────
+test fn test_slices_as_values() ={
+    int[] nums = [10, 20, 30, 40, 50];
+    int[] sub = nums[1..4];
+    assert(len(sub) == 3, "sub len == 3");
+    assert(sub[0] == 20 && sub[1] == 30 && sub[2] == 40, "sub elements 20, 30, 40");
+
+    string s = "abcdef";
+    string sub_s = s[1..4];
+    assert(sub_s == "bcd", "sub_s == bcd");
+}
+
+// ── 10.10: Postfix calls f(a)(b) ────────────────────────────
+fn make_adder(int x) -> fn(int)->int ={
+    return (int y) => x + y;
+}
+
+test fn test_postfix_calls() ={
+    int result = make_adder(10)(25);
+    assert(result == 35, "make_adder(10)(25) == 35");
+}

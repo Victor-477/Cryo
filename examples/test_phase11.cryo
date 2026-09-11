@@ -1,0 +1,163 @@
+// ============================================================
+//  Cryo Test Suite — Phase 11 Production Hardening & App Layer
+//
+//  Tests module state, struct methods without traits, rich string
+//  formatting, iteration protocol, filesystem natives, container
+//  null equality, and backslash interpolation escape.
+//  Run with:
+//      python Burnout/cryoc.py test Cryo/examples/test_phase11.cryo --backend pyro
+//      python Burnout/cryoc.py test Cryo/examples/test_phase11.cryo --backend node
+//      python Burnout/cryoc.py test Cryo/examples/test_phase11.cryo --backend go
+// ============================================================
+
+// ── 11.1 Module State ──
+int g_counter = 100;
+string g_label = "global";
+
+fn bump_global(int amount) ={
+    g_counter = g_counter + amount;
+}
+
+fn set_label(string val) ={
+    g_label = val;
+}
+
+fn get_shadowed(int g_counter) -> int ={
+    return g_counter * 2;
+}
+
+// ── 11.2 Struct Methods without Traits ──
+struct Box {
+    int width;
+    int height;
+}
+
+impl Box {
+    fn area() -> int ={
+        return this.width * this.height;
+    }
+
+    fn perimeter() -> int ={
+        return (this.width + this.height) * 2;
+    }
+
+    fn scale(int factor) -> int ={
+        return (this.width * factor) * (this.height * factor);
+    }
+}
+
+// ── 11.5 Iteration Protocol on Custom Types ──
+trait Iterable {
+    fn iter() -> int[];
+}
+
+struct Stepper {
+    int count;
+}
+
+impl Iterable for Stepper {
+    fn iter() -> int[] ={
+        int[] res = [];
+        for (int i = 0; i < this.count; i = i + 1) {
+            res.push(i + 1);
+        }
+        return res;
+    }
+}
+
+fn check_local_shadow() -> int ={
+    int g_counter = 7;
+    return g_counter;
+}
+
+// ── Tests ──
+
+test fn test_module_state() ={
+    bump_global(25);
+    assert(g_counter == 125, "g_counter bumped to 125");
+    set_label("updated");
+    assert(g_label == "updated", "g_label updated");
+
+    // local and parameter shadowing
+    assert(check_local_shadow() == 7, "local shadows module variable");
+    assert(get_shadowed(5) == 10, "parameter shadows module variable");
+}
+
+test fn test_struct_methods() ={
+    Box b = Box { width: 5, height: 8 };
+    assert(b.area() == 40, "b.area() == 40");
+    assert(b.perimeter() == 26, "b.perimeter() == 26");
+    assert(b.scale(2) == 160, "b.scale(2) == 160");
+}
+
+test fn test_format_strings() ={
+    number pi = 3.14159;
+    string f_pi = "${pi:.2f}";
+    assert(f_pi == "3.14", "format .2f yields 3.14");
+
+    int big = 1000000;
+    string f_big = "${big:,d}";
+    assert(f_big == "1,000,000", "format ,d groups thousands");
+
+    string text = "hi";
+    string f_align = "[${text:<5}]";
+    assert(f_align == "[hi   ]", "format <5 left aligns");
+
+    int num = 42;
+    string f_zero = "${num:05d}";
+    assert(f_zero == "00042", "format 05d zero-pads");
+
+    number half = 0.5;
+    string f_pct = "${half:.0%}";
+    assert(f_pct == "50%", "format .0% yields 50%");
+}
+
+test fn test_iteration_protocol() ={
+    map<string,int> inventory = {"apples": 10, "bananas": 20};
+    int total_qty = 0;
+    for (string item, int qty in inventory) {
+        total_qty = total_qty + qty;
+    }
+    assert(total_qty == 30, "direct map iteration sum == 30");
+
+    int pairs_total = 0;
+    for (string k, int v in pairs(inventory)) {
+        pairs_total = pairs_total + v;
+    }
+    assert(pairs_total == 30, "pairs map iteration sum == 30");
+
+    Stepper s = Stepper { count: 4 };
+    int step_sum = 0;
+    for (int step in s) {
+        step_sum = step_sum + step;
+    }
+    assert(step_sum == 10, "custom Iterable step_sum == 10 (1+2+3+4)");
+}
+
+test fn test_container_null_equality() ={
+    int[] arr = [];
+    assert(arr != null, "empty array != null");
+    assert(!(arr == null), "empty array == null is false");
+
+    map<string,int> m = {};
+    assert(m != null, "empty map != null");
+    assert(!(m == null), "empty map == null is false");
+}
+
+test fn test_escaped_interpolation() ={
+    string literal_marker = "\${value}";
+    assert(literal_marker == "\${value}", "backslash escapes interpolation marker");
+    assert(starts_with(literal_marker, "$"), "marker starts with dollar");
+    assert(len(literal_marker) == 8, "marker has length 8");
+}
+
+test fn test_filesystem_natives() ={
+    string tmp_file = "test_p11_marker.tmp";
+    bool written = write_file(tmp_file, "cryo_p11");
+    assert(written, "write_file returned true");
+    assert(file_exists(tmp_file), "file_exists true after write");
+    assert(file_size(tmp_file) == 8, "file_size is 8 bytes");
+    bool deleted = delete_file(tmp_file);
+    assert(deleted, "delete_file returned true");
+    assert(!file_exists(tmp_file), "file_exists false after delete");
+}

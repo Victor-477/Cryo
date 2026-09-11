@@ -70,6 +70,10 @@ def build_runner(program: Program) -> Program:
     ]
 
     for t in tests:
+        if getattr(t, 'params', None):
+            raise TestError(
+                f"test function '{t.name}' must not declare parameters.\n"
+                f"  Declare as: test fn {t.name}() ={{ … }}")
         out.append(TryCatch(
             try_body=[
                 CallExpr(t.name, []),

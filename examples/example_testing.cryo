@@ -1,0 +1,72 @@
+// ============================================================
+//  Cryo Example: Unit Testing Framework (12.1)
+//
+//  Demonstrates `test fn` declarations and assertions.
+//  Run this suite with:
+//      python Burnout/cryoc.py test Cryo/examples/example_testing.cryo
+//  or via the unified CLI:
+//      python Burnout/pyro.py test Cryo/examples/example_testing.cryo
+//
+//  Options:
+//      --list        list test names without running them
+//      --backend     pyro (default), go, node, or c
+// ============================================================
+
+fn add(int a, int b) -> int ={
+    return a + b;
+}
+
+fn factorial(int n) -> int ={
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn reverse_str(string s) -> string ={
+    string out = "";
+    for (int i = len(s) - 1; i >= 0; i--) {
+        out += s[i];
+    }
+    return out;
+}
+
+struct Point {
+    int x;
+    int y;
+}
+
+fn make_point(int x, int y) -> Point ={
+    return new Point { x: x, y: y };
+}
+
+// ── Unit Tests ──────────────────────────────────────────────
+
+test fn test_arithmetic() ={
+    assert(add(10, 20) == 30, "add(10, 20) should equal 30");
+    assert(add(-5, 5) == 0, "add(-5, 5) should equal 0");
+}
+
+test fn test_factorial() ={
+    assert(factorial(0) == 1, "0! should equal 1");
+    assert(factorial(1) == 1, "1! should equal 1");
+    assert(factorial(5) == 120, "5! should equal 120");
+}
+
+test fn test_string_reversal() ={
+    assert(reverse_str("cryo") == "oyrc", "reverse of 'cryo' is 'oyrc'");
+    assert(reverse_str("") == "", "reverse of empty string is empty");
+}
+
+test fn test_arrays() ={
+    int[] nums = [1, 2, 3];
+    assert(len(nums) == 3, "nums length should be 3");
+    assert(nums[0] == 1, "first element should be 1");
+    assert(nums[2] == 3, "last element should be 3");
+}
+
+test fn test_structs() ={
+    Point pt = make_point(3, 4);
+    assert(pt.x == 3, "pt.x should be 3");
+    assert(pt.y == 4, "pt.y should be 4");
+}

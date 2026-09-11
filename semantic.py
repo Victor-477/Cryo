@@ -495,9 +495,9 @@ class _Checker:
                                        list(self.fn_arity) + sorted(BUILTINS)))
             elif len(n.args) != self.fn_arity[n.callee]:
                 self.err(n.line,
-                         f"function '{n.callee}' expects "
-                         f"{self.fn_arity[n.callee]} argumento(s), "
-                         f"recebeu {len(n.args)}")
+                         f"[Semantic Error] function '{n.callee}' expects "
+                         f"{self.fn_arity[n.callee]} argument(s), "
+                         f"got {len(n.args)}")
             for a in n.args:
                 self.check_expr(a, scope)
         elif isinstance(n, Lambda):
