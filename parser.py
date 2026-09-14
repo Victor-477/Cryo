@@ -2440,6 +2440,15 @@ class Parser:
 
     def _maybe_desugar_call(self, name, args, id_line):
         if name not in self.user_defined_fns:
+            # A bare `throw()` gets an explicit null argument here, in the ONE
+            # place all six backends read from, rather than each inventing a
+            # default. They had invented three: pyro threw null, node threw the
+            # string "erro", and the go backend indexed args[0] and crashed the
+            # compiler with "[Internal Error] list index out of range" — an
+            # internal error on input the analyser accepts. The VM's answer is
+            # canonical, so null it is.
+            if name == 'throw' and not args:
+                return CallExpr(name, [Literal('null', None)], line=id_line)
             if name == 'map' and len(args) == 2:
                 return self._desugar_map(args[0], args[1])
             if name == 'filter' and len(args) == 2:
