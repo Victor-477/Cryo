@@ -1,0 +1,72 @@
+// ============================================================
+//  Cryo Test Suite — Phase 12 Toolchain & Parity
+//
+//  Tests language-level test declarations, enum values,
+//  dynamic assertions, json key ordering, and identifier preservation.
+//  Run with:
+//      python Burnout/cryoc.py test Cryo/examples/test_phase12.cryo --backend pyro
+//      python Burnout/cryoc.py test Cryo/examples/test_phase12.cryo --backend node
+//      python Burnout/cryoc.py test Cryo/examples/test_phase12.cryo --backend go
+// ============================================================
+
+// ── 12.1 'test' as ordinary identifier ──
+int test = 100;
+
+enum Status {
+    PENDING,
+    ACTIVE,
+    COMPLETED
+}
+
+fn compute_status(int code) -> Status ={
+    if (code == 1) {
+        return Status.ACTIVE;
+    }
+    if (code == 2) {
+        return Status.COMPLETED;
+    }
+    return Status.PENDING;
+}
+
+fn read_local_test() -> int ={
+    int test = 50;
+    return test;
+}
+
+test fn test_identifier_preservation() ={
+    assert(test == 100, "top-level variable 'test' is preserved");
+    assert(read_local_test() == 50, "local variable 'test' is preserved");
+}
+
+test fn test_enum_member_values() ={
+    Status s1 = Status.ACTIVE;
+    assert(s1 == Status.ACTIVE, "qualified enum member Status.ACTIVE");
+
+    Status s2 = compute_status(2);
+    assert(s2 == Status.COMPLETED, "compute_status returns Status.COMPLETED");
+
+    Status s0 = compute_status(0);
+    assert(s0 == Status.PENDING, "compute_status returns Status.PENDING");
+}
+
+test fn test_dynamic_assert_message() ={
+    int a = 15;
+    int b = 25;
+    int total = a + b;
+    assert(total == 40, "expected 40 but got " + to_string(total));
+}
+
+test fn test_json_key_sorting() ={
+    map<string,int> m = {"zebra": 26, "apple": 1, "mango": 13};
+    string encoded = json_encode(m);
+    // Keys must be sorted alphabetically: apple, mango, zebra
+    int pos_apple = find(encoded, "apple");
+    int pos_mango = find(encoded, "mango");
+    int pos_zebra = find(encoded, "zebra");
+
+    assert(pos_apple != -1, "apple in json");
+    assert(pos_mango != -1, "mango in json");
+    assert(pos_zebra != -1, "zebra in json");
+    assert(pos_apple < pos_mango, "apple comes before mango");
+    assert(pos_mango < pos_zebra, "mango comes before zebra");
+}
