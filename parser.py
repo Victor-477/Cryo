@@ -2721,7 +2721,136 @@ class Parser:
     # the same reason it was never specified: whether it joins keys, values or
     # "k=v" pairs is a decision, not a detail, and guessing it here would be
     # harder to change later than leaving it unwritten.
+    # Helpers taking more than the string itself; anything absent takes 1.
+    _STR_HELPER_ARITY = {'replace_first': 3, 'count_of': 2, 'last_index_of': 2}
+
     _STR_HELPERS = {
+        # ── character classes (whole-string, like Python's str.isdigit) ──
+        #
+        # True when EVERY character qualifies and the string is non-empty.
+        # Per-character was the other candidate — it is what the self-hosted
+        # lexer hand-rolls, four times over — but a one-char rule surprises
+        # anyone who writes is_digit(field), and the whole-string rule still
+        # answers the one-char question correctly.
+        #
+        # Empty is FALSE for all four: "every character qualifies" is
+        # vacuously true of "", and true is not the answer a validator wants.
+        'is_digit': ('__cryo_is_digit', 'bool', r"""
+fn __cryo_is_digit(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        if (!contains("0123456789", s[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        'is_alpha': ('__cryo_is_alpha', 'bool', r"""
+fn __cryo_is_alpha(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        if (!contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", s[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        'is_alnum': ('__cryo_is_alnum', 'bool', r"""
+fn __cryo_is_alnum(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        bool ok = contains("0123456789", c);
+        if (!ok) { ok = contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c); }
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        # The characters trim() strips, so the two agree about whitespace.
+        'is_space': ('__cryo_is_space', 'bool', r"""
+fn __cryo_is_space(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        bool ok = c == " ";
+        if (!ok) { ok = c == "	"; }
+        if (!ok) { ok = c == "
+"; }
+        if (!ok) { ok = c == ""; }
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        'reverse_str': ('__cryo_reverse_str', 'string', r"""
+fn __cryo_reverse_str(string s) -> string ={
+    string out = "";
+    int i = len(s) - 1;
+    while (i >= 0) {
+        out = out + s[i];
+        i = i - 1;
+    }
+    return out;
+}
+"""),
+        # replace() replaces every occurrence; this replaces the first only.
+        # An empty needle returns the string unchanged rather than looping —
+        # 11.26 is the standing reminder that the empty needle is exactly where
+        # the backends have disagreed before.
+        'replace_first': ('__cryo_replace_first', 'string', r"""
+fn __cryo_replace_first(string s, string old, string neu) -> string ={
+    int oldn = len(old);
+    if (oldn == 0) { return s; }
+    int i = find(s, old);
+    if (i < 0) { return s; }
+    return substr(s, 0, i) + neu + substr(s, i + oldn, len(s) - i - oldn);
+}
+"""),
+        # Non-overlapping, which is what "how many times does it occur" means
+        # to most readers: count_of("aaaa", "aa") is 2, not 3.
+        'count_of': ('__cryo_count_of', 'int', r"""
+fn __cryo_count_of(string s, string sub) -> int ={
+    int bn = len(sub);
+    if (bn == 0) { return 0; }
+    int total = 0;
+    int i = 0;
+    int n = len(s);
+    while (i + bn <= n) {
+        if (substr(s, i, bn) == sub) {
+            total = total + 1;
+            i = i + bn;
+        } else {
+            i = i + 1;
+        }
+    }
+    return total;
+}
+"""),
+        # find() gives the first occurrence; this gives the last, which is
+        # what splitting a path or a file extension actually needs.
+        'last_index_of': ('__cryo_last_index_of', 'int', r"""
+fn __cryo_last_index_of(string s, string sub) -> int ={
+    int bn = len(sub);
+    if (bn == 0) { return 0 - 1; }
+    int i = len(s) - bn;
+    while (i >= 0) {
+        if (substr(s, i, bn) == sub) { return i; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+"""),
         # lines: split on "\n", tolerate CRLF, and do NOT hand back a phantom
         # empty last line for text that ends with a newline — which is how
         # every file read from disk ends.
@@ -2801,10 +2930,15 @@ fn __cryo_trim_end(string s) -> string ={
 
     def _desugar_str_builtin(self, name, args, line):
         helper, _ret, source = self._STR_HELPERS[name]
-        if len(args) != 1:
+        # Most take just the string; the few that take more declare it in
+        # _STR_HELPER_ARITY, kept as an exceptions table so the entries above
+        # keep the shape they had.
+        want = self._STR_HELPER_ARITY.get(name, 1)
+        if len(args) != want:
+            noun = "argument" if want == 1 else "arguments"
             raise ParseError(
-                f"[Syntax Error] Line {line}: {name} takes 1 argument "
-                f"(the string), not {len(args)}")
+                f"[Syntax Error] Line {line}: {name} takes {want} {noun}, "
+                f"not {len(args)}")
         if helper not in self.user_defined_fns:
             self.user_defined_fns.add(helper)
             from lexer import Lexer as _Lexer      # local import (no cycle)
