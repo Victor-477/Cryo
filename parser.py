@@ -2722,9 +2722,132 @@ class Parser:
     # "k=v" pairs is a decision, not a detail, and guessing it here would be
     # harder to change later than leaving it unwritten.
     # Helpers taking more than the string itself; anything absent takes 1.
-    _STR_HELPER_ARITY = {'replace_first': 3, 'count_of': 2, 'last_index_of': 2}
+    _STR_HELPER_ARITY = {
+        'replace_first': 3, 'replace_last': 3,
+        'count_of': 2, 'last_index_of': 2,
+        'strip_prefix': 2, 'strip_suffix': 2,
+        'equals_ignore_case': 2, 'common_prefix': 2,
+    }
 
     _STR_HELPERS = {
+        # ── prefix/suffix and blankness ──
+        #
+        # is_blank("") is TRUE, and that is a deliberate asymmetry with the
+        # is_* classifiers above, which are false on "". They answer different
+        # questions: a classifier asks "does every character qualify", where
+        # the empty answer is vacuous and useless; is_blank asks "is there
+        # nothing of substance here", where "" is the purest yes. Writing
+        # is_blank over trim() rather than over its own whitespace loop is the
+        # other half of that: the two cannot disagree about what whitespace is.
+        'is_blank': ('__cryo_is_blank', 'bool', r"""
+fn __cryo_is_blank(string s) -> bool ={
+    return len(trim(s)) == 0;
+}
+"""),
+        # Empty affix returns the string unchanged, matching replace_first's
+        # empty-needle rule (11.26 is the standing reminder that the empty
+        # needle is exactly where backends have diverged before). Returning s
+        # on a miss rather than an optional keeps these usable inline; a caller
+        # who needs to know whether it matched already has starts_with.
+        'strip_prefix': ('__cryo_strip_prefix', 'string', r"""
+fn __cryo_strip_prefix(string s, string p) -> string ={
+    int pn = len(p);
+    if (pn == 0) { return s; }
+    if (!starts_with(s, p)) { return s; }
+    return substr(s, pn, len(s) - pn);
+}
+"""),
+        'strip_suffix': ('__cryo_strip_suffix', 'string', r"""
+fn __cryo_strip_suffix(string s, string p) -> string ={
+    int pn = len(p);
+    if (pn == 0) { return s; }
+    if (!ends_with(s, p)) { return s; }
+    return substr(s, 0, len(s) - pn);
+}
+"""),
+        # ── case ──
+        #
+        # capitalize LOWERCASES the tail, like Python's str.capitalize, so
+        # capitalize("mcDONALD") is "Mcdonald". Leaving the tail alone is a
+        # different function, not a better default for this one: title_case
+        # already lowercases the non-initial characters of each word, and a
+        # capitalize that disagreed with it on the same input would be the
+        # surprise.
+        'capitalize': ('__cryo_capitalize', 'string', r"""
+fn __cryo_capitalize(string s) -> string ={
+    int n = len(s);
+    if (n == 0) { return s; }
+    return upper(substr(s, 0, 1)) + lower(substr(s, 1, n - 1));
+}
+"""),
+        # Case-insensitive equality via lower() on both sides rather than a
+        # character walk: whatever lower() does to a character is then what
+        # this agrees with, which is the property that matters.
+        'equals_ignore_case': ('__cryo_equals_ignore_case', 'bool', r"""
+fn __cryo_equals_ignore_case(string a, string b) -> bool ={
+    return lower(a) == lower(b);
+}
+"""),
+        # ── last-match replace, the mirror of replace_first ──
+        #
+        # Scans backwards from the last position a match could start at, so
+        # the FIRST hit found is the last one in the string. Same empty-needle
+        # rule, same unchanged-on-miss rule.
+        'replace_last': ('__cryo_replace_last', 'string', r"""
+fn __cryo_replace_last(string s, string old, string neu) -> string ={
+    int oldn = len(old);
+    if (oldn == 0) { return s; }
+    int i = len(s) - oldn;
+    while (i >= 0) {
+        if (substr(s, i, oldn) == old) {
+            return substr(s, 0, i) + neu + substr(s, i + oldn, len(s) - i - oldn);
+        }
+        i = i - 1;
+    }
+    return s;
+}
+"""),
+        # ── words and shared prefixes ──
+        #
+        # word_count counts RUNS of non-whitespace, so repeated separators do
+        # not invent empty words — len(split(s, " ")) does, which is why this
+        # is not that. Same whitespace set as trim/is_space/title_case.
+        'word_count': ('__cryo_word_count', 'int', r"""
+fn __cryo_word_count(string s) -> int ={
+    int total = 0;
+    int i = 0;
+    int n = len(s);
+    bool in_word = false;
+    while (i < n) {
+        string c = s[i];
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") {
+            in_word = false;
+        } else {
+            if (!in_word) { total = total + 1; }
+            in_word = true;
+        }
+        i = i + 1;
+    }
+    return total;
+}
+"""),
+        # Character-wise, not word- or path-wise: a path-aware version would
+        # have to pick a separator, and that is a decision this does not need
+        # to make. substr(a, 0, i) rather than building the string up means
+        # the result is a slice of the first argument, so the two orders of
+        # the same pair give the same answer.
+        'common_prefix': ('__cryo_common_prefix', 'string', r"""
+fn __cryo_common_prefix(string a, string b) -> string ={
+    int n = len(a);
+    if (len(b) < n) { n = len(b); }
+    int i = 0;
+    while (i < n) {
+        if (a[i] != b[i]) { break; }
+        i = i + 1;
+    }
+    return substr(a, 0, i);
+}
+"""),
         # ── character classes (whole-string, like Python's str.isdigit) ──
         #
         # True when EVERY character qualifies and the string is non-empty.
@@ -2786,7 +2909,8 @@ fn __cryo_is_space(string s) -> bool ={
         if (!ok) { ok = c == "	"; }
         if (!ok) { ok = c == "
 "; }
-        if (!ok) { ok = c == ""; }
+        if (!ok) { ok = c == "
+"; }
         if (!ok) { return false; }
         i = i + 1;
     }
