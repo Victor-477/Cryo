@@ -162,10 +162,172 @@ class Parser:
         self._err_at = set()
         self._stopped = False
         self._truncated = False   # the cap fired; see ParseErrors.CAP_NOTICE
+        # ISSUES/26 — the declared type of every name the parser has seen, used
+        # ONLY to type a comprehension's lowering. This is not a type
+        # environment and must not grow into one: it is flat, so a name
+        # declared twice with two types is recorded as AMBIGUOUS and then
+        # treated as unknown. Being flat is what makes it safe to be wrong
+        # about scope — it never guesses, it declines.
+        self._decl_types = {}
+        self._ambiguous_decls = set()
+        # fn_name -> (FunctionDecl, the VarDecl holding __res). A comprehension
+        # helper is generated per use and called exactly once, so the
+        # declaration it initialises can retype it afterwards.
+        self._comp_helpers = {}
 
     def _gen_id(self):
         self._gen_id_count += 1
         return self._gen_id_count
+
+    # ── ISSUES/26: just enough type knowledge to lower a comprehension ──
+    #
+    # A comprehension lowers to a synthetic function, and every part of that
+    # function used to be typed `any`:
+    #
+    #   fn __list_comp_1(any xs) -> any[] { any[] __res = []; … }
+    #
+    # pyro and node are dynamically typed so `any` cost them nothing. The go
+    # backend is not, and emitted Go that the Go compiler rejected — "cannot
+    # use __list_comp_1(xs) (value of type []any) as []int64 value" and
+    # "cannot range over xs (variable of interface type any)". The c and cpp
+    # backends refused the construct outright because they have no `any` at
+    # all. So a headline 10.3 feature worked on two backends out of six.
+    #
+    # THE FIX IS TO STOP SAYING `any` WHEN THE PROGRAM ALREADY SAID SOMETHING
+    # BETTER. Three facts are available without inferring anything:
+    #
+    #   1. the loop variable's type, when the program declares it
+    #      (`for int x in …`) or the iterable is a range (always int);
+    #   2. the iterable's element type, when the iterable is a name with a
+    #      declared array type or an array literal of one kind;
+    #   3. the RESULT type, from the declaration being initialised —
+    #      `int[] ys = [...]` states it outright.
+    #
+    # Everything else keeps `any`, exactly as today. That is the property that
+    # makes this safe: where the knowledge runs out the lowering is unchanged,
+    # so a backend that works today cannot start failing.
+    def _note_decl(self, name, t):
+        """Record a declared type, or mark the name ambiguous."""
+        if not name or not t or t == 'any':
+            return
+        prev = self._decl_types.get(name)
+        if prev is not None and prev != t:
+            self._ambiguous_decls.add(name)
+            return
+        self._decl_types[name] = t
+
+    def _declared_type(self, name):
+        if name in self._ambiguous_decls:
+            return None
+        return self._decl_types.get(name)
+
+    @staticmethod
+    def _elem_of(t):
+        """The element type of `T[]`, else None. Not for strings: a string
+        index is a one-character string, which is a different question."""
+        if t and t.endswith('[]'):
+            base = t[:-2]
+            return base or None
+        return None
+
+    def _static_type(self, node):
+        """A type for `node` when it is readable off the syntax, else None.
+
+        Deliberately shallow — a literal, a declared name, or a homogeneous
+        literal container. No arithmetic, no calls, no fields. A wrong answer
+        here would silently retype a lowering, so the rule is that anything
+        less than certain returns None.
+        """
+        if isinstance(node, Identifier):
+            return self._declared_type(node.name)
+        if isinstance(node, Literal):
+            return node.kind if node.kind in ('int', 'number', 'string',
+                                              'bool') else None
+        if isinstance(node, ArrayLiteral):
+            kinds = {self._static_type(e) for e in node.elements}
+            if len(kinds) == 1:
+                only = kinds.pop()
+                return f"{only}[]" if only else None
+            return None
+        return None
+
+    def _register_comp_helper(self, fn_name, fn_decl, res_decl):
+        self._comp_helpers[fn_name] = (fn_decl, res_decl)
+
+    def _bind_iterable(self, iterable, is_range):
+        """Bind a non-name iterable to a typed local, and iterate THAT.
+
+        `[x * 2 for x in [1, 2, 3, 4]]` iterated the array literal in place,
+        and three backends could not do it:
+
+          go   emitted `range []any{1,2,3,4}`, so the loop variable was `any`
+               whatever the AST said, and arithmetic on it did not compile;
+          c    has no inline array literal as an expression at all — _expr
+               returns the placeholder comment `/* inline-array */`, which
+               reached gcc as `expected expression before ')'`;
+          cpp  emitted `for (… : *(cryo::arr<…>(…)))`, dereferencing a
+               temporary shared_ptr. C++ extends the lifetime of the
+               temporary bound to the range, not of one further inside the
+               expression, so the vector was freed before the first
+               iteration — garbage in the output, not a build failure.
+
+        Rebinding first is the same move `_desugar_for_vars` already makes for
+        `enumerate`, and for the same stated reason: a value that is only an
+        expression cannot carry a type the backends can use.
+
+        Only when the type is READABLE. Without a type the temp would be
+        `any`, which buys nothing and would turn today's clean refusal on
+        c and cpp into the `any` they cannot represent.
+        """
+        if is_range or isinstance(iterable, Identifier):
+            return [], iterable
+        t = self._static_type(iterable)
+        if not t:
+            return [], iterable
+        name = f"__it_{self._gen_id()}"
+        return [VarDecl(t, name, iterable)], Identifier(name)
+
+    def _typed_loop_vars(self, vars_list, iterable, is_range):
+        """Fill in an undeclared single loop variable's type where it is known.
+
+        Only the ONE-VARIABLE form. The two-variable forms are
+        `enumerate(...)` and `pairs(...)`, and _desugar_for_vars already
+        assigns their types from the collection it is handed; second-guessing
+        it here would be a second opinion where one is already right.
+        """
+        if len(vars_list) != 1:
+            return vars_list
+        vtype, vname = vars_list[0]
+        if vtype != 'any':
+            return vars_list                 # the program said so
+        if is_range:
+            return [('int', vname)]          # a range is always int
+        elem = self._elem_of(self._static_type(iterable))
+        return [(elem, vname)] if elem else vars_list
+
+    def _retype_comprehension(self, val, declared):
+        """Give a just-lowered comprehension the type its declaration states.
+
+        `int[] ys = [f(x) for x in xs]` says the result is `int[]`; nothing has
+        to be inferred to know it. Only the RESULT is retyped here — the loop
+        variable and the captured parameters are settled at lowering time,
+        where the iterable is in hand.
+        """
+        if not (isinstance(val, CallExpr) and val.callee in self._comp_helpers):
+            return
+        if not declared or declared == 'any':
+            return
+        fn_decl, res_decl = self._comp_helpers[val.callee]
+        # A list comprehension yields T[], a map comprehension map<K,V>. Only
+        # adopt a declared type of the matching shape: `any x = [...]` or a
+        # mismatch is the semantic analyser's to report, not this pass's to
+        # paper over.
+        if res_decl.var_type.endswith('[]') and not declared.endswith('[]'):
+            return
+        if res_decl.var_type.startswith('map<') and not declared.startswith('map<'):
+            return
+        fn_decl.return_type = declared
+        res_decl.var_type = declared
 
     def _cur(self):
         return self.tokens[self.pos]
@@ -675,6 +837,7 @@ class Parser:
             ptype = self._parse_type()
             pname = self._expect(TokenType.IDENT).value
             params.append((ptype, pname))
+            self._note_decl(pname, ptype)               # ISSUES/26
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RPAREN)
@@ -720,7 +883,9 @@ class Parser:
         name  = self._expect(TokenType.IDENT).value
         self._expect(TokenType.ASSIGN)
         val   = self._expr()
+        self._retype_comprehension(val, vtype)          # ISSUES/26
         self._opt_semi()
+        self._note_decl(name, vtype)
         return ConstDecl(vtype, name, val, is_pub=is_pub)
 
     # ── import / library / foreign ──────────────────────────
@@ -1435,7 +1600,18 @@ class Parser:
                     and iterable.callee == 'llm_stream'
                     and 'llm_stream' not in self.user_defined_fns):
                 return self._desugar_stream_loop(vtype, vname, iterable, body)
-            return ForEach(vtype, vname, iterable, body)
+            # A LITERAL collection is bound to a typed local first, for the
+            # three reasons in _bind_iterable. Reached by the plain statement
+            # too, not just comprehensions: `for (int x in [1, 2, 3])` was
+            # refused by the c backend ("expected expression before ')'" —
+            # it has no inline array literal) and printed GARBAGE on cpp,
+            # which dereferenced a temporary shared_ptr whose vector was
+            # already freed. pyro, node and go were fine, so the two engines
+            # that disagreed were the two nobody could test without a C
+            # compiler.
+            pre, iterable = self._bind_iterable(iterable, False)
+            loop = ForEach(vtype, vname, iterable, body)
+            return Block(pre + [loop]) if pre else loop
 
         t1, n1 = vars_list[0]
         t2, n2 = vars_list[1]
@@ -1810,8 +1986,12 @@ class Parser:
         if self._match(TokenType.ASSIGN):
             self._advance()
             val = self._expr()
+            # ISSUES/26 — `int[] ys = [f(x) for x in xs]` states the result
+            # type, so the lowering does not have to guess it.
+            self._retype_comprehension(val, vtype)
         if semi:
             self._opt_semi()
+        self._note_decl(name, vtype)
         return VarDecl(vtype, name, val)
 
     def _assign(self, semi=True):
@@ -2311,6 +2491,20 @@ class Parser:
         if cond:
             body = [If(cond, body, None)]
 
+        # ISSUES/26 — type the loop variable before lowering. A range is
+        # always int, and _desugar_range REFUSES anything else, so
+        # `[x * 2 for x in 1..=3]` used to be a syntax error ("range loop
+        # variable must be 'int', got 'any'") unless the program wrote the
+        # type out. Over an array, the element type of the iterable is the
+        # loop variable's type.
+        vars_list = self._typed_loop_vars(vars_list, iterable, is_range)
+        # The ORIGINAL is what the capture scan reads: the temp below is a
+        # local of the helper, not something to pass in, while the expression
+        # it binds may itself mention names that do have to be captured —
+        # `[x for x in [a, b]]` needs a and b.
+        src_iterable = iterable
+        pre, iterable = self._bind_iterable(iterable, is_range)
+
         if is_range:
             vtype, vname = vars_list[0]
             for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
@@ -2319,26 +2513,43 @@ class Parser:
 
         found = set()
         _extract_identifiers(elem_expr, found)
-        _extract_identifiers(iterable, found)
+        _extract_identifiers(src_iterable, found)
         if range_end:
             _extract_identifiers(range_end, found)
         if cond:
             _extract_identifiers(cond, found)
 
         loop_vars = {vn for _vt, vn in vars_list}
-        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+        locals_ = {d.name for d in pre}
+        captured = sorted(found - loop_vars - locals_ - _BUILTIN_NAMES)
 
         fn_name = f"__list_comp_{self._gen_id()}"
-        params = [("any", name) for name in captured]
-        init_res = VarDecl('any[]', '__res', ArrayLiteral([]))
+        # The captured names keep their declared types. `xs` passed as `any`
+        # is what produced "cannot range over xs (variable of interface type
+        # any)" on go: the parameter the loop ranges over is usually the
+        # iterable itself.
+        params = [(self._declared_type(name) or "any", name)
+                  for name in captured]
+        # The result element type, when it can be had without inferring:
+        # `[x for x in xs]` yields the loop variable, so the iterable's
+        # element type is the answer. Anything else stays `any[]` until the
+        # declaration retypes it in _retype_comprehension.
+        res_t = 'any[]'
+        if isinstance(elem_expr, Identifier):
+            for _vt, _vn in vars_list:
+                if _vn == elem_expr.name and _vt != 'any':
+                    res_t = f"{_vt}[]"
+                    break
+        init_res = VarDecl(res_t, '__res', ArrayLiteral([]))
         return_stmt = Return(Identifier("__res"))
         if isinstance(for_loop, Block):
-            fn_body = [init_res] + for_loop.body + [return_stmt]
+            fn_body = [init_res] + pre + for_loop.body + [return_stmt]
         else:
-            fn_body = [init_res, for_loop, return_stmt]
+            fn_body = [init_res] + pre + [for_loop, return_stmt]
 
-        fn_decl = FunctionDecl(fn_name, params, "any[]", fn_body)
+        fn_decl = FunctionDecl(fn_name, params, res_t, fn_body)
         self.synthetic_fns.append(fn_decl)
+        self._register_comp_helper(fn_name, fn_decl, init_res)
 
         return CallExpr(fn_name, [Identifier(name) for name in captured])
 
@@ -2376,6 +2587,10 @@ class Parser:
         if cond:
             body = [If(cond, body, None)]
 
+        vars_list = self._typed_loop_vars(vars_list, iterable, is_range)  # 26
+        src_iterable = iterable
+        pre, iterable = self._bind_iterable(iterable, is_range)
+
         if is_range:
             vtype, vname = vars_list[0]
             for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
@@ -2385,26 +2600,36 @@ class Parser:
         found = set()
         _extract_identifiers(k_expr, found)
         _extract_identifiers(v_expr, found)
-        _extract_identifiers(iterable, found)
+        _extract_identifiers(src_iterable, found)
         if range_end:
             _extract_identifiers(range_end, found)
         if cond:
             _extract_identifiers(cond, found)
 
         loop_vars = {vn for _vt, vn in vars_list}
-        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+        locals_ = {d.name for d in pre}
+        captured = sorted(found - loop_vars - locals_ - _BUILTIN_NAMES)
 
         fn_name = f"__map_comp_{self._gen_id()}"
-        params = [("any", name) for name in captured]
+        params = [(self._declared_type(name) or "any", name)   # ISSUES/26
+                  for name in captured]
+        # map<any,any> until the declaration says otherwise. There is no
+        # equivalent of the list case's "the element IS the loop variable"
+        # shortcut here: a map comprehension has two expressions and the key
+        # and value types are independent, so guessing one from the loop
+        # variable would be right about half the time — which is worse than
+        # declining, because half-right types are how backends come to
+        # disagree.
         init_res = VarDecl('map<any,any>', '__res', MapLiteral([]))
         return_stmt = Return(Identifier("__res"))
         if isinstance(for_loop, Block):
-            fn_body = [init_res] + for_loop.body + [return_stmt]
+            fn_body = [init_res] + pre + for_loop.body + [return_stmt]
         else:
-            fn_body = [init_res, for_loop, return_stmt]
+            fn_body = [init_res] + pre + [for_loop, return_stmt]
 
         fn_decl = FunctionDecl(fn_name, params, "map<any,any>", fn_body)
         self.synthetic_fns.append(fn_decl)
+        self._register_comp_helper(fn_name, fn_decl, init_res)
 
         return CallExpr(fn_name, [Identifier(name) for name in captured])
 
@@ -2436,6 +2661,7 @@ class Parser:
             ptype = self._parse_type()
             pname = self._expect(TokenType.IDENT).value
             params.append((ptype, pname))
+            self._note_decl(pname, ptype)               # ISSUES/26
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RPAREN)
