@@ -62,7 +62,16 @@ def _extract_identifiers(node, found):
         _extract_identifiers(node.left, found)
         _extract_identifiers(node.right, found)
     elif isinstance(node, UnaryExpr):
-        _extract_identifiers(node.expr, found)
+        # `operand`, not `expr` — UnaryExpr's field is `operand` (ast_nodes
+        # 347); the neighbouring Spawn/Await/Unwrap/Try branch below really
+        # does use `expr`, which is how the wrong name looked right here.
+        #
+        # This walker finds the identifiers a comprehension CAPTURES, so the
+        # mistake meant any comprehension containing a unary operator —
+        # `[-x for x in xs]`, `[x for x in xs if !flag]` — aborted the
+        # compiler with "[Internal Error] 'UnaryExpr' object has no attribute
+        # 'expr'", on input the analyser accepts.
+        _extract_identifiers(node.operand, found)
     elif isinstance(node, (SpawnExpr, AwaitExpr, UnwrapExpr, TryExpr)):
         _extract_identifiers(node.expr, found)
     elif isinstance(node, CallExpr):

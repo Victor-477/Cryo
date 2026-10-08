@@ -356,7 +356,23 @@ class _Rewriter:
                           self.expr(node.message) if node.message else None,
                           node.line)
         if isinstance(node, SafetyBlock):
-            return SafetyBlock(node.is_safe, [self.stmt(s) for s in node.body])
+            # `node.safe`, not `node.is_safe` — the field is `safe` (ast_nodes
+            # 246). This read raised AttributeError, which the CLI reports as
+            # "[Internal Error] 'SafetyBlock' object has no attribute
+            # 'is_safe'", so ANY program containing a `safe { }` or
+            # `unsafe { }` block crashed the compiler once the optimizer ran.
+            # Cryo/examples/example_v4.cryo is checked in and does exactly
+            # that.
+            #
+            # It hid behind a SILENT skip in test_c_vm.py: an example the pyro
+            # backend refused was skipped with no message, so a compiler crash
+            # and a documented backend gap looked identical from the summary
+            # line. Making that skip print its reason is what surfaced it.
+            #
+            # The parser's local variable is called is_safe and it constructs
+            # the node POSITIONALLY, which is why the two names never had to
+            # agree and nothing caught the drift.
+            return SafetyBlock(node.safe, [self.stmt(s) for s in node.body])
         # An expression used as a statement — `print(x);` is a bare CallExpr,
         # not a wrapper — still has an expression inside it to rewrite.
         return self.expr(node)
