@@ -415,11 +415,23 @@ def _declared_counts(body) -> Dict[str, int]:
     return counts
 
 
+def _bound_names(body) -> Set[str]:
+    """Every name a body declares or binds: locals, loop and catch variables,
+    lambda parameters. A call to one of them is a call to a VALUE, so it must
+    not be mistaken for a call to a top-level function of the same name."""
+    return set(_declared_counts(body)) | _assigned_names(body)
+
+
 def _read_counts(body) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for n in _walk(body):
         if isinstance(n, Identifier):
             counts[n.name] = counts.get(n.name, 0) + 1
+        elif isinstance(n, CallExpr):
+            # `h(p)` where `h` is a local `fn(...)` value reads `h` — the
+            # callee is a plain name, not an Identifier child, so without this
+            # a function-typed local used only as a callee looked dead.
+            counts[n.callee] = counts.get(n.callee, 0) + 1
     return counts
 
 
@@ -661,8 +673,11 @@ def _optimize_once(program: Program) -> Program:
         if isinstance(n, FunctionDecl):
             body = n.body
             if table:
+                # Never into itself, and never over a name the function binds
+                # itself: `fn(int)->int dbl = tri; dbl(x)` calls the local.
+                bound = _bound_names(body) | {pn for _pt, pn in n.params}
                 inl = _Inliner({k: v for k, v in table.items()
-                                if k != n.name})   # never into itself
+                                if k != n.name and k not in bound})
                 body = [inl.stmt(s) for s in body]
             if global_subs:
                 # A parameter or local of the same name shadows the module one.
@@ -685,7 +700,8 @@ def _optimize_once(program: Program) -> Program:
     if idx:
         stmts = [out[i] for i in idx]
         if table:
-            inl = _Inliner(table)
+            bound = _bound_names(stmts)
+            inl = _Inliner({k: v for k, v in table.items() if k not in bound})
             stmts = [inl.stmt(s) for s in stmts]
         if global_subs:
             stmts = [_Rewriter(global_subs).stmt(s) for s in stmts]
