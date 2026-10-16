@@ -4,14 +4,15 @@
 import os
 from typing import Dict, List, Optional, Set, Tuple
 
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 from ast_nodes import (
     Program, Node, ModuleImport, Import, Library, QualifiedIdentifier,
     FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl, VarDecl, Assignment,
     CompoundAssignment, IndexAssignment, Increment, Return, If, While, For, DoWhile,
     ForEach, TryCatch, Block, Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr,
-    FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier, carry_meta
+    FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier,
+    MatchStatement, MatchCase, CastExpr, UnwrapExpr, TryExpr, carry_meta
 )
 
 
@@ -401,6 +402,48 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         if isinstance(n, Block):
             return Block([transform_node(s) for s in n.body])
 
+        if isinstance(n, TryCatch):
+            return TryCatch([transform_node(s) for s in n.try_body],
+                            n.catch_type, n.catch_name,
+                            [transform_node(s) for s in n.catch_body] if n.catch_body is not None else None,
+                            [transform_node(s) for s in n.finally_body] if n.finally_body is not None else None)
+
+        if isinstance(n, Switch):
+            return Switch(transform_node(n.subject),
+                          [transform_node(c) for c in n.cases],
+                          [transform_node(s) for s in n.default_body] if n.default_body is not None else None)
+
+        if isinstance(n, SwitchCase):
+            return SwitchCase([transform_node(v) for v in n.values], [transform_node(s) for s in n.body])
+
+        if isinstance(n, Assert):
+            return Assert(transform_node(n.condition), transform_node(n.message), line=n.line)
+
+        if isinstance(n, MatchStatement):
+            return MatchStatement(transform_node(n.subject), [transform_node(c) for c in n.cases], line=n.line)
+
+        if isinstance(n, MatchCase):
+            return MatchCase(n.pattern_name, n.pattern_vars, [transform_node(s) for s in n.body],
+                             line=n.line, guard=transform_node(n.guard))
+
+        if isinstance(n, CastExpr):
+            ttype = n.target_type
+            if '::' in ttype:
+                ns, _, tname = ttype.partition('::')
+                key = (ns, tname)
+                if key in aliased_exports:
+                    mangled, is_pub = aliased_exports[key]
+                    if not is_pub:
+                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+                    ttype = mangled
+            return CastExpr(transform_node(n.expr), ttype)
+
+        if isinstance(n, UnwrapExpr):
+            return UnwrapExpr(transform_node(n.operand))
+
+        if isinstance(n, TryExpr):
+            return TryExpr(transform_node(n.operand), line=n.line)
+
         if isinstance(n, BinaryExpr):
             return BinaryExpr(n.op, transform_node(n.left), transform_node(n.right))
 
@@ -436,27 +479,31 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         if isinstance(n, Lambda):
             return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
 
-        # Every other node: rebuild it with its children transformed. The
-        # cases above only exist where something besides the children needs
-        # rewriting (a callee, a type name). Returning `n` untouched here is
-        # what left `m::f()` unresolved inside try/catch, switch, assert,
-        # unsafe { }, match, `x!`, `expr?`, `as`, spawn and await — each of
-        # those failed with "unknown function 'm::f'" — and a node type added
-        # later would have joined that list silently.
-        if isinstance(n, Node) and is_dataclass(n):
-            kwargs = {f.name: _transform_child(getattr(n, f.name)) for f in fields(n)}
-            return type(n)(**kwargs)
-
+        # Any other node: rebuild it from its fields so its children are still
+        # visited. Without this every node type missing from the cases above
+        # (`safe { }`, spawn/await, call-by-value, ...) hid a `m::f()` inside
+        # it from the rewrite, and the analyser reported it as unknown.
+        if isinstance(n, Node):
+            return _rebuild_children(n)
         return n
 
-    def _transform_child(v):
+    def _transform_value(v):
         if isinstance(v, Node):
             return transform_node(v)
         if isinstance(v, list):
-            return [_transform_child(x) for x in v]
+            return [_transform_value(x) for x in v]
         if isinstance(v, tuple):
-            return tuple(_transform_child(x) for x in v)
+            return tuple(_transform_value(x) for x in v)
         return v
+
+    def _rebuild_children(n: Node) -> Node:
+        kwargs = {f.name: _transform_value(getattr(n, f.name)) for f in fields(n)}
+        if all(kwargs[k] is getattr(n, k) for k in kwargs):
+            return n
+        try:
+            return type(n)(**kwargs)
+        except TypeError:
+            return n
 
     def transform_node(n: Node) -> Node:
         """_transform_raw, with the source position carried across.
