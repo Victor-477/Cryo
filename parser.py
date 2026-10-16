@@ -3179,11 +3179,26 @@ fn __cryo_strip_suffix(string s, string p) -> string ={
         # already lowercases the non-initial characters of each word, and a
         # capitalize that disagreed with it on the same input would be the
         # surprise.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'capitalize': ('__cryo_capitalize', 'string', r"""
 fn __cryo_capitalize(string s) -> string ={
-    int n = len(s);
-    if (n == 0) { return s; }
-    return upper(substr(s, 0, 1)) + lower(substr(s, 1, n - 1));
+    string[] cs = split(s, "");
+    if (len(cs) == 0) { return s; }
+    string head = cs[0];
+    int hb = len(head);
+    return upper(head) + lower(substr(s, hb, len(s) - hb));
 }
 """),
         # Case-insensitive equality via lower() on both sides rather than a
@@ -3242,16 +3257,33 @@ fn __cryo_word_count(string s) -> int ={
         # to make. substr(a, 0, i) rather than building the string up means
         # the result is a slice of the first argument, so the two orders of
         # the same pair give the same answer.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'common_prefix': ('__cryo_common_prefix', 'string', r"""
 fn __cryo_common_prefix(string a, string b) -> string ={
-    int n = len(a);
-    if (len(b) < n) { n = len(b); }
+    string[] ca = split(a, "");
+    string[] cb = split(b, "");
+    int n = len(ca);
+    if (len(cb) < n) { n = len(cb); }
+    string out = "";
     int i = 0;
     while (i < n) {
-        if (a[i] != b[i]) { break; }
+        if (ca[i] != cb[i]) { break; }
+        out = out + ca[i];
         i = i + 1;
     }
-    return substr(a, 0, i);
+    return out;
 }
 """),
         # ── character classes (whole-string, like Python's str.isdigit) ──
@@ -3323,12 +3355,26 @@ fn __cryo_is_space(string s) -> bool ={
     return true;
 }
 """),
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'reverse_str': ('__cryo_reverse_str', 'string', r"""
 fn __cryo_reverse_str(string s) -> string ={
+    string[] cs = split(s, "");
     string out = "";
-    int i = len(s) - 1;
+    int i = len(cs) - 1;
     while (i >= 0) {
-        out = out + s[i];
+        out = out + cs[i];
         i = i - 1;
     }
     return out;
@@ -3410,14 +3456,28 @@ fn __cryo_chars(string s) -> string[] ={
         # is upper, the REST of the word is lower, so "hELLO" becomes "Hello"
         # rather than "HELLO". A word boundary is any whitespace, not only a
         # space — otherwise a tab-separated line would title only its first cell.
-        'title_case': ('__cryo_title_case', 'string', r'''
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'title_case': ('__cryo_title_case', 'string', r"""
 fn __cryo_title_case(string s) -> string ={
+    string[] cs = split(s, "");
     string out = "";
-    int n = len(s);
+    int n = len(cs);
     int i = 0;
     bool at_start = true;
     while (i < n) {
-        string c = s[i];
+        string c = cs[i];
         if (c == " " || c == "\t" || c == "\n" || c == "\r") {
             out = out + c;
             at_start = true;
@@ -3429,7 +3489,7 @@ fn __cryo_title_case(string s) -> string ={
     }
     return out;
 }
-'''),
+"""),
         # The same character set trim() strips, so trim(s) and
         # trim_start(trim_end(s)) agree — a difference there would be the worst
         # kind, since nothing would ever report it.
