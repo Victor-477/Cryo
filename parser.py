@@ -2958,6 +2958,7 @@ class Parser:
     # harder to change later than leaving it unwritten.
     # Helpers taking more than the string itself; anything absent takes 1.
     _STR_HELPER_ARITY = {
+        'char_at': 2, 'char_slice': 3,
         'checked_add': 2, 'checked_sub': 2, 'checked_mul': 2,
         'replace_first': 3, 'replace_last': 3,
         'count_of': 2, 'last_index_of': 2,
@@ -2966,6 +2967,68 @@ class Parser:
     }
 
     _STR_HELPERS = {
+        # ── D1 (part): counting and slicing by CHARACTER ──
+        #
+        # `len` counts bytes, `substr` and `s[i]` index bytes, and that is
+        # ISSUES/30 — changing them is a breaking change in every engine.
+        # These are the additive half, which costs nothing and can be had
+        # today: split(s, "") is already character-aware, so the whole thing
+        # is a desugaring.
+        #
+        #     len("Ação Ônibus")        == 14   (bytes)
+        #     char_len("Ação Ônibus")   == 11   (characters)
+        #
+        # The ERP needs this specifically: NF-e field limits are stated in
+        # CHARACTERS, so validating `xProd` with len() rejects a legitimate
+        # accented product name early, and truncating with substr() can cut
+        # a character in half and produce XML that is not well-formed.
+        #
+        # NAMED char_* RATHER THAN CHANGING len(). The obvious call stays the
+        # byte one, which is the same trap to_int/parse_int has, and that is
+        # a real cost — but silently redefining len() would change the
+        # meaning of every existing program that pairs it with substr
+        # offsets. ISSUES/30 holds the decision; this does not pre-empt it.
+        'char_len': ('__cryo_char_len', 'int', r"""
+fn __cryo_char_len(string s) -> int ={
+    return len(split(s, ""));
+}
+"""),
+        # ABORTS out of range, exactly as s[i] does — "[Cryo Security]
+        # IndexError". Returning "" instead would be the fail-open answer to
+        # a read past the end, and it would also differ from the byte
+        # indexing it mirrors. char_slice below is the clamping one.
+        'char_at': ('__cryo_char_at', 'string', r"""
+fn __cryo_char_at(string s, int i) -> string ={
+    string[] cs = split(s, "");
+    return cs[i];
+}
+"""),
+        # CLAMPS, like substr: a start past the end gives "", and a length
+        # past the end stops at the end.
+        #
+        # `a + n` is only ever evaluated once n is known to be smaller than
+        # the characters remaining, so a caller passing a huge n cannot
+        # overflow the addition — the same discipline as checked_add, for
+        # the same reason.
+        'char_slice': ('__cryo_char_slice', 'string', r"""
+fn __cryo_char_slice(string s, int start, int n) -> string ={
+    string[] cs = split(s, "");
+    int ln = len(cs);
+    int a = start;
+    if (a < 0) { a = 0; }
+    if (a > ln) { a = ln; }
+    int b = ln;
+    if (n < ln - a) { b = a + n; }
+    if (n < 0) { b = a; }
+    string out = "";
+    int i = a;
+    while (i < b) {
+        out = out + cs[i];
+        i = i + 1;
+    }
+    return out;
+}
+"""),
         # ── C1: arithmetic that reports overflow instead of guessing ──
         #
         # `a + b` means two different things today: the compiled backends
