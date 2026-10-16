@@ -479,7 +479,31 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         if isinstance(n, Lambda):
             return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
 
+        # Any other node: rebuild it from its fields so its children are still
+        # visited. Without this every node type missing from the cases above
+        # (`safe { }`, spawn/await, call-by-value, ...) hid a `m::f()` inside
+        # it from the rewrite, and the analyser reported it as unknown.
+        if isinstance(n, Node):
+            return _rebuild_children(n)
         return n
+
+    def _transform_value(v):
+        if isinstance(v, Node):
+            return transform_node(v)
+        if isinstance(v, list):
+            return [_transform_value(x) for x in v]
+        if isinstance(v, tuple):
+            return tuple(_transform_value(x) for x in v)
+        return v
+
+    def _rebuild_children(n: Node) -> Node:
+        kwargs = {f.name: _transform_value(getattr(n, f.name)) for f in fields(n)}
+        if all(kwargs[k] is getattr(n, k) for k in kwargs):
+            return n
+        try:
+            return type(n)(**kwargs)
+        except TypeError:
+            return n
 
     def transform_node(n: Node) -> Node:
         """_transform_raw, with the source position carried across.
