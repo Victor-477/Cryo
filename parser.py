@@ -2965,6 +2965,103 @@ class Parser:
     }
 
     _STR_HELPERS = {
+        # ── C4: parsing that returns, instead of killing the process ──
+        #
+        # `to_int("abc")` and `to_number("abc")` ABORT, and the abort is not
+        # catchable — `try { to_int(s) } catch` does not run, the process
+        # ends. For a server that parses user input that is not a rough
+        # edge, it is a denial of service: one bad form field ends the
+        # request loop for every tenant.
+        #
+        # These return an optional instead. `parse_int(s) ?? 0` is then the
+        # whole idiom, and nothing aborts.
+        #
+        # THE VALIDATOR MUST BE A SUBSET OF THE NATIVE'S ACCEPT SET, never a
+        # superset. It decides, in Cryo, whether the native will succeed; if
+        # it were ever more permissive than the native, the call it guards
+        # would abort and we would be back where we started, only with the
+        # failure harder to find. Narrower is safe — a value the native would
+        # have taken comes back null, which the caller already handles.
+        # Measured against the native rather than assumed (to_int trims,
+        # takes a leading + or -, takes leading zeros, and REJECTS "4.2",
+        # "0x10", "" and anything past int64).
+        #
+        # The overflow check is the part that is easy to leave out and the
+        # reason this cannot just be "scan the digits": to_int aborts on
+        # 99999999999999999999 exactly as it does on "abc", so a validator
+        # that only checked the characters would still take the process down
+        # on a number that is merely too big. Nineteen digits is where int64
+        # ends, and at that length the comparison is digit by digit against
+        # the limit — 9223372036854775807, or ...808 for a negative, which
+        # has one more magnitude than its positive counterpart.
+        'parse_int': ('__cryo_parse_int', 'int?', r"""
+fn __cryo_parse_int(string s) -> int? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    bool neg = false;
+    if (t[0] == "-") { neg = true; i = 1; }
+    if (t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int j = i;
+    while (j < n) {
+        if (!contains("0123456789", t[j])) { return null; }
+        j = j + 1;
+    }
+    while (i < n - 1 && t[i] == "0") { i = i + 1; }
+    string d = substr(t, i, n - i);
+    int dn = len(d);
+    if (dn > 19) { return null; }
+    if (dn == 19) {
+        string lim = "9223372036854775807";
+        if (neg) { lim = "9223372036854775808"; }
+        int k = 0;
+        bool over = false;
+        while (k < 19) {
+            int av = find("0123456789", d[k]);
+            int bv = find("0123456789", lim[k]);
+            if (av > bv) { over = true; break; }
+            if (av < bv) { break; }
+            k = k + 1;
+        }
+        if (over) { return null; }
+    }
+    return to_int(t);
+}
+"""),
+        # Plain decimal only: a sign, digits, at most one dot, and a digit
+        # somewhere. DELIBERATELY NARROWER than to_number, which also takes
+        # "1e3", "NaN" and "Inf" — and rejects "1e999" for being out of
+        # range, which a validator written here would have to know the
+        # double range to reproduce. Narrower is the safe direction, and the
+        # input this exists for is a quantity or a price typed into a form,
+        # not scientific notation. to_number is still there for the rest.
+        'parse_number': ('__cryo_parse_number', 'number?', r"""
+fn __cryo_parse_number(string s) -> number? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    if (t[0] == "-" || t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int dots = 0;
+    int digits = 0;
+    int j = i;
+    while (j < n) {
+        string c = t[j];
+        if (c == ".") { dots = dots + 1; }
+        else {
+            if (!contains("0123456789", c)) { return null; }
+            digits = digits + 1;
+        }
+        j = j + 1;
+    }
+    if (dots > 1) { return null; }
+    if (digits == 0) { return null; }
+    return to_number(t);
+}
+"""),
         # ── prefix/suffix and blankness ──
         #
         # is_blank("") is TRUE, and that is a deliberate asymmetry with the
