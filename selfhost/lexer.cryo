@@ -217,6 +217,18 @@ fn lex(string src, string[] tt, string[] tv) -> void ={
                 }
             }
             string num = replace(substr(src, start, i - start), "_", "");
+            // exponent (1e10, 1.5e3, 2E-4) — same rule as lexer.py: only when
+            // a digit follows the `e`, and the `e` is lower-cased in the token
+            if (i < n && (src[i] == "e" || src[i] == "E")) {
+                int k = i + 1;
+                if (k < n && (src[k] == "+" || src[k] == "-")) { k = k + 1; }
+                if (k < n && isDigit(src[k])) {
+                    num = num + "e" + substr(src, i + 1, k - i - 1);
+                    i = k;
+                    while (i < n && isDigit(src[i])) { num = num + src[i]; i = i + 1; }
+                    isFloat = true;
+                }
+            }
             if (isFloat) { pushTok(tt, tv, "FLOAT_LIT", num); }
             else         { pushTok(tt, tv, "INT_LIT", num); }
             continue;

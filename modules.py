@@ -4,7 +4,7 @@
 import os
 from typing import Dict, List, Optional, Set, Tuple
 
-from dataclasses import fields
+from dataclasses import fields, is_dataclass
 from ast_nodes import (
     Program, Node, ModuleImport, Import, Library, QualifiedIdentifier,
     FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl, VarDecl, Assignment,
@@ -101,7 +101,7 @@ def _rename_refs(node, mapping: Dict[str, str]):
             node.name, params,
             inner.get(node.return_type, node.return_type),
             _rename_refs(node.body, inner),
-            is_tool=node.is_tool, line=node.line,
+            is_tool=node.is_tool, is_test=node.is_test, line=node.line,
             type_params=node.type_params, type_bounds=node.type_bounds,
             is_pub=node.is_pub)
         carry_meta(node, fn)
@@ -367,7 +367,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                         raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
                     ret_type = mangled
             new_body = [transform_node(s) for s in n.body]
-            return FunctionDecl(n.name, new_params, ret_type, new_body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+            return FunctionDecl(n.name, new_params, ret_type, new_body, is_tool=n.is_tool, is_test=n.is_test, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
 
         if isinstance(n, Assignment):
             return Assignment(n.name, transform_node(n.value))
@@ -436,7 +436,27 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         if isinstance(n, Lambda):
             return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
 
+        # Every other node: rebuild it with its children transformed. The
+        # cases above only exist where something besides the children needs
+        # rewriting (a callee, a type name). Returning `n` untouched here is
+        # what left `m::f()` unresolved inside try/catch, switch, assert,
+        # unsafe { }, match, `x!`, `expr?`, `as`, spawn and await — each of
+        # those failed with "unknown function 'm::f'" — and a node type added
+        # later would have joined that list silently.
+        if isinstance(n, Node) and is_dataclass(n):
+            kwargs = {f.name: _transform_child(getattr(n, f.name)) for f in fields(n)}
+            return type(n)(**kwargs)
+
         return n
+
+    def _transform_child(v):
+        if isinstance(v, Node):
+            return transform_node(v)
+        if isinstance(v, list):
+            return [_transform_child(x) for x in v]
+        if isinstance(v, tuple):
+            return tuple(_transform_child(x) for x in v)
+        return v
 
     def transform_node(n: Node) -> Node:
         """_transform_raw, with the source position carried across.
