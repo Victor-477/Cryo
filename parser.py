@@ -2958,6 +2958,7 @@ class Parser:
     # harder to change later than leaving it unwritten.
     # Helpers taking more than the string itself; anything absent takes 1.
     _STR_HELPER_ARITY = {
+        'checked_add': 2, 'checked_sub': 2, 'checked_mul': 2,
         'replace_first': 3, 'replace_last': 3,
         'count_of': 2, 'last_index_of': 2,
         'strip_prefix': 2, 'strip_suffix': 2,
@@ -2965,6 +2966,79 @@ class Parser:
     }
 
     _STR_HELPERS = {
+        # ── C1: arithmetic that reports overflow instead of guessing ──
+        #
+        # `a + b` means two different things today: the compiled backends
+        # abort with "[Cryo Security] Overflow: integer addition", the VM
+        # wraps silently and returns a negative number. That divergence is
+        # ISSUES/29 and is not fixed here — it needs a safe-mode bit in the
+        # bytecode, which the format does not have.
+        #
+        # These are the other half of requirement C1, and they are useful
+        # whichever way 29 is settled: a program that needs to KNOW about
+        # overflow gets the same answer on all six backends, today.
+        #
+        #     int? total = checked_mul(qty, unit_price);
+        #     if (total == null) { ... }
+        #
+        # EVERY COMPARISON IS CHOSEN SO THAT IT CANNOT ITSELF OVERFLOW,
+        # which is the whole difficulty: a guard written as `a + b > MAX` has
+        # already done the thing it was meant to prevent. So each bound is
+        # rearranged into a subtraction or division that is provably in
+        # range — `a > MAX - b` only when b > 0, `a > MAX / b` only when both
+        # are positive, and so on. By the time the operation runs it has been
+        # proved not to overflow, so it is also safe on the backends that
+        # abort.
+        #
+        # MIN is spelled `-MAX - 1` rather than written out: the literal
+        # -9223372036854775808 is unary minus applied to 9223372036854775808,
+        # which does not fit in an int64 and is not a thing the lexer can
+        # hand back.
+        'checked_add': ('__cryo_checked_add', 'int?', r"""
+fn __cryo_checked_add(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b > 0 && a > mx - b) { return null; }
+    if (b < 0 && a < mn - b) { return null; }
+    return a + b;
+}
+"""),
+        'checked_sub': ('__cryo_checked_sub', 'int?', r"""
+fn __cryo_checked_sub(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b < 0 && a > mx + b) { return null; }
+    if (b > 0 && a < mn + b) { return null; }
+    return a - b;
+}
+"""),
+        # The sign cases are written out rather than folded into absolute
+        # values, because abs(MIN) is itself the overflow this is for.
+        # MIN * -1 and -1 * MIN are handled before the division guards, so no
+        # guard ever evaluates MIN / -1 — the one division that traps.
+        'checked_mul': ('__cryo_checked_mul', 'int?', r"""
+fn __cryo_checked_mul(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (a == 0 || b == 0) { return 0; }
+    if (a == -1 && b == mn) { return null; }
+    if (b == -1 && a == mn) { return null; }
+    if (a > 0) {
+        if (b > 0) {
+            if (a > mx / b) { return null; }
+        } else {
+            if (b < mn / a) { return null; }
+        }
+    } else {
+        if (b > 0) {
+            if (a < mn / b) { return null; }
+        } else {
+            if (a < mx / b) { return null; }
+        }
+    }
+    return a * b;
+}
+"""),
         # ── C4: parsing that returns, instead of killing the process ──
         #
         # `to_int("abc")` and `to_number("abc")` ABORT, and the abort is not
