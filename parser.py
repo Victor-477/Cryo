@@ -663,7 +663,7 @@ class Parser:
                 self._advance()
                 val = self._expr()
                 self._opt_semi()
-                return IndexAssignment(expr.obj, expr.index, val)
+                return IndexAssignment(expr.obj, expr.index, val, line=tok.line)
             self._opt_semi()
             return expr
 

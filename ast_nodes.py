@@ -142,6 +142,7 @@ class IndexAssignment(Node):
     obj:   Node
     index: Node
     value: Node
+    line:  int = 0
 
 @dataclass
 class CompoundAssignment(Node):
