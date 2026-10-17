@@ -2,6 +2,7 @@
 #  Cryo — Module resolution (import "file.cryo" [as alias])
 # ============================================================
 import os
+import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from dataclasses import fields
@@ -12,7 +13,8 @@ from ast_nodes import (
     ForEach, TryCatch, Block, Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier,
-    MatchStatement, MatchCase, CastExpr, UnwrapExpr, TryExpr, carry_meta
+    MatchStatement, MatchCase, CastExpr, UnwrapExpr, TryExpr, ForeignBlock,
+    EnumMember, carry_meta
 )
 
 
@@ -55,7 +57,17 @@ _TYPE_FIELDS = {
     'ForEach': ('var_type',),
     'FunctionDecl': ('return_type',),
     'CastExpr': ('target_type',),
+    'StructField': ('field_type',),
+    'Lambda': ('return_type',),
+    'TryCatch': ('catch_type',),
 }
+
+# a bare name inside a type string, not part of `ns::Name` on either side
+_BARE_IN_TYPE = re.compile(r'(?<![\w:])([A-Za-z_]\w*)(?![\w:])')
+# `ns::Name` anywhere inside a type string: `k::T[]`, `map<string,k::T>`, ...
+_QUALIFIED_IN_TYPE = re.compile(r'\b([A-Za-z_]\w*)::([A-Za-z_]\w*)')
+# fields that hold a single type string, on any node
+_TYPE_STR_FIELDS = ('var_type', 'field_type', 'return_type', 'target_type', 'catch_type')
 
 
 def _bound_names(fn) -> Set[str]:
@@ -85,23 +97,51 @@ def _bound_names(fn) -> Set[str]:
     return names
 
 
-def _rename_refs(node, mapping: Dict[str, str]):
-    """Rewrite every reference to one of this module's own declarations."""
+def _rename_type(t, mapping: Dict[str, str], types: Dict[str, str]):
+    """A type string, with this module's own type names mangled (L-17).
+
+    `T` alone was always renamed; `T[]`, `T?`, `map<string,T>` and
+    `fn(T)->T` were not, so a module using its own struct inside any of them
+    referred to a `T` that, once mangled to `alias__T`, no longer existed —
+    which only the Go backend, being typed, noticed. Only TYPE names are
+    rewritten inside a composite: a module function called `map` must not
+    turn `map<string,int>` into `alias__map<string,int>`.
+    """
+    if not isinstance(t, str):
+        return t
+    if t in mapping:
+        return mapping[t]
+    if not types:
+        return t
+    return _BARE_IN_TYPE.sub(lambda m: types.get(m.group(1), m.group(1)), t)
+
+
+def _rename_refs(node, mapping: Dict[str, str], types: Optional[Dict[str, str]] = None):
+    """Rewrite every reference to one of this module's own declarations.
+
+    `types` is the part of `mapping` that names types (structs, enums); it is
+    what gets rewritten inside composite type strings.
+    """
+    types = types or {}
     if isinstance(node, list):
-        return [_rename_refs(x, mapping) for x in node]
+        return [_rename_refs(x, mapping, types) for x in node]
     if isinstance(node, tuple):
-        return tuple(_rename_refs(x, mapping) for x in node)
+        return tuple(_rename_refs(x, mapping, types) for x in node)
     if not isinstance(node, Node):
         return node
+
+    if isinstance(node, (FunctionDecl, StructDecl)) and node.type_params:
+        # a type parameter shadows a module type of the same name
+        types = {k: v for k, v in types.items() if k not in node.type_params}
 
     if isinstance(node, FunctionDecl):
         # inside a function, drop the names it shadows
         inner = {k: v for k, v in mapping.items() if k not in _bound_names(node)}
-        params = [(inner.get(pt, pt), pn) for pt, pn in (node.params or [])]
+        params = [(_rename_type(pt, inner, types), pn) for pt, pn in (node.params or [])]
         fn = FunctionDecl(
             node.name, params,
-            inner.get(node.return_type, node.return_type),
-            _rename_refs(node.body, inner),
+            _rename_type(node.return_type, inner, types),
+            _rename_refs(node.body, inner, types),
             is_tool=node.is_tool, is_test=node.is_test, line=node.line,
             type_params=node.type_params, type_bounds=node.type_bounds,
             is_pub=node.is_pub)
@@ -115,9 +155,16 @@ def _rename_refs(node, mapping: Dict[str, str]):
         if kind in _NAME_FIELDS and f.name in _NAME_FIELDS[kind] and isinstance(val, str):
             kwargs[f.name] = mapping.get(val, val)
         elif kind in _TYPE_FIELDS and f.name in _TYPE_FIELDS[kind] and isinstance(val, str):
-            kwargs[f.name] = mapping.get(val, val)
+            kwargs[f.name] = _rename_type(val, mapping, types)
+        elif f.name == 'params' and isinstance(node, Lambda):
+            kwargs[f.name] = [(_rename_type(pt, mapping, types), pn) for pt, pn in val]
+        elif f.name == 'type_args' and isinstance(val, list):
+            kwargs[f.name] = [_rename_type(t, mapping, types) for t in val]
+        elif f.name == 'members' and isinstance(node, EnumDecl):
+            kwargs[f.name] = [EnumMember(m.name, [_rename_type(t, mapping, types) for t in m.fields],
+                                         line=m.line) for m in val]
         else:
-            kwargs[f.name] = _rename_refs(val, mapping)
+            kwargs[f.name] = _rename_refs(val, mapping, types)
     try:
         new = type(node)(**kwargs)
     except TypeError:
@@ -207,11 +254,14 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         # (`ns::name` refuses a non-pub symbol), not by deleting the symbol:
         # deleting it also removed it from the module's own reach.
         local_rename: Dict[str, str] = {}
+        local_types: Dict[str, str] = {}
         if alias:
             for n in mod.statements:
                 nm = _decl_name(n) if isinstance(n, _DECLS) else None
                 if nm:
                     local_rename[nm] = f"{alias}__{nm}"
+                    if isinstance(n, (StructDecl, EnumDecl)):
+                        local_types[nm] = local_rename[nm]
 
         for n in mod.statements:
             if isinstance(n, ModuleImport):
@@ -225,7 +275,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                         aliased_exports[(alias, name)] = (mangled, is_pub)
                         # rewrite this declaration's own references first, so a
                         # call to a sibling follows the mangling
-                        n = _rename_refs(n, local_rename)
+                        n = _rename_refs(n, local_rename, local_types)
                         if True:
                             if isinstance(n, FunctionDecl):
                                 mangled_node = FunctionDecl(mangled, n.params, n.return_type, n.body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
@@ -265,6 +315,37 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
             rest.append(n)
 
     # Transform qualified names ns::member -> mangled name ns__member
+    aliases = {a for a, _ in aliased_exports}
+
+    def _qual_type(t):
+        """Mangle every `ns::Name` inside a type string (L-17).
+
+        A type is not always a bare name: `k::T[]`, `k::T?`, `map<string,k::T>`
+        and `fn(k::T)->k::R` all hold a qualified name somewhere inside. Only
+        a type that was exactly `ns::T` used to be rewritten, so the composite
+        shapes reached the code generators with the raw `::` text — harmless
+        to the dynamic backends, a syntax error in Go. A name whose namespace
+        is not an import alias is left alone.
+        """
+        if not isinstance(t, str) or '::' not in t:
+            return t
+
+        def sub(m):
+            ns, tname = m.group(1), m.group(2)
+            if ns not in aliases:
+                return m.group(0)
+            key = (ns, tname)
+            if key not in aliased_exports:
+                raise ModuleError(f"[Module Error] unknown type '{tname}' in module '{ns}'")
+            mangled, is_pub = aliased_exports[key]
+            if not is_pub:
+                raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
+            return mangled
+        return _QUALIFIED_IN_TYPE.sub(sub, t)
+
+    def _qual_params(params):
+        return [(_qual_type(pt), pn) for pt, pn in (params or [])]
+
     def _transform_raw(n: Node) -> Node:
         if n is None:
             return None
@@ -303,7 +384,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                 if not is_pub:
                     raise ModuleError(f"[Module Error] '{mname}' is not pub in module '{ns}'")
                 new_args = [transform_node(a) for a in n.args]
-                return CallExpr(mangled, new_args, line=n.line, type_args=n.type_args)
+                return CallExpr(mangled, new_args, line=n.line, type_args=[_qual_type(t) for t in n.type_args])
             raise ModuleError(f"[Module Error] unknown function '{mname}' in module '{ns}'")
 
         if isinstance(n, StructInit) and '::' in n.struct_name:
@@ -315,60 +396,18 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                 if not is_pub:
                     raise ModuleError(f"[Module Error] '{sname}' is not pub in module '{ns}'")
                 new_fields = [(fn, transform_node(fv)) for fn, fv in n.fields]
-                return StructInit(mangled, new_fields, type_args=n.type_args)
+                return StructInit(mangled, new_fields, type_args=[_qual_type(t) for t in n.type_args])
             raise ModuleError(f"[Module Error] unknown struct '{sname}' in module '{ns}'")
 
         if isinstance(n, VarDecl):
-            vtype = n.var_type
-            if '::' in vtype:
-                parts = vtype.split('::', 1)
-                ns, tname = parts[0], parts[1]
-                key = (ns, tname)
-                if key in aliased_exports:
-                    mangled, is_pub = aliased_exports[key]
-                    if not is_pub:
-                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
-                    vtype = mangled
-            return VarDecl(vtype, n.name, transform_node(n.value))
+            return VarDecl(_qual_type(n.var_type), n.name, transform_node(n.value))
 
         if isinstance(n, ConstDecl):
-            vtype = n.var_type
-            if '::' in vtype:
-                parts = vtype.split('::', 1)
-                ns, tname = parts[0], parts[1]
-                key = (ns, tname)
-                if key in aliased_exports:
-                    mangled, is_pub = aliased_exports[key]
-                    if not is_pub:
-                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
-                    vtype = mangled
-            return ConstDecl(vtype, n.name, transform_node(n.value), is_pub=n.is_pub)
+            return ConstDecl(_qual_type(n.var_type), n.name, transform_node(n.value), is_pub=n.is_pub)
 
         if isinstance(n, FunctionDecl):
-            new_params = []
-            for pt, pn in n.params:
-                if '::' in pt:
-                    parts = pt.split('::', 1)
-                    ns, tname = parts[0], parts[1]
-                    key = (ns, tname)
-                    if key in aliased_exports:
-                        mangled, is_pub = aliased_exports[key]
-                        if not is_pub:
-                            raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
-                        pt = mangled
-                new_params.append((pt, pn))
-            ret_type = n.return_type
-            if ret_type and '::' in ret_type:
-                parts = ret_type.split('::', 1)
-                ns, tname = parts[0], parts[1]
-                key = (ns, tname)
-                if key in aliased_exports:
-                    mangled, is_pub = aliased_exports[key]
-                    if not is_pub:
-                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
-                    ret_type = mangled
             new_body = [transform_node(s) for s in n.body]
-            return FunctionDecl(n.name, new_params, ret_type, new_body, is_tool=n.is_tool, is_test=n.is_test, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+            return FunctionDecl(n.name, _qual_params(n.params), _qual_type(n.return_type), new_body, is_tool=n.is_tool, is_test=n.is_test, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
 
         if isinstance(n, Assignment):
             return Assignment(n.name, transform_node(n.value))
@@ -397,14 +436,14 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
             return DoWhile([transform_node(s) for s in n.body], transform_node(n.condition))
 
         if isinstance(n, ForEach):
-            return ForEach(n.var_type, n.var_name, transform_node(n.iterable), [transform_node(s) for s in n.body])
+            return ForEach(_qual_type(n.var_type), n.var_name, transform_node(n.iterable), [transform_node(s) for s in n.body])
 
         if isinstance(n, Block):
             return Block([transform_node(s) for s in n.body])
 
         if isinstance(n, TryCatch):
             return TryCatch([transform_node(s) for s in n.try_body],
-                            n.catch_type, n.catch_name,
+                            _qual_type(n.catch_type), n.catch_name,
                             [transform_node(s) for s in n.catch_body] if n.catch_body is not None else None,
                             [transform_node(s) for s in n.finally_body] if n.finally_body is not None else None)
 
@@ -427,16 +466,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                              line=n.line, guard=transform_node(n.guard))
 
         if isinstance(n, CastExpr):
-            ttype = n.target_type
-            if '::' in ttype:
-                ns, _, tname = ttype.partition('::')
-                key = (ns, tname)
-                if key in aliased_exports:
-                    mangled, is_pub = aliased_exports[key]
-                    if not is_pub:
-                        raise ModuleError(f"[Module Error] '{tname}' is not pub in module '{ns}'")
-                    ttype = mangled
-            return CastExpr(transform_node(n.expr), ttype)
+            return CastExpr(transform_node(n.expr), _qual_type(n.target_type))
 
         if isinstance(n, UnwrapExpr):
             return UnwrapExpr(transform_node(n.operand))
@@ -455,7 +485,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
 
         if isinstance(n, CallExpr):
             new_args = [transform_node(a) for a in n.args]
-            return CallExpr(n.callee, new_args, line=n.line, type_args=n.type_args)
+            return CallExpr(n.callee, new_args, line=n.line, type_args=[_qual_type(t) for t in n.type_args])
 
         if isinstance(n, MethodCallExpr):
             return MethodCallExpr(transform_node(n.obj), n.method, [transform_node(a) for a in n.args])
@@ -474,10 +504,10 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
 
         if isinstance(n, StructInit):
             new_fields = [(fn, transform_node(fv)) for fn, fv in n.fields]
-            return StructInit(n.struct_name, new_fields, type_args=n.type_args)
+            return StructInit(n.struct_name, new_fields, type_args=[_qual_type(t) for t in n.type_args])
 
         if isinstance(n, Lambda):
-            return Lambda(n.params, n.return_type, [transform_node(s) for s in n.body], line=n.line)
+            return Lambda(_qual_params(n.params), _qual_type(n.return_type), [transform_node(s) for s in n.body], line=n.line)
 
         # Any other node: rebuild it from its fields so its children are still
         # visited. Without this every node type missing from the cases above
@@ -498,6 +528,19 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
 
     def _rebuild_children(n: Node) -> Node:
         kwargs = {f.name: _transform_value(getattr(n, f.name)) for f in fields(n)}
+        # Type strings held by nodes with no case of their own: struct fields,
+        # trait signatures, `impl ... for T`. ForeignBlock params are wiring
+        # names, not types.
+        for k, v in kwargs.items():
+            if k in _TYPE_STR_FIELDS and isinstance(v, str):
+                kwargs[k] = _qual_type(v)
+            elif k == 'params' and isinstance(v, list) and not isinstance(n, ForeignBlock):
+                kwargs[k] = _qual_params(v)
+            elif k == 'type_args' and isinstance(v, list):
+                kwargs[k] = [_qual_type(t) for t in v]
+            elif k == 'members' and isinstance(n, EnumDecl):
+                kwargs[k] = [EnumMember(m.name, [_qual_type(t) for t in m.fields], line=m.line)
+                             if any('::' in t for t in m.fields) else m for m in v]
         if all(kwargs[k] is getattr(n, k) for k in kwargs):
             return n
         try:

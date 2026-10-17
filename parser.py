@@ -2958,6 +2958,8 @@ class Parser:
     # harder to change later than leaving it unwritten.
     # Helpers taking more than the string itself; anything absent takes 1.
     _STR_HELPER_ARITY = {
+        'char_at': 2, 'char_slice': 3,
+        'checked_add': 2, 'checked_sub': 2, 'checked_mul': 2,
         'replace_first': 3, 'replace_last': 3,
         'count_of': 2, 'last_index_of': 2,
         'strip_prefix': 2, 'strip_suffix': 2,
@@ -2965,6 +2967,238 @@ class Parser:
     }
 
     _STR_HELPERS = {
+        # ── D1 (part): counting and slicing by CHARACTER ──
+        #
+        # `len` counts bytes, `substr` and `s[i]` index bytes, and that is
+        # ISSUES/30 — changing them is a breaking change in every engine.
+        # These are the additive half, which costs nothing and can be had
+        # today: split(s, "") is already character-aware, so the whole thing
+        # is a desugaring.
+        #
+        #     len("Ação Ônibus")        == 14   (bytes)
+        #     char_len("Ação Ônibus")   == 11   (characters)
+        #
+        # The ERP needs this specifically: NF-e field limits are stated in
+        # CHARACTERS, so validating `xProd` with len() rejects a legitimate
+        # accented product name early, and truncating with substr() can cut
+        # a character in half and produce XML that is not well-formed.
+        #
+        # NAMED char_* RATHER THAN CHANGING len(). The obvious call stays the
+        # byte one, which is the same trap to_int/parse_int has, and that is
+        # a real cost — but silently redefining len() would change the
+        # meaning of every existing program that pairs it with substr
+        # offsets. ISSUES/30 holds the decision; this does not pre-empt it.
+        'char_len': ('__cryo_char_len', 'int', r"""
+fn __cryo_char_len(string s) -> int ={
+    return len(split(s, ""));
+}
+"""),
+        # ABORTS out of range, exactly as s[i] does — "[Cryo Security]
+        # IndexError". Returning "" instead would be the fail-open answer to
+        # a read past the end, and it would also differ from the byte
+        # indexing it mirrors. char_slice below is the clamping one.
+        'char_at': ('__cryo_char_at', 'string', r"""
+fn __cryo_char_at(string s, int i) -> string ={
+    string[] cs = split(s, "");
+    return cs[i];
+}
+"""),
+        # CLAMPS, like substr: a start past the end gives "", and a length
+        # past the end stops at the end.
+        #
+        # `a + n` is only ever evaluated once n is known to be smaller than
+        # the characters remaining, so a caller passing a huge n cannot
+        # overflow the addition — the same discipline as checked_add, for
+        # the same reason.
+        'char_slice': ('__cryo_char_slice', 'string', r"""
+fn __cryo_char_slice(string s, int start, int n) -> string ={
+    string[] cs = split(s, "");
+    int ln = len(cs);
+    int a = start;
+    if (a < 0) { a = 0; }
+    if (a > ln) { a = ln; }
+    int b = ln;
+    if (n < ln - a) { b = a + n; }
+    if (n < 0) { b = a; }
+    string out = "";
+    int i = a;
+    while (i < b) {
+        out = out + cs[i];
+        i = i + 1;
+    }
+    return out;
+}
+"""),
+        # ── C1: arithmetic that reports overflow instead of guessing ──
+        #
+        # `a + b` means two different things today: the compiled backends
+        # abort with "[Cryo Security] Overflow: integer addition", the VM
+        # wraps silently and returns a negative number. That divergence is
+        # ISSUES/29 and is not fixed here — it needs a safe-mode bit in the
+        # bytecode, which the format does not have.
+        #
+        # These are the other half of requirement C1, and they are useful
+        # whichever way 29 is settled: a program that needs to KNOW about
+        # overflow gets the same answer on all six backends, today.
+        #
+        #     int? total = checked_mul(qty, unit_price);
+        #     if (total == null) { ... }
+        #
+        # EVERY COMPARISON IS CHOSEN SO THAT IT CANNOT ITSELF OVERFLOW,
+        # which is the whole difficulty: a guard written as `a + b > MAX` has
+        # already done the thing it was meant to prevent. So each bound is
+        # rearranged into a subtraction or division that is provably in
+        # range — `a > MAX - b` only when b > 0, `a > MAX / b` only when both
+        # are positive, and so on. By the time the operation runs it has been
+        # proved not to overflow, so it is also safe on the backends that
+        # abort.
+        #
+        # MIN is spelled `-MAX - 1` rather than written out: the literal
+        # -9223372036854775808 is unary minus applied to 9223372036854775808,
+        # which does not fit in an int64 and is not a thing the lexer can
+        # hand back.
+        'checked_add': ('__cryo_checked_add', 'int?', r"""
+fn __cryo_checked_add(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b > 0 && a > mx - b) { return null; }
+    if (b < 0 && a < mn - b) { return null; }
+    return a + b;
+}
+"""),
+        'checked_sub': ('__cryo_checked_sub', 'int?', r"""
+fn __cryo_checked_sub(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b < 0 && a > mx + b) { return null; }
+    if (b > 0 && a < mn + b) { return null; }
+    return a - b;
+}
+"""),
+        # The sign cases are written out rather than folded into absolute
+        # values, because abs(MIN) is itself the overflow this is for.
+        # MIN * -1 and -1 * MIN are handled before the division guards, so no
+        # guard ever evaluates MIN / -1 — the one division that traps.
+        'checked_mul': ('__cryo_checked_mul', 'int?', r"""
+fn __cryo_checked_mul(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (a == 0 || b == 0) { return 0; }
+    if (a == -1 && b == mn) { return null; }
+    if (b == -1 && a == mn) { return null; }
+    if (a > 0) {
+        if (b > 0) {
+            if (a > mx / b) { return null; }
+        } else {
+            if (b < mn / a) { return null; }
+        }
+    } else {
+        if (b > 0) {
+            if (a < mn / b) { return null; }
+        } else {
+            if (a < mx / b) { return null; }
+        }
+    }
+    return a * b;
+}
+"""),
+        # ── C4: parsing that returns, instead of killing the process ──
+        #
+        # `to_int("abc")` and `to_number("abc")` ABORT, and the abort is not
+        # catchable — `try { to_int(s) } catch` does not run, the process
+        # ends. For a server that parses user input that is not a rough
+        # edge, it is a denial of service: one bad form field ends the
+        # request loop for every tenant.
+        #
+        # These return an optional instead. `parse_int(s) ?? 0` is then the
+        # whole idiom, and nothing aborts.
+        #
+        # THE VALIDATOR MUST BE A SUBSET OF THE NATIVE'S ACCEPT SET, never a
+        # superset. It decides, in Cryo, whether the native will succeed; if
+        # it were ever more permissive than the native, the call it guards
+        # would abort and we would be back where we started, only with the
+        # failure harder to find. Narrower is safe — a value the native would
+        # have taken comes back null, which the caller already handles.
+        # Measured against the native rather than assumed (to_int trims,
+        # takes a leading + or -, takes leading zeros, and REJECTS "4.2",
+        # "0x10", "" and anything past int64).
+        #
+        # The overflow check is the part that is easy to leave out and the
+        # reason this cannot just be "scan the digits": to_int aborts on
+        # 99999999999999999999 exactly as it does on "abc", so a validator
+        # that only checked the characters would still take the process down
+        # on a number that is merely too big. Nineteen digits is where int64
+        # ends, and at that length the comparison is digit by digit against
+        # the limit — 9223372036854775807, or ...808 for a negative, which
+        # has one more magnitude than its positive counterpart.
+        'parse_int': ('__cryo_parse_int', 'int?', r"""
+fn __cryo_parse_int(string s) -> int? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    bool neg = false;
+    if (t[0] == "-") { neg = true; i = 1; }
+    if (t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int j = i;
+    while (j < n) {
+        if (!contains("0123456789", t[j])) { return null; }
+        j = j + 1;
+    }
+    while (i < n - 1 && t[i] == "0") { i = i + 1; }
+    string d = substr(t, i, n - i);
+    int dn = len(d);
+    if (dn > 19) { return null; }
+    if (dn == 19) {
+        string lim = "9223372036854775807";
+        if (neg) { lim = "9223372036854775808"; }
+        int k = 0;
+        bool over = false;
+        while (k < 19) {
+            int av = find("0123456789", d[k]);
+            int bv = find("0123456789", lim[k]);
+            if (av > bv) { over = true; break; }
+            if (av < bv) { break; }
+            k = k + 1;
+        }
+        if (over) { return null; }
+    }
+    return to_int(t);
+}
+"""),
+        # Plain decimal only: a sign, digits, at most one dot, and a digit
+        # somewhere. DELIBERATELY NARROWER than to_number, which also takes
+        # "1e3", "NaN" and "Inf" — and rejects "1e999" for being out of
+        # range, which a validator written here would have to know the
+        # double range to reproduce. Narrower is the safe direction, and the
+        # input this exists for is a quantity or a price typed into a form,
+        # not scientific notation. to_number is still there for the rest.
+        'parse_number': ('__cryo_parse_number', 'number?', r"""
+fn __cryo_parse_number(string s) -> number? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    if (t[0] == "-" || t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int dots = 0;
+    int digits = 0;
+    int j = i;
+    while (j < n) {
+        string c = t[j];
+        if (c == ".") { dots = dots + 1; }
+        else {
+            if (!contains("0123456789", c)) { return null; }
+            digits = digits + 1;
+        }
+        j = j + 1;
+    }
+    if (dots > 1) { return null; }
+    if (digits == 0) { return null; }
+    return to_number(t);
+}
+"""),
         # ── prefix/suffix and blankness ──
         #
         # is_blank("") is TRUE, and that is a deliberate asymmetry with the
@@ -3008,11 +3242,26 @@ fn __cryo_strip_suffix(string s, string p) -> string ={
         # already lowercases the non-initial characters of each word, and a
         # capitalize that disagreed with it on the same input would be the
         # surprise.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'capitalize': ('__cryo_capitalize', 'string', r"""
 fn __cryo_capitalize(string s) -> string ={
-    int n = len(s);
-    if (n == 0) { return s; }
-    return upper(substr(s, 0, 1)) + lower(substr(s, 1, n - 1));
+    string[] cs = split(s, "");
+    if (len(cs) == 0) { return s; }
+    string head = cs[0];
+    int hb = len(head);
+    return upper(head) + lower(substr(s, hb, len(s) - hb));
 }
 """),
         # Case-insensitive equality via lower() on both sides rather than a
@@ -3071,16 +3320,33 @@ fn __cryo_word_count(string s) -> int ={
         # to make. substr(a, 0, i) rather than building the string up means
         # the result is a slice of the first argument, so the two orders of
         # the same pair give the same answer.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'common_prefix': ('__cryo_common_prefix', 'string', r"""
 fn __cryo_common_prefix(string a, string b) -> string ={
-    int n = len(a);
-    if (len(b) < n) { n = len(b); }
+    string[] ca = split(a, "");
+    string[] cb = split(b, "");
+    int n = len(ca);
+    if (len(cb) < n) { n = len(cb); }
+    string out = "";
     int i = 0;
     while (i < n) {
-        if (a[i] != b[i]) { break; }
+        if (ca[i] != cb[i]) { break; }
+        out = out + ca[i];
         i = i + 1;
     }
-    return substr(a, 0, i);
+    return out;
 }
 """),
         # ── character classes (whole-string, like Python's str.isdigit) ──
@@ -3152,12 +3418,26 @@ fn __cryo_is_space(string s) -> bool ={
     return true;
 }
 """),
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
         'reverse_str': ('__cryo_reverse_str', 'string', r"""
 fn __cryo_reverse_str(string s) -> string ={
+    string[] cs = split(s, "");
     string out = "";
-    int i = len(s) - 1;
+    int i = len(cs) - 1;
     while (i >= 0) {
-        out = out + s[i];
+        out = out + cs[i];
         i = i - 1;
     }
     return out;
@@ -3239,14 +3519,28 @@ fn __cryo_chars(string s) -> string[] ={
         # is upper, the REST of the word is lower, so "hELLO" becomes "Hello"
         # rather than "HELLO". A word boundary is any whitespace, not only a
         # space — otherwise a tab-separated line would title only its first cell.
-        'title_case': ('__cryo_title_case', 'string', r'''
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'title_case': ('__cryo_title_case', 'string', r"""
 fn __cryo_title_case(string s) -> string ={
+    string[] cs = split(s, "");
     string out = "";
-    int n = len(s);
+    int n = len(cs);
     int i = 0;
     bool at_start = true;
     while (i < n) {
-        string c = s[i];
+        string c = cs[i];
         if (c == " " || c == "\t" || c == "\n" || c == "\r") {
             out = out + c;
             at_start = true;
@@ -3258,7 +3552,7 @@ fn __cryo_title_case(string s) -> string ={
     }
     return out;
 }
-'''),
+"""),
         # The same character set trim() strips, so trim(s) and
         # trim_start(trim_end(s)) agree — a difference there would be the worst
         # kind, since nothing would ever report it.
