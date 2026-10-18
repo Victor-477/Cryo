@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("embed_csharp")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b57127c13c4bc70e0f6023a7123a2353bfec8c04")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+755cbe1829f5508e36b467eb81ca983a448ab245")]
 [assembly: System.Reflection.AssemblyProductAttribute("embed_csharp")]
 [assembly: System.Reflection.AssemblyTitleAttribute("embed_csharp")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
