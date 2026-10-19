@@ -142,7 +142,7 @@ def _rename_refs(node, mapping: Dict[str, str], types: Optional[Dict[str, str]] 
             node.name, params,
             _rename_type(node.return_type, inner, types),
             _rename_refs(node.body, inner, types),
-            is_tool=node.is_tool, line=node.line,
+            is_tool=node.is_tool, is_test=node.is_test, line=node.line,
             type_params=node.type_params, type_bounds=node.type_bounds,
             is_pub=node.is_pub)
         carry_meta(node, fn)

@@ -295,6 +295,23 @@ class Lexer:
                 num += self._advance()
             else:
                 break
+        # Exponent: 1e10, 1.5e3, 2E-4. Only when a digit follows the `e` (after
+        # an optional sign), so `2e` stays `2` followed by the identifier `e`.
+        # The `e` is lower-cased so the token text does not depend on spelling;
+        # selfhost/lexer.cryo applies the same rule, keeping the streams equal.
+        if self._peek() in ('e', 'E'):
+            k = 1
+            if self._peek(k) in ('+', '-'):
+                k += 1
+            nxt = self._peek(k)
+            if nxt is not None and nxt.isdigit():
+                self._advance()
+                num += 'e'
+                if k == 2:
+                    num += self._advance()
+                while self._peek() is not None and self._peek().isdigit():
+                    num += self._advance()
+                is_float = True
         return Token(TokenType.FLOAT_LIT if is_float else TokenType.INT_LIT, num, sl, sc)
 
     def _read_string(self, sl, sc):
