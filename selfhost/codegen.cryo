@@ -19,6 +19,7 @@
 //  comes last and is the entry function.
 // ============================================================
 import "lexer.cryo"
+import "semantic.cryo"
 
 // ── token-stream accessors (cursor = int[] box) ───────
 fn cpt(string[] tt, int[] pos) -> string ={
@@ -45,6 +46,10 @@ fn cadv(int[] pos) -> void ={
 fn charCode(string c) -> int ={
     if (c == "\t") { return 9; }
     if (c == "\n") { return 10; }
+    // \r joins them for the reason 9.4 recorded: a control character is
+    // outside the printable table below, so without an entry here it falls
+    // back to '?' and the constant is silently the wrong string.
+    if (c == "\r") { return 13; }
     string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
     int idx = find(tbl, c);
     if (idx < 0) { return 63; }   // '?' for a character outside the table
@@ -484,6 +489,27 @@ fn cgUnary(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[
         code.push(21);   // OP_NEG
         return;
     }
+    // 13.2 — PREFIX `!` (boolean negation).
+    //
+    // The same token is the postfix unwrap `x!`, and only that reading was
+    // implemented: cgPostfix consumed NOT after an operand, and a LEADING `!`
+    // matched no rule at all. It was not rejected either — nothing was
+    // emitted, so `if (!b)` produced bytecode that popped an empty stack and
+    // killed the VM with "index out of range [-1]". Found by writing
+    // `if (!analyze(...))` in this very file and watching the self-compiled
+    // stage crash.
+    if (cpt(tt, pos) == "NOT") {
+        cadv(pos);
+        cgUnary(tt, tv, pos, code, cp, sl, fns);
+        code.push(38);   // OP_NOT (0x26)
+        return;
+    }
+    if (cpt(tt, pos) == "TILDE") {
+        cadv(pos);
+        cgUnary(tt, tv, pos, code, cp, sl, fns);
+        code.push(27);   // OP_BNOT (0x1B)
+        return;
+    }
     cgPostfix(tt, tv, pos, code, cp, sl, fns);
 }
 // postfix chain: index a[i] (OP_INDEX), field a.f (INDEX by name), method a.push(x)
@@ -826,7 +852,46 @@ fn cgStmt(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, string[]
             int itSlot = slotOf(sl, itName);
             int ixSlot = slotOf(sl, ixName);
             int xSlot  = slotOf(sl, xname);
-            cgExpr(tt, tv, pos, code, cp, sl, fns);        // collection
+            cgExpr(tt, tv, pos, code, cp, sl, fns);        // collection, or a range START
+            // 10.1 — `for (int i in a..b)` and `a..=b`.
+            //
+            // The lexer has produced RANGE/RANGE_INCL since it was written and
+            // nothing here ever consumed them, so a range fell through as an
+            // ordinary value into the index loop below — which asked it for a
+            // len(). On the VM that aborts with "len() applied to a value
+            // without length"; in the browser playground it printed NOTHING at
+            // all, which is the worse half of the same bug. A range loop is a
+            // COUNTED loop, which is what the reference front end desugars it
+            // to, so the two compilers now agree instead of one of them being
+            // wrong in silence.
+            string rangeTok = cpt(tt, pos);
+            if (rangeTok == "RANGE" || rangeTok == "RANGE_INCL") {
+                cadv(pos);
+                emStore(code, xSlot);                      // x = start
+                cgExpr(tt, tv, pos, code, cp, sl, fns);    // the end
+                emStore(code, itSlot);                     // __it reused as the end
+                if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
+                int rStart = len(code);
+                emLoad(code, xSlot);
+                emLoad(code, itSlot);
+                // `..` stops before the end, `..=` includes it.
+                if (rangeTok == "RANGE_INCL") { code.push(36); } else { code.push(34); }
+                int rExit = emJmp(code, 49);               // JMPF exit
+                int[] rbrk = [];
+                int[] rcont = [];
+                cgBlock(tt, tv, pos, code, cp, sl, fns, rbrk, rcont);
+                int rCont = len(code);                     // continue lands on the step
+                emLoad(code, xSlot); emConst(code, addInt(cp, 1)); code.push(16);
+                emStore(code, xSlot);
+                int rBack = emJmp(code, 48);               // JMP rStart
+                patchI32(code, rBack, rStart - (rBack + 4));
+                patchI32(code, rExit, len(code) - (rExit + 4));
+                int rq = 0;
+                while (rq < len(rcont)) { patchI32(code, rcont[rq], rCont - (rcont[rq] + 4)); rq = rq + 1; }
+                rq = 0;
+                while (rq < len(rbrk)) { patchI32(code, rbrk[rq], len(code) - (rbrk[rq] + 4)); rq = rq + 1; }
+                return;
+            }
             emStore(code, itSlot);                         // __it = coll
             emConst(code, addInt(cp, 0)); emStore(code, ixSlot);   // __i = 0
             if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
@@ -1188,6 +1253,23 @@ fn compile(string src, string outPath) -> bool ={
     string[] tt = [];
     string[] tv = [];
     lex(src, tt, tv);
+
+    // 13.2 — analyse BEFORE emitting anything.
+    //
+    // Without this the compiler emitted a `.pyro` for every program it could
+    // parse, so `print(x)` on an undeclared x printed 0 and `nosuch(1)` built
+    // a call to function index 65535 that killed the VM with a Go runtime
+    // panic. Refusing is the whole point: a compiler that turns a typo into a
+    // silent 0 is worse than one that cannot compile the file at all.
+    string[] errs = [];
+    if (!analyze(tt, tv, errs)) {
+        int e = 0;
+        while (e < len(errs)) {
+            print("[Semantic Error] " + errs[e]);
+            e = e + 1;
+        }
+        return false;
+    }
 
     // pre-scan: user function names (source order), then enum variant
     // constructors (short + prefixed per variant), then 'main' last.

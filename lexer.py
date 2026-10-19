@@ -193,6 +193,21 @@ class Token:
         return f"Token({self.type.name}, {self.value!r}, {self.line}:{self.col})"
 
 
+# 11.39 — what a `\$` escape leaves behind, so the parser can tell a literal
+# `${…}` from a live interpolation.
+#
+# It STANDS IN FOR the '$' rather than sitting in front of it. Keeping the '$'
+# and marking it would not work: `${` still matches, so the interpolation fires
+# anyway — which is the first way I got this wrong.
+#
+# NUL rather than a backslash, which is the second way: `\\${x}` is an escaped
+# backslash followed by a REAL interpolation, and it unescapes to a backslash
+# then `${` — byte-identical to what a backslash-marked `\${x}` would leave.
+# The two become indistinguishable and one silently takes the other's meaning.
+# NUL cannot occur in Cryo source, so it cannot collide with anything.
+ESC_DOLLAR = '\x00'
+
+
 class LexerError(Exception):
     pass
 
@@ -280,6 +295,23 @@ class Lexer:
                 num += self._advance()
             else:
                 break
+        # Exponent: 1e10, 1.5e3, 2E-4. Only when a digit follows the `e` (after
+        # an optional sign), so `2e` stays `2` followed by the identifier `e`.
+        # The `e` is lower-cased so the token text does not depend on spelling;
+        # selfhost/lexer.cryo applies the same rule, keeping the streams equal.
+        if self._peek() in ('e', 'E'):
+            k = 1
+            if self._peek(k) in ('+', '-'):
+                k += 1
+            nxt = self._peek(k)
+            if nxt is not None and nxt.isdigit():
+                self._advance()
+                num += 'e'
+                if k == 2:
+                    num += self._advance()
+                while self._peek() is not None and self._peek().isdigit():
+                    num += self._advance()
+                is_float = True
         return Token(TokenType.FLOAT_LIT if is_float else TokenType.INT_LIT, num, sl, sc)
 
     def _read_string(self, sl, sc):
@@ -289,7 +321,37 @@ class Lexer:
             if self._peek() == '\\':
                 self._advance()
                 esc = self._advance()
-                s += {'n': '\n', 't': '\t', '\\': '\\', '"': '"', "'": "'"}.get(esc, esc)
+                # 11.39 — `\$` has to survive as an ESCAPE rather than collapse
+                # to a bare '$'. The parser re-scans this value for `${…}` and
+                # interpolates whatever it finds, so unescaping here left it no
+                # way to tell `\${x}` from `${x}` — and there was then no way to
+                # write a literal `${…}` in a Cryo string at all. Neither pass
+                # was wrong on its own; the information was simply dropped
+                # between them.
+                #
+                # The marker is NUL, not a backslash. A backslash cannot work:
+                # `\\${x}` (an escaped backslash, then a REAL interpolation)
+                # unescapes to a backslash followed by `${`, which is
+                # byte-identical to what `\${x}` would leave — the two cases
+                # become indistinguishable and one of them silently gets the
+                # wrong answer. NUL cannot appear in Cryo source, so it cannot
+                # collide with anything. Consumed in parser._string_literal.
+                if esc == '$':
+                    s += ESC_DOLLAR
+                else:
+                    # `r` was missing, and the fallback below turns an unknown
+                    # escape into the character itself — so `"\r"` lexed as the
+                    # LETTER r, silently. No literal could contain a carriage
+                    # return, which is what every line of CRLF text ends with.
+                    # Found by 13.5's trim_start/trim_end tests, where
+                    # trim(s) and trim_start(trim_end(s)) disagreed on a string
+                    # whose "\r" was not one.
+                    #
+                    # `\0` is deliberately NOT here: NUL is the ESC_DOLLAR
+                    # marker above, and a literal one would be indistinguishable
+                    # from an escaped `${`.
+                    s += {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
+                          '"': '"', "'": "'"}.get(esc, esc)
             else:
                 s += self._advance()
         if self.pos >= len(self.source):

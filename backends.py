@@ -47,7 +47,8 @@ _SUPPORTS = {
     'asm':  set(),
     'pyro': {'float', 'string', 'array', 'map', 'struct', 'enum',
              'convfn', 'mathfn', 'mapremove', 'strfn', 'trycatch',
-             'optional', 'cast', 'input', 'json', 'http'},
+             'optional', 'cast', 'input', 'json', 'http',
+             'concurrency'},   # 12.5 — the VM has its own scheduler
     'c':    {'float', 'string', 'array', 'struct', 'enum', 'trycatch', 'mathfn'},
     'node': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
@@ -55,12 +56,24 @@ _SUPPORTS = {
     'go':   {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
              'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
+    # .NET brings containers, optionals and exceptions with it, so the C#
+    # backend starts where the C one needed a hand-written runtime to get. What
+    # it does NOT have is the Pyro layer (llm/http/machine) or first-class
+    # functions, and those refuse with a message naming a backend that does.
+    'csharp': {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
+               'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn', 'input'},
+    # Same reasoning as csharp: the standard library carries containers,
+    # optionals and exceptions. No `input` — the C++ backend has no stdin
+    # builtin yet, and claiming one would route a program here that then fails.
+    'cpp':    {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
+               'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn'},
 }
 
 # foreign languages that each backend can emit
 _LANG_OF = {
     'go': {'go'}, 'node': {'node', 'js', 'javascript'}, 'c': {'c'},
-    'pyro': set(), 'asm': set(),
+    'pyro': set(), 'asm': set(), 'csharp': {'c#', 'cs', 'csharp', 'dotnet'},
+    'cpp': {'c++', 'cpp', 'cxx'},
     # The front-end backend is the only one that emits a page. It was missing
     # from these tables entirely, so `--backend auto` could never choose it and
     # a program built out of >html(/>CSS( blocks was handed to go — which drops
@@ -74,7 +87,7 @@ _LANG_OF = {
 _PAGE_LANGS = {'html', 'css'}
 
 # preference order: more lightweight/native first
-_PREF = ['pyro', 'go', 'node', 'c', 'asm']
+_PREF = ['pyro', 'go', 'node', 'c', 'csharp', 'cpp', 'asm']
 
 
 def _walk(node: Any):

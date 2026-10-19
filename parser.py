@@ -43,6 +43,7 @@ _BUILTIN_NAMES = {
     'asset', 'asset_names',
     'llm_stream', 'llm_next', 'llm_token', 'llm_close',   # 11.17 streaming
     'llm_call', 'llm_try',                                # 11.19 outcomes
+    'or_else',                                            # 11.4 Result default
     'agent_call', 'agent_try',                            # 11.20 agent
     'input', 'json_encode', 'json_decode', 'http_get', 'http_post', 'sleep',
     'write_bytes', 'read_file', 'args', 'http_serve', 'to_string', 'to_int', 'to_number',
@@ -61,7 +62,16 @@ def _extract_identifiers(node, found):
         _extract_identifiers(node.left, found)
         _extract_identifiers(node.right, found)
     elif isinstance(node, UnaryExpr):
-        _extract_identifiers(node.expr, found)
+        # `operand`, not `expr` — UnaryExpr's field is `operand` (ast_nodes
+        # 347); the neighbouring Spawn/Await/Unwrap/Try branch below really
+        # does use `expr`, which is how the wrong name looked right here.
+        #
+        # This walker finds the identifiers a comprehension CAPTURES, so the
+        # mistake meant any comprehension containing a unary operator —
+        # `[-x for x in xs]`, `[x for x in xs if !flag]` — aborted the
+        # compiler with "[Internal Error] 'UnaryExpr' object has no attribute
+        # 'expr'", on input the analyser accepts.
+        _extract_identifiers(node.operand, found)
     elif isinstance(node, (SpawnExpr, AwaitExpr, UnwrapExpr, TryExpr)):
         _extract_identifiers(node.expr, found)
     elif isinstance(node, CallExpr):
@@ -94,6 +104,48 @@ class ParseError(Exception):
     pass
 
 
+class ParseErrors(ParseError):
+    """More than one syntax error from a single parse (roadmap 13.6).
+
+    A ParseError so that every existing `except ParseError` keeps working — a
+    caller that does not know about recovery still gets a syntax error, and the
+    joined text is readable on its own. Callers that want them separately read
+    `.errors`.
+    """
+
+    #: Appended when the cap fires. NOT one of `errors`: it is a notice about
+    #: the list, not a mistake in the program, and counting it as one made a
+    #: 12-mistake file report "found 11 problems" while listing 10 and a note.
+    #: Callers render it from `truncated`.
+    CAP_NOTICE = ("... stopping here; fix these and compile again to see "
+                  "whether more remain")
+
+    def __init__(self, errors, truncated=False):
+        self.errors = list(errors)
+        self.truncated = bool(truncated)
+        n = len(self.errors)
+        # "at least" when the cap cut the list off. The parser did find n, and
+        # there may be more it never reached; a flat "found n" there would be
+        # the same off-by-one in words rather than in arithmetic.
+        head = ("the parser found at least %d problem%s:" % (n, '' if n == 1 else 's')
+                if self.truncated
+                else "the parser found %d problem%s:" % (n, '' if n == 1 else 's'))
+        body = "\n  - ".join(e.replace('[Syntax Error] ', '')
+                             for e in self.errors)
+        super().__init__(head + "\n  - " + body
+                         + ("\n  " + self.CAP_NOTICE if self.truncated else ""))
+
+
+def _unesc_dollar(s: str) -> str:
+    """Turn the 11.39 marker back into a plain '$'.
+
+    Applied to LITERAL chunks only. An interpolated expression is re-lexed from
+    its own source text, so it never sees the marker.
+    """
+    from lexer import ESC_DOLLAR
+    return s.replace(ESC_DOLLAR, '$')
+
+
 class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
@@ -101,10 +153,181 @@ class Parser:
         self.synthetic_fns = []
         self.user_defined_fns = set()
         self._gen_id_count = 0
+        # 13.6 — syntax errors collected during recovery, raised together at the
+        # end of parse(). One list per Parser: a sub-parser (an interpolation
+        # fragment, a synthetic helper) has its own and cannot leak into this
+        # one. `_err_at` is the token position each was reported at, so a rule
+        # that fails twice at the same place is recorded once.
+        self._errors = []
+        self._err_at = set()
+        self._stopped = False
+        self._truncated = False   # the cap fired; see ParseErrors.CAP_NOTICE
+        # ISSUES/26 — the declared type of every name the parser has seen, used
+        # ONLY to type a comprehension's lowering. This is not a type
+        # environment and must not grow into one: it is flat, so a name
+        # declared twice with two types is recorded as AMBIGUOUS and then
+        # treated as unknown. Being flat is what makes it safe to be wrong
+        # about scope — it never guesses, it declines.
+        self._decl_types = {}
+        self._ambiguous_decls = set()
+        # fn_name -> (FunctionDecl, the VarDecl holding __res). A comprehension
+        # helper is generated per use and called exactly once, so the
+        # declaration it initialises can retype it afterwards.
+        self._comp_helpers = {}
 
     def _gen_id(self):
         self._gen_id_count += 1
         return self._gen_id_count
+
+    # ── ISSUES/26: just enough type knowledge to lower a comprehension ──
+    #
+    # A comprehension lowers to a synthetic function, and every part of that
+    # function used to be typed `any`:
+    #
+    #   fn __list_comp_1(any xs) -> any[] { any[] __res = []; … }
+    #
+    # pyro and node are dynamically typed so `any` cost them nothing. The go
+    # backend is not, and emitted Go that the Go compiler rejected — "cannot
+    # use __list_comp_1(xs) (value of type []any) as []int64 value" and
+    # "cannot range over xs (variable of interface type any)". The c and cpp
+    # backends refused the construct outright because they have no `any` at
+    # all. So a headline 10.3 feature worked on two backends out of six.
+    #
+    # THE FIX IS TO STOP SAYING `any` WHEN THE PROGRAM ALREADY SAID SOMETHING
+    # BETTER. Three facts are available without inferring anything:
+    #
+    #   1. the loop variable's type, when the program declares it
+    #      (`for int x in …`) or the iterable is a range (always int);
+    #   2. the iterable's element type, when the iterable is a name with a
+    #      declared array type or an array literal of one kind;
+    #   3. the RESULT type, from the declaration being initialised —
+    #      `int[] ys = [...]` states it outright.
+    #
+    # Everything else keeps `any`, exactly as today. That is the property that
+    # makes this safe: where the knowledge runs out the lowering is unchanged,
+    # so a backend that works today cannot start failing.
+    def _note_decl(self, name, t):
+        """Record a declared type, or mark the name ambiguous."""
+        if not name or not t or t == 'any':
+            return
+        prev = self._decl_types.get(name)
+        if prev is not None and prev != t:
+            self._ambiguous_decls.add(name)
+            return
+        self._decl_types[name] = t
+
+    def _declared_type(self, name):
+        if name in self._ambiguous_decls:
+            return None
+        return self._decl_types.get(name)
+
+    @staticmethod
+    def _elem_of(t):
+        """The element type of `T[]`, else None. Not for strings: a string
+        index is a one-character string, which is a different question."""
+        if t and t.endswith('[]'):
+            base = t[:-2]
+            return base or None
+        return None
+
+    def _static_type(self, node):
+        """A type for `node` when it is readable off the syntax, else None.
+
+        Deliberately shallow — a literal, a declared name, or a homogeneous
+        literal container. No arithmetic, no calls, no fields. A wrong answer
+        here would silently retype a lowering, so the rule is that anything
+        less than certain returns None.
+        """
+        if isinstance(node, Identifier):
+            return self._declared_type(node.name)
+        if isinstance(node, Literal):
+            return node.kind if node.kind in ('int', 'number', 'string',
+                                              'bool') else None
+        if isinstance(node, ArrayLiteral):
+            kinds = {self._static_type(e) for e in node.elements}
+            if len(kinds) == 1:
+                only = kinds.pop()
+                return f"{only}[]" if only else None
+            return None
+        return None
+
+    def _register_comp_helper(self, fn_name, fn_decl, res_decl):
+        self._comp_helpers[fn_name] = (fn_decl, res_decl)
+
+    def _bind_iterable(self, iterable, is_range):
+        """Bind a non-name iterable to a typed local, and iterate THAT.
+
+        `[x * 2 for x in [1, 2, 3, 4]]` iterated the array literal in place,
+        and three backends could not do it:
+
+          go   emitted `range []any{1,2,3,4}`, so the loop variable was `any`
+               whatever the AST said, and arithmetic on it did not compile;
+          c    has no inline array literal as an expression at all — _expr
+               returns the placeholder comment `/* inline-array */`, which
+               reached gcc as `expected expression before ')'`;
+          cpp  emitted `for (… : *(cryo::arr<…>(…)))`, dereferencing a
+               temporary shared_ptr. C++ extends the lifetime of the
+               temporary bound to the range, not of one further inside the
+               expression, so the vector was freed before the first
+               iteration — garbage in the output, not a build failure.
+
+        Rebinding first is the same move `_desugar_for_vars` already makes for
+        `enumerate`, and for the same stated reason: a value that is only an
+        expression cannot carry a type the backends can use.
+
+        Only when the type is READABLE. Without a type the temp would be
+        `any`, which buys nothing and would turn today's clean refusal on
+        c and cpp into the `any` they cannot represent.
+        """
+        if is_range or isinstance(iterable, Identifier):
+            return [], iterable
+        t = self._static_type(iterable)
+        if not t:
+            return [], iterable
+        name = f"__it_{self._gen_id()}"
+        return [VarDecl(t, name, iterable)], Identifier(name)
+
+    def _typed_loop_vars(self, vars_list, iterable, is_range):
+        """Fill in an undeclared single loop variable's type where it is known.
+
+        Only the ONE-VARIABLE form. The two-variable forms are
+        `enumerate(...)` and `pairs(...)`, and _desugar_for_vars already
+        assigns their types from the collection it is handed; second-guessing
+        it here would be a second opinion where one is already right.
+        """
+        if len(vars_list) != 1:
+            return vars_list
+        vtype, vname = vars_list[0]
+        if vtype != 'any':
+            return vars_list                 # the program said so
+        if is_range:
+            return [('int', vname)]          # a range is always int
+        elem = self._elem_of(self._static_type(iterable))
+        return [(elem, vname)] if elem else vars_list
+
+    def _retype_comprehension(self, val, declared):
+        """Give a just-lowered comprehension the type its declaration states.
+
+        `int[] ys = [f(x) for x in xs]` says the result is `int[]`; nothing has
+        to be inferred to know it. Only the RESULT is retyped here — the loop
+        variable and the captured parameters are settled at lowering time,
+        where the iterable is in hand.
+        """
+        if not (isinstance(val, CallExpr) and val.callee in self._comp_helpers):
+            return
+        if not declared or declared == 'any':
+            return
+        fn_decl, res_decl = self._comp_helpers[val.callee]
+        # A list comprehension yields T[], a map comprehension map<K,V>. Only
+        # adopt a declared type of the matching shape: `any x = [...]` or a
+        # mismatch is the semantic analyser's to report, not this pass's to
+        # paper over.
+        if res_decl.var_type.endswith('[]') and not declared.endswith('[]'):
+            return
+        if res_decl.var_type.startswith('map<') and not declared.startswith('map<'):
+            return
+        fn_decl.return_type = declared
+        res_decl.var_type = declared
 
     def _cur(self):
         return self.tokens[self.pos]
@@ -208,10 +431,145 @@ class Parser:
 
     # ── program ────────────────────────────────────────────
 
+    # ── 13.6: report every syntax error, not just the first ──
+    #
+    # 11.24 made the semantic passes accumulate; the parser never got the same
+    # treatment, so five typos took five compiles. It now recovers at a
+    # statement boundary and keeps going.
+    #
+    # Recovery is only worth having if the EXTRA errors are real. A parser that
+    # resumes in the wrong place invents cascades, and a list of ten problems
+    # where nine are noise is worse than one true problem — you stop reading
+    # them. Three things keep that in check: resynchronising to a boundary the
+    # author would recognise (after a `;`, past a `}`, or at a token that can
+    # only begin a statement), never reporting twice at the same token, and a
+    # cap, because past a certain point the parse has lost the thread and the
+    # honest advice is to fix these and recompile.
+    #
+    # A SINGLE error still raises exactly what it always did. That is not
+    # laziness about the common case: every existing test, and every message in
+    # the docs, is written against that shape, and changing it to a one-item
+    # list would be a churn with no reader benefit.
+    _MAX_ERRORS = 10
+
+    # Tokens that can only START a statement, so seeing one means the previous
+    # statement is over however badly it ended.
+    def _sync_starts(self):
+        names = ('FN', 'STRUCT', 'ENUM', 'TRAIT', 'IMPL', 'IF', 'WHILE', 'FOR',
+                 'DO', 'RETURN', 'IMPORT', 'LIBRARY', 'SWITCH', 'TRY', 'MATCH',
+                 'BREAK', 'CONTINUE', 'CONST', 'THROW', 'SKILL', 'TEST',
+                 'PERMISSIONS')
+        out = set()
+        for n in names:
+            t = getattr(TokenType, n, None)
+            if t is not None:
+                out.add(t)
+        return out | set(TYPE_TOKENS)
+
+    def _record(self, err, before) -> bool:
+        """Collect one syntax error. False means stop parsing.
+
+        Deduplicated by the token position the failing statement STARTED at, so
+        a rule that unwinds through several frames reporting as it goes leaves
+        one entry rather than one per frame.
+
+        `_stopped` latches once the cap is hit. Without it the cap leaks: the
+        block that gives up still has to unwind past its own `}`, every frame
+        on the way out records again, and a 12-error file reported 13 problems
+        with the "stopping here" line in the middle of them.
+        """
+        if self._stopped:
+            return False
+        if before not in self._err_at:
+            self._err_at.add(before)
+            self._errors.append(str(err))
+        if len(self._errors) >= self._MAX_ERRORS:
+            # Latched, and recorded as a FLAG rather than as another entry
+            # in the list: the notice is about the report, not a mistake in
+            # the program, and appending it made the count one too high.
+            self._stopped = True
+            self._truncated = True
+            return False
+        return True
+
+    def _synchronize(self, before):
+        # Progress is not optional: a rule that failed without consuming
+        # anything would otherwise be retried forever.
+        if self.pos == before:
+            self._advance()
+        sync = self._sync_starts()
+        while not self._match(TokenType.EOF):
+            if self.tokens[self.pos - 1].type == TokenType.SEMICOLON:
+                return
+            if self._match(TokenType.RBRACE):
+                self._advance()      # a closed block is a boundary too
+                return
+            if self._cur().type in sync:
+                return
+            self._advance()
+
+    def _sync_in_body(self, before, stops=()):
+        """Resynchronise INSIDE a block, without leaving it.
+
+        The difference from `_synchronize` is the whole point of this routine:
+        it stops *before* the `}` that closes the current block instead of
+        consuming it. Leaving the block here is what invents cascades — an
+        error inside an `if` used to unwind the entire function and resume at
+        top level on the `} else {`, reporting a perfectly good `else` as a
+        second problem. Stopping at the brace lets `_body` return normally, so
+        the enclosing `if` still gets to see its own `else`.
+
+        Nested braces are counted, so a broken statement containing a complete
+        inner block skips over it rather than mistaking the inner `}` for the
+        end of this one.
+
+        `stops` are extra tokens that end a statement list in the caller's
+        grammar — `case`/`default` in a switch — so recovery there stops at the
+        next arm rather than running through it.
+        """
+        if self.pos == before:
+            self._advance()          # progress, as above
+        sync = set(self._sync_starts()) | set(stops)
+        depth = 0
+        while not self._match(TokenType.EOF):
+            if depth == 0 and self.tokens[self.pos - 1].type == TokenType.SEMICOLON:
+                return
+            t = self._cur().type
+            if t == TokenType.LBRACE:
+                depth += 1
+            elif t == TokenType.RBRACE:
+                if depth == 0:
+                    return           # this block's own `}` — leave it in place
+                depth -= 1
+            elif depth == 0 and t in sync:
+                return
+            self._advance()
+
     def parse(self):
         stmts = []
         while not self._match(TokenType.EOF):
-            stmts.append(self._stmt())
+            # After a failed statement we can be left facing the `}` of the
+            # block it was in. At the top level that token can never begin a
+            # statement, so parsing it just reports the abandoned block a
+            # second time — the cascade recovery exists to avoid. Only while
+            # recovering: an unbalanced `}` in an otherwise clean file is still
+            # a real error and is still reported.
+            if self._errors and self._match(TokenType.RBRACE):
+                self._advance()
+                continue
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._synchronize(before)
+        if self._errors:
+            # A lone error keeps the exact one-error shape it has always
+            # had — unless the cap fired, where the notice has to survive.
+            if len(self._errors) == 1 and not self._truncated:
+                raise ParseError(self._errors[0])
+            raise ParseErrors(self._errors, self._truncated)
         if self.synthetic_fns:
             stmts.extend(self.synthetic_fns)
         return Program(stmts)
@@ -243,6 +601,10 @@ class Parser:
                 return self._var_decl()
             return self._fn(is_pub=is_pub)
         if tok.type == TokenType.TOOL:    return self._tool(is_pub=is_pub)
+        # 12.1 — `test fn …`. Contextual: only special right before `fn`.
+        if (tok.type == TokenType.IDENT and tok.value == 'test'
+                and self._peek(1).type == TokenType.FN):
+            return self._test_fn(is_pub=is_pub)
         if tok.type == TokenType.STRUCT:  return self._struct(is_pub=is_pub)
         if tok.type == TokenType.SCHEMA:  return self._struct(is_pub=is_pub)   # schema = struct
         if tok.type == TokenType.ENUM:    return self._enum(is_pub=is_pub)
@@ -301,7 +663,7 @@ class Parser:
                 self._advance()
                 val = self._expr()
                 self._opt_semi()
-                return IndexAssignment(expr.obj, expr.index, val)
+                return IndexAssignment(expr.obj, expr.index, val, line=tok.line)
             self._opt_semi()
             return expr
 
@@ -438,7 +800,19 @@ class Parser:
         self._expect(TokenType.TOOL)      # 'tool fn ...' — exposed to LLMs
         return self._fn(is_tool=True, is_pub=is_pub)
 
-    def _fn(self, is_tool=False, is_pub=False):
+    def _test_fn(self, is_pub=False):
+        """`test fn name() ={ … }` — a test, collected by `cryoc test` (12.1).
+
+        `test` is a CONTEXTUAL keyword: it is only special immediately before
+        `fn`, and stays an ordinary identifier everywhere else. Making it a real
+        keyword would break `int test = 0;` in any program that already has
+        one, and a test framework that invalidates existing code to introduce
+        itself has started badly.
+        """
+        self._advance()                   # the identifier 'test'
+        return self._fn(is_test=True, is_pub=is_pub)
+
+    def _fn(self, is_tool=False, is_pub=False, is_test=False):
         fn_line = self._cur().line
         self._expect(TokenType.FN)
         name = self._expect(TokenType.IDENT).value
@@ -463,6 +837,7 @@ class Parser:
             ptype = self._parse_type()
             pname = self._expect(TokenType.IDENT).value
             params.append((ptype, pname))
+            self._note_decl(pname, ptype)               # ISSUES/26
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RPAREN)
@@ -472,12 +847,27 @@ class Parser:
             ret = self._parse_type()
         self._expect(TokenType.BODY_ASSIGN)
         body = self._body()
-        return FunctionDecl(name, params, ret, body, is_tool=is_tool, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
+        return FunctionDecl(name, params, ret, body, is_tool=is_tool, is_test=is_test, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 
     def _body(self):
+        # 13.6 — a bad statement is contained HERE, at the boundary the author
+        # would recognise, rather than unwinding the whole declaration. Without
+        # this the first error in a function body threw the parser back to the
+        # top level mid-body, where it resumed on tokens that cannot begin a
+        # top-level statement and reported them as further problems.
+        #
+        # The errors go on `self` instead of propagating, because the block is
+        # not the place that decides how to report: parse() raises once, with
+        # all of them, having seen the rest of the file too.
         stmts = []
         while not self._match(TokenType.RBRACE, TokenType.EOF):
-            stmts.append(self._stmt())
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._sync_in_body(before)
         self._expect(TokenType.RBRACE)
         return stmts
 
@@ -493,7 +883,9 @@ class Parser:
         name  = self._expect(TokenType.IDENT).value
         self._expect(TokenType.ASSIGN)
         val   = self._expr()
+        self._retype_comprehension(val, vtype)          # ISSUES/26
         self._opt_semi()
+        self._note_decl(name, vtype)
         return ConstDecl(vtype, name, val, is_pub=is_pub)
 
     # ── import / library / foreign ──────────────────────────
@@ -610,24 +1002,42 @@ class Parser:
 
     # ── string interpolation: "total: ${x}" ──────────────
 
+    @staticmethod
+    def _find_interp(s: str, start: int) -> int:
+        """Index of the next LIVE `${` at or after `start`, or -1.
+
+        An escaped one carries the 11.39 marker in place of its `$`, so it does
+        not match here at all — no backslash counting, and no way to confuse
+        `\\\\${x}` (an escaped backslash followed by a REAL interpolation) with
+        `\\${x}` (a literal). A backslash marker got that wrong: both unescape
+        to a backslash followed by `${`, so the two became indistinguishable
+        and one of them silently took the other's meaning.
+        """
+        return s.find('${', start)
+
     def _string_literal(self, s: str, line: int):
         """String literal; with `${expr}` becomes concatenation with to_string(expr).
 
         `${expr:spec}` (11.3) applies a format spec — see _split_fmt_spec.
         """
-        if '${' not in s:
-            return Literal('string', s)
+        # 11.39 — `\$` reaches here still escaped (see lexer._read_string), and
+        # is the one thing that is NOT an interpolation. Both jobs happen here:
+        # `_find_interp` skips an escaped `${`, and `_unesc_dollar` turns the
+        # marker back into a plain '$' in every literal chunk — including the
+        # whole-string case below, which is the common one.
+        if not self._find_interp(s, 0) >= 0:
+            return Literal('string', _unesc_dollar(s))
         from lexer import Lexer as _Lexer   # local import (no cycle)
         parts = []
         i = 0
         while True:
-            j = s.find('${', i)
+            j = self._find_interp(s, i)
             if j < 0:
                 if i < len(s):
-                    parts.append(Literal('string', s[i:]))
+                    parts.append(Literal('string', _unesc_dollar(s[i:])))
                 break
             if j > i:
-                parts.append(Literal('string', s[i:j]))
+                parts.append(Literal('string', _unesc_dollar(s[i:j])))
             # finds the matching '}' respecting nested braces
             depth, k = 1, j + 2
             while k < len(s) and depth:
@@ -1190,7 +1600,18 @@ class Parser:
                     and iterable.callee == 'llm_stream'
                     and 'llm_stream' not in self.user_defined_fns):
                 return self._desugar_stream_loop(vtype, vname, iterable, body)
-            return ForEach(vtype, vname, iterable, body)
+            # A LITERAL collection is bound to a typed local first, for the
+            # three reasons in _bind_iterable. Reached by the plain statement
+            # too, not just comprehensions: `for (int x in [1, 2, 3])` was
+            # refused by the c backend ("expected expression before ')'" —
+            # it has no inline array literal) and printed GARBAGE on cpp,
+            # which dereferenced a temporary shared_ptr whose vector was
+            # already freed. pyro, node and go were fine, so the two engines
+            # that disagreed were the two nobody could test without a C
+            # compiler.
+            pre, iterable = self._bind_iterable(iterable, False)
+            loop = ForEach(vtype, vname, iterable, body)
+            return Block(pre + [loop]) if pre else loop
 
         t1, n1 = vars_list[0]
         t2, n2 = vars_list[1]
@@ -1360,10 +1781,19 @@ class Parser:
         return Switch(subject, cases, default_body)
 
     def _case_body(self):
+        # 13.6 — same containment as _body, but a switch arm ends at the next
+        # `case`/`default` as well as at the `}`, so recovery must stop there
+        # too or a broken statement swallows the following arm.
+        ends = (TokenType.CASE, TokenType.DEFAULT)
         stmts = []
-        while not self._match(TokenType.CASE, TokenType.DEFAULT,
-                              TokenType.RBRACE, TokenType.EOF):
-            stmts.append(self._stmt())
+        while not self._match(*ends, TokenType.RBRACE, TokenType.EOF):
+            before = self.pos
+            try:
+                stmts.append(self._stmt())
+            except ParseError as e:
+                if not self._record(e, before):
+                    break
+                self._sync_in_body(before, stops=ends)
         return stmts
 
     # ── match ───────────────────────────────────────────────
@@ -1387,11 +1817,13 @@ class Parser:
             guard = self._match_guard() if self._match(TokenType.IF) else None
             self._expect(TokenType.FAT_ARROW)
             if self._match(TokenType.LBRACE):
-                self._advance()
-                body = []
-                while not self._match(TokenType.RBRACE, TokenType.EOF):
-                    body.append(self._stmt())
-                self._expect(TokenType.RBRACE)
+                # 13.6 — _block() rather than an inline statement loop, so an
+                # arm body recovers like any other block. Its own loop had no
+                # recovery, so one bad statement in an arm unwound the whole
+                # match and left the parser reading the NEXT arm's `Err(e) =>`
+                # as a top-level expression — reporting a valid `=>` as a
+                # second problem.
+                body = self._block()
             else:
                 body = [self._stmt()]
             cases.append(MatchCase(pat_name, pat_vars, body, pat_tok.line, guard))
@@ -1554,8 +1986,12 @@ class Parser:
         if self._match(TokenType.ASSIGN):
             self._advance()
             val = self._expr()
+            # ISSUES/26 — `int[] ys = [f(x) for x in xs]` states the result
+            # type, so the lowering does not have to guess it.
+            self._retype_comprehension(val, vtype)
         if semi:
             self._opt_semi()
+        self._note_decl(name, vtype)
         return VarDecl(vtype, name, val)
 
     def _assign(self, semi=True):
@@ -2055,6 +2491,20 @@ class Parser:
         if cond:
             body = [If(cond, body, None)]
 
+        # ISSUES/26 — type the loop variable before lowering. A range is
+        # always int, and _desugar_range REFUSES anything else, so
+        # `[x * 2 for x in 1..=3]` used to be a syntax error ("range loop
+        # variable must be 'int', got 'any'") unless the program wrote the
+        # type out. Over an array, the element type of the iterable is the
+        # loop variable's type.
+        vars_list = self._typed_loop_vars(vars_list, iterable, is_range)
+        # The ORIGINAL is what the capture scan reads: the temp below is a
+        # local of the helper, not something to pass in, while the expression
+        # it binds may itself mention names that do have to be captured —
+        # `[x for x in [a, b]]` needs a and b.
+        src_iterable = iterable
+        pre, iterable = self._bind_iterable(iterable, is_range)
+
         if is_range:
             vtype, vname = vars_list[0]
             for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
@@ -2063,26 +2513,43 @@ class Parser:
 
         found = set()
         _extract_identifiers(elem_expr, found)
-        _extract_identifiers(iterable, found)
+        _extract_identifiers(src_iterable, found)
         if range_end:
             _extract_identifiers(range_end, found)
         if cond:
             _extract_identifiers(cond, found)
 
         loop_vars = {vn for _vt, vn in vars_list}
-        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+        locals_ = {d.name for d in pre}
+        captured = sorted(found - loop_vars - locals_ - _BUILTIN_NAMES)
 
         fn_name = f"__list_comp_{self._gen_id()}"
-        params = [("any", name) for name in captured]
-        init_res = VarDecl('any[]', '__res', ArrayLiteral([]))
+        # The captured names keep their declared types. `xs` passed as `any`
+        # is what produced "cannot range over xs (variable of interface type
+        # any)" on go: the parameter the loop ranges over is usually the
+        # iterable itself.
+        params = [(self._declared_type(name) or "any", name)
+                  for name in captured]
+        # The result element type, when it can be had without inferring:
+        # `[x for x in xs]` yields the loop variable, so the iterable's
+        # element type is the answer. Anything else stays `any[]` until the
+        # declaration retypes it in _retype_comprehension.
+        res_t = 'any[]'
+        if isinstance(elem_expr, Identifier):
+            for _vt, _vn in vars_list:
+                if _vn == elem_expr.name and _vt != 'any':
+                    res_t = f"{_vt}[]"
+                    break
+        init_res = VarDecl(res_t, '__res', ArrayLiteral([]))
         return_stmt = Return(Identifier("__res"))
         if isinstance(for_loop, Block):
-            fn_body = [init_res] + for_loop.body + [return_stmt]
+            fn_body = [init_res] + pre + for_loop.body + [return_stmt]
         else:
-            fn_body = [init_res, for_loop, return_stmt]
+            fn_body = [init_res] + pre + [for_loop, return_stmt]
 
-        fn_decl = FunctionDecl(fn_name, params, "any[]", fn_body)
+        fn_decl = FunctionDecl(fn_name, params, res_t, fn_body)
         self.synthetic_fns.append(fn_decl)
+        self._register_comp_helper(fn_name, fn_decl, init_res)
 
         return CallExpr(fn_name, [Identifier(name) for name in captured])
 
@@ -2120,6 +2587,10 @@ class Parser:
         if cond:
             body = [If(cond, body, None)]
 
+        vars_list = self._typed_loop_vars(vars_list, iterable, is_range)  # 26
+        src_iterable = iterable
+        pre, iterable = self._bind_iterable(iterable, is_range)
+
         if is_range:
             vtype, vname = vars_list[0]
             for_loop = self._desugar_range(vtype, vname, iterable, range_end, inclusive, body)
@@ -2129,26 +2600,36 @@ class Parser:
         found = set()
         _extract_identifiers(k_expr, found)
         _extract_identifiers(v_expr, found)
-        _extract_identifiers(iterable, found)
+        _extract_identifiers(src_iterable, found)
         if range_end:
             _extract_identifiers(range_end, found)
         if cond:
             _extract_identifiers(cond, found)
 
         loop_vars = {vn for _vt, vn in vars_list}
-        captured = sorted(found - loop_vars - _BUILTIN_NAMES)
+        locals_ = {d.name for d in pre}
+        captured = sorted(found - loop_vars - locals_ - _BUILTIN_NAMES)
 
         fn_name = f"__map_comp_{self._gen_id()}"
-        params = [("any", name) for name in captured]
+        params = [(self._declared_type(name) or "any", name)   # ISSUES/26
+                  for name in captured]
+        # map<any,any> until the declaration says otherwise. There is no
+        # equivalent of the list case's "the element IS the loop variable"
+        # shortcut here: a map comprehension has two expressions and the key
+        # and value types are independent, so guessing one from the loop
+        # variable would be right about half the time — which is worse than
+        # declining, because half-right types are how backends come to
+        # disagree.
         init_res = VarDecl('map<any,any>', '__res', MapLiteral([]))
         return_stmt = Return(Identifier("__res"))
         if isinstance(for_loop, Block):
-            fn_body = [init_res] + for_loop.body + [return_stmt]
+            fn_body = [init_res] + pre + for_loop.body + [return_stmt]
         else:
-            fn_body = [init_res, for_loop, return_stmt]
+            fn_body = [init_res] + pre + [for_loop, return_stmt]
 
         fn_decl = FunctionDecl(fn_name, params, "map<any,any>", fn_body)
         self.synthetic_fns.append(fn_decl)
+        self._register_comp_helper(fn_name, fn_decl, init_res)
 
         return CallExpr(fn_name, [Identifier(name) for name in captured])
 
@@ -2180,6 +2661,7 @@ class Parser:
             ptype = self._parse_type()
             pname = self._expect(TokenType.IDENT).value
             params.append((ptype, pname))
+            self._note_decl(pname, ptype)               # ISSUES/26
             if self._match(TokenType.COMMA):
                 self._advance()
         self._expect(TokenType.RPAREN)
@@ -2193,6 +2675,15 @@ class Parser:
 
     def _maybe_desugar_call(self, name, args, id_line):
         if name not in self.user_defined_fns:
+            # A bare `throw()` gets an explicit null argument here, in the ONE
+            # place all six backends read from, rather than each inventing a
+            # default. They had invented three: pyro threw null, node threw the
+            # string "erro", and the go backend indexed args[0] and crashed the
+            # compiler with "[Internal Error] list index out of range" — an
+            # internal error on input the analyser accepts. The VM's answer is
+            # canonical, so null it is.
+            if name == 'throw' and not args:
+                return CallExpr(name, [Literal('null', None)], line=id_line)
             if name == 'map' and len(args) == 2:
                 return self._desugar_map(args[0], args[1])
             if name == 'filter' and len(args) == 2:
@@ -2205,6 +2696,8 @@ class Parser:
                 return self._desugar_any(args[0], args[1])
             if name == 'all' and len(args) == 2:
                 return self._desugar_all(args[0], args[1])
+            if name in self._STR_HELPERS:                        # 13.5
+                return self._desugar_str_builtin(name, args, id_line)
         if name == 'llm' and len(args) == 3:
             self._check_llm_options(args[2], id_line)   # 11.16
         if name in ('llm_call', 'llm_stream') and len(args) == 3:
@@ -2213,7 +2706,58 @@ class Parser:
             return self._llm_try(args, id_line, 'llm_call')      # 11.19
         if name == 'agent_try' and 'agent_try' not in self.user_defined_fns:
             return self._llm_try(args, id_line, 'agent_call')    # 11.20
+        if name == 'or_else' and 'or_else' not in self.user_defined_fns:
+            return self._or_else(args, id_line)                  # 11.4
         return CallExpr(name, args, line=id_line)
+
+    # ── or_else: a Result's value, or a default (11.4) ──────
+    #
+    #   int port = or_else(parse_port(s), 8080);
+    #
+    # Lowered to one shared helper holding a `match`, so no code generator
+    # learns anything new — the same route 11.4's guards took.
+    #
+    # IT HARD-CODES `Ok`, AND THAT IS A LANGUAGE DECISION, NOT AN OVERSIGHT.
+    # `Result`, `Ok` and `Err` are ordinary user declarations here; nothing
+    # marks which variant means success. The precedent is `?` propagation,
+    # which has tested `tag == "Ok"` since Phase 8.3 — so the convention
+    # already exists, and `or_else` joins it rather than inventing a second
+    # one. 11.34 refused `??` on the same enums for the opposite reason, and
+    # the two are consistent on INTENT: `?` and `or_else` are Result tools and
+    # writing one declares the shape, whereas `??` is the null operator, used
+    # on ordinary optionals everywhere, where silently adopting Result
+    # semantics would change what an existing operator means.
+    #
+    # The wildcard arm rather than `Err(e)`: an enum may have more than two
+    # variants, and every non-Ok one should take the default rather than fall
+    # through a non-exhaustive match.
+    def _or_else(self, args, line: int):
+        if len(args) != 2:
+            raise ParseError(
+                f"[Syntax Error] Line {line}: or_else takes 2 arguments "
+                f"(the Result, and the value to use when it is not Ok)")
+        return CallExpr(self._or_else_helper(), args, line=line)
+
+    def _or_else_helper(self) -> str:
+        name = '__cryo_or_else'
+        if name in self.user_defined_fns:
+            return name
+        self.user_defined_fns.add(name)
+        r, d, v = '__oe_r', '__oe_d', '__oe_v'
+        body = [
+            MatchStatement(Identifier(r), [
+                MatchCase('Ok', [v], [Return(Identifier(v))]),
+                MatchCase('_', [], [Return(Identifier(d))]),
+            ]),
+            # Unreachable — the wildcard covers everything — but every backend
+            # wants a terminating return on a non-void function, and relying on
+            # each one's flow analysis to prove the match total is a worse bet
+            # than one extra instruction.
+            Return(Identifier(d)),
+        ]
+        self.synthetic_fns.append(
+            FunctionDecl(name, [('any', r), ('any', d)], 'any', body))
+        return name
 
     # ── llm_try: the outcome as something you can match on (11.19) ──
     #
@@ -2382,6 +2926,688 @@ class Parser:
             return 'any', 'any[]'
         else:
             return 'any', 'any', 'any[]'
+
+    # ── 13.5: string builtins with no new native ────────────
+    #
+    # Architecture rule 2, taken literally. A new native has to be added in SIX
+    # places that cannot disagree (codegen_pyro.NATIVES, main.go, pyro_runtime.c,
+    # selfhost/codegen.cryo's nativeId, semantic.py's BUILTINS and — since 13.2 —
+    # selfhost/semantic.cryo's isBuiltin), and a half-applied id allocation does
+    # not fail loudly: it makes the backends silently disagree about what
+    # `NATIVE <id>` means. A front-end lowering costs none of that and reaches
+    # all six backends at once.
+    #
+    # These lower to a synthetic function written as ordinary Cryo, parsed by a
+    # sub-parser. Writing them as SOURCE rather than as hand-built AST is the
+    # point: what the helper does is readable here, and it is checked by the
+    # same parser everything else goes through.
+    #
+    # ROADMAP CORRECTION — 13.5 lists `trim_start`/`trim_end` under "needing an
+    # id", on the grounds that no composition of the existing natives strips one
+    # end. That is true of COMPOSITION and not of lowering: a helper that walks
+    # the string with len/substr needs no native at all, and it is here. What
+    # genuinely still needs an id is anything the language cannot express over
+    # its own primitives — a regex engine, and a clock for date formatting.
+    #
+    # NOT DONE, deliberately: `format(...)`. 11.3 already put a format
+    # mini-language in string interpolation (`"${v:>10,.2f}"`), so a `format`
+    # builtin would be a second spelling of it, and Cryo has no varargs to give
+    # it the signature people would expect. `join` over a map is left out for
+    # the same reason it was never specified: whether it joins keys, values or
+    # "k=v" pairs is a decision, not a detail, and guessing it here would be
+    # harder to change later than leaving it unwritten.
+    # Helpers taking more than the string itself; anything absent takes 1.
+    _STR_HELPER_ARITY = {
+        'char_at': 2, 'char_slice': 3,
+        'checked_add': 2, 'checked_sub': 2, 'checked_mul': 2,
+        'replace_first': 3, 'replace_last': 3,
+        'count_of': 2, 'last_index_of': 2,
+        'strip_prefix': 2, 'strip_suffix': 2,
+        'equals_ignore_case': 2, 'common_prefix': 2,
+    }
+
+    _STR_HELPERS = {
+        # ── D1 (part): counting and slicing by CHARACTER ──
+        #
+        # `len` counts bytes, `substr` and `s[i]` index bytes, and that is
+        # ISSUES/30 — changing them is a breaking change in every engine.
+        # These are the additive half, which costs nothing and can be had
+        # today: split(s, "") is already character-aware, so the whole thing
+        # is a desugaring.
+        #
+        #     len("Ação Ônibus")        == 14   (bytes)
+        #     char_len("Ação Ônibus")   == 11   (characters)
+        #
+        # The ERP needs this specifically: NF-e field limits are stated in
+        # CHARACTERS, so validating `xProd` with len() rejects a legitimate
+        # accented product name early, and truncating with substr() can cut
+        # a character in half and produce XML that is not well-formed.
+        #
+        # NAMED char_* RATHER THAN CHANGING len(). The obvious call stays the
+        # byte one, which is the same trap to_int/parse_int has, and that is
+        # a real cost — but silently redefining len() would change the
+        # meaning of every existing program that pairs it with substr
+        # offsets. ISSUES/30 holds the decision; this does not pre-empt it.
+        'char_len': ('__cryo_char_len', 'int', r"""
+fn __cryo_char_len(string s) -> int ={
+    return len(split(s, ""));
+}
+"""),
+        # ABORTS out of range, exactly as s[i] does — "[Cryo Security]
+        # IndexError". Returning "" instead would be the fail-open answer to
+        # a read past the end, and it would also differ from the byte
+        # indexing it mirrors. char_slice below is the clamping one.
+        'char_at': ('__cryo_char_at', 'string', r"""
+fn __cryo_char_at(string s, int i) -> string ={
+    string[] cs = split(s, "");
+    return cs[i];
+}
+"""),
+        # CLAMPS, like substr: a start past the end gives "", and a length
+        # past the end stops at the end.
+        #
+        # `a + n` is only ever evaluated once n is known to be smaller than
+        # the characters remaining, so a caller passing a huge n cannot
+        # overflow the addition — the same discipline as checked_add, for
+        # the same reason.
+        'char_slice': ('__cryo_char_slice', 'string', r"""
+fn __cryo_char_slice(string s, int start, int n) -> string ={
+    string[] cs = split(s, "");
+    int ln = len(cs);
+    int a = start;
+    if (a < 0) { a = 0; }
+    if (a > ln) { a = ln; }
+    int b = ln;
+    if (n < ln - a) { b = a + n; }
+    if (n < 0) { b = a; }
+    string out = "";
+    int i = a;
+    while (i < b) {
+        out = out + cs[i];
+        i = i + 1;
+    }
+    return out;
+}
+"""),
+        # ── C1: arithmetic that reports overflow instead of guessing ──
+        #
+        # `a + b` means two different things today: the compiled backends
+        # abort with "[Cryo Security] Overflow: integer addition", the VM
+        # wraps silently and returns a negative number. That divergence is
+        # ISSUES/29 and is not fixed here — it needs a safe-mode bit in the
+        # bytecode, which the format does not have.
+        #
+        # These are the other half of requirement C1, and they are useful
+        # whichever way 29 is settled: a program that needs to KNOW about
+        # overflow gets the same answer on all six backends, today.
+        #
+        #     int? total = checked_mul(qty, unit_price);
+        #     if (total == null) { ... }
+        #
+        # EVERY COMPARISON IS CHOSEN SO THAT IT CANNOT ITSELF OVERFLOW,
+        # which is the whole difficulty: a guard written as `a + b > MAX` has
+        # already done the thing it was meant to prevent. So each bound is
+        # rearranged into a subtraction or division that is provably in
+        # range — `a > MAX - b` only when b > 0, `a > MAX / b` only when both
+        # are positive, and so on. By the time the operation runs it has been
+        # proved not to overflow, so it is also safe on the backends that
+        # abort.
+        #
+        # MIN is spelled `-MAX - 1` rather than written out: the literal
+        # -9223372036854775808 is unary minus applied to 9223372036854775808,
+        # which does not fit in an int64 and is not a thing the lexer can
+        # hand back.
+        'checked_add': ('__cryo_checked_add', 'int?', r"""
+fn __cryo_checked_add(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b > 0 && a > mx - b) { return null; }
+    if (b < 0 && a < mn - b) { return null; }
+    return a + b;
+}
+"""),
+        'checked_sub': ('__cryo_checked_sub', 'int?', r"""
+fn __cryo_checked_sub(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (b < 0 && a > mx + b) { return null; }
+    if (b > 0 && a < mn + b) { return null; }
+    return a - b;
+}
+"""),
+        # The sign cases are written out rather than folded into absolute
+        # values, because abs(MIN) is itself the overflow this is for.
+        # MIN * -1 and -1 * MIN are handled before the division guards, so no
+        # guard ever evaluates MIN / -1 — the one division that traps.
+        'checked_mul': ('__cryo_checked_mul', 'int?', r"""
+fn __cryo_checked_mul(int a, int b) -> int? ={
+    int mx = 9223372036854775807;
+    int mn = -9223372036854775807 - 1;
+    if (a == 0 || b == 0) { return 0; }
+    if (a == -1 && b == mn) { return null; }
+    if (b == -1 && a == mn) { return null; }
+    if (a > 0) {
+        if (b > 0) {
+            if (a > mx / b) { return null; }
+        } else {
+            if (b < mn / a) { return null; }
+        }
+    } else {
+        if (b > 0) {
+            if (a < mn / b) { return null; }
+        } else {
+            if (a < mx / b) { return null; }
+        }
+    }
+    return a * b;
+}
+"""),
+        # ── C4: parsing that returns, instead of killing the process ──
+        #
+        # `to_int("abc")` and `to_number("abc")` ABORT, and the abort is not
+        # catchable — `try { to_int(s) } catch` does not run, the process
+        # ends. For a server that parses user input that is not a rough
+        # edge, it is a denial of service: one bad form field ends the
+        # request loop for every tenant.
+        #
+        # These return an optional instead. `parse_int(s) ?? 0` is then the
+        # whole idiom, and nothing aborts.
+        #
+        # THE VALIDATOR MUST BE A SUBSET OF THE NATIVE'S ACCEPT SET, never a
+        # superset. It decides, in Cryo, whether the native will succeed; if
+        # it were ever more permissive than the native, the call it guards
+        # would abort and we would be back where we started, only with the
+        # failure harder to find. Narrower is safe — a value the native would
+        # have taken comes back null, which the caller already handles.
+        # Measured against the native rather than assumed (to_int trims,
+        # takes a leading + or -, takes leading zeros, and REJECTS "4.2",
+        # "0x10", "" and anything past int64).
+        #
+        # The overflow check is the part that is easy to leave out and the
+        # reason this cannot just be "scan the digits": to_int aborts on
+        # 99999999999999999999 exactly as it does on "abc", so a validator
+        # that only checked the characters would still take the process down
+        # on a number that is merely too big. Nineteen digits is where int64
+        # ends, and at that length the comparison is digit by digit against
+        # the limit — 9223372036854775807, or ...808 for a negative, which
+        # has one more magnitude than its positive counterpart.
+        'parse_int': ('__cryo_parse_int', 'int?', r"""
+fn __cryo_parse_int(string s) -> int? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    bool neg = false;
+    if (t[0] == "-") { neg = true; i = 1; }
+    if (t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int j = i;
+    while (j < n) {
+        if (!contains("0123456789", t[j])) { return null; }
+        j = j + 1;
+    }
+    while (i < n - 1 && t[i] == "0") { i = i + 1; }
+    string d = substr(t, i, n - i);
+    int dn = len(d);
+    if (dn > 19) { return null; }
+    if (dn == 19) {
+        string lim = "9223372036854775807";
+        if (neg) { lim = "9223372036854775808"; }
+        int k = 0;
+        bool over = false;
+        while (k < 19) {
+            int av = find("0123456789", d[k]);
+            int bv = find("0123456789", lim[k]);
+            if (av > bv) { over = true; break; }
+            if (av < bv) { break; }
+            k = k + 1;
+        }
+        if (over) { return null; }
+    }
+    return to_int(t);
+}
+"""),
+        # Plain decimal only: a sign, digits, at most one dot, and a digit
+        # somewhere. DELIBERATELY NARROWER than to_number, which also takes
+        # "1e3", "NaN" and "Inf" — and rejects "1e999" for being out of
+        # range, which a validator written here would have to know the
+        # double range to reproduce. Narrower is the safe direction, and the
+        # input this exists for is a quantity or a price typed into a form,
+        # not scientific notation. to_number is still there for the rest.
+        'parse_number': ('__cryo_parse_number', 'number?', r"""
+fn __cryo_parse_number(string s) -> number? ={
+    string t = trim(s);
+    int n = len(t);
+    if (n == 0) { return null; }
+    int i = 0;
+    if (t[0] == "-" || t[0] == "+") { i = 1; }
+    if (i >= n) { return null; }
+    int dots = 0;
+    int digits = 0;
+    int j = i;
+    while (j < n) {
+        string c = t[j];
+        if (c == ".") { dots = dots + 1; }
+        else {
+            if (!contains("0123456789", c)) { return null; }
+            digits = digits + 1;
+        }
+        j = j + 1;
+    }
+    if (dots > 1) { return null; }
+    if (digits == 0) { return null; }
+    return to_number(t);
+}
+"""),
+        # ── prefix/suffix and blankness ──
+        #
+        # is_blank("") is TRUE, and that is a deliberate asymmetry with the
+        # is_* classifiers above, which are false on "". They answer different
+        # questions: a classifier asks "does every character qualify", where
+        # the empty answer is vacuous and useless; is_blank asks "is there
+        # nothing of substance here", where "" is the purest yes. Writing
+        # is_blank over trim() rather than over its own whitespace loop is the
+        # other half of that: the two cannot disagree about what whitespace is.
+        'is_blank': ('__cryo_is_blank', 'bool', r"""
+fn __cryo_is_blank(string s) -> bool ={
+    return len(trim(s)) == 0;
+}
+"""),
+        # Empty affix returns the string unchanged, matching replace_first's
+        # empty-needle rule (11.26 is the standing reminder that the empty
+        # needle is exactly where backends have diverged before). Returning s
+        # on a miss rather than an optional keeps these usable inline; a caller
+        # who needs to know whether it matched already has starts_with.
+        'strip_prefix': ('__cryo_strip_prefix', 'string', r"""
+fn __cryo_strip_prefix(string s, string p) -> string ={
+    int pn = len(p);
+    if (pn == 0) { return s; }
+    if (!starts_with(s, p)) { return s; }
+    return substr(s, pn, len(s) - pn);
+}
+"""),
+        'strip_suffix': ('__cryo_strip_suffix', 'string', r"""
+fn __cryo_strip_suffix(string s, string p) -> string ={
+    int pn = len(p);
+    if (pn == 0) { return s; }
+    if (!ends_with(s, p)) { return s; }
+    return substr(s, 0, len(s) - pn);
+}
+"""),
+        # ── case ──
+        #
+        # capitalize LOWERCASES the tail, like Python's str.capitalize, so
+        # capitalize("mcDONALD") is "Mcdonald". Leaving the tail alone is a
+        # different function, not a better default for this one: title_case
+        # already lowercases the non-initial characters of each word, and a
+        # capitalize that disagreed with it on the same input would be the
+        # surprise.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'capitalize': ('__cryo_capitalize', 'string', r"""
+fn __cryo_capitalize(string s) -> string ={
+    string[] cs = split(s, "");
+    if (len(cs) == 0) { return s; }
+    string head = cs[0];
+    int hb = len(head);
+    return upper(head) + lower(substr(s, hb, len(s) - hb));
+}
+"""),
+        # Case-insensitive equality via lower() on both sides rather than a
+        # character walk: whatever lower() does to a character is then what
+        # this agrees with, which is the property that matters.
+        'equals_ignore_case': ('__cryo_equals_ignore_case', 'bool', r"""
+fn __cryo_equals_ignore_case(string a, string b) -> bool ={
+    return lower(a) == lower(b);
+}
+"""),
+        # ── last-match replace, the mirror of replace_first ──
+        #
+        # Scans backwards from the last position a match could start at, so
+        # the FIRST hit found is the last one in the string. Same empty-needle
+        # rule, same unchanged-on-miss rule.
+        'replace_last': ('__cryo_replace_last', 'string', r"""
+fn __cryo_replace_last(string s, string old, string neu) -> string ={
+    int oldn = len(old);
+    if (oldn == 0) { return s; }
+    int i = len(s) - oldn;
+    while (i >= 0) {
+        if (substr(s, i, oldn) == old) {
+            return substr(s, 0, i) + neu + substr(s, i + oldn, len(s) - i - oldn);
+        }
+        i = i - 1;
+    }
+    return s;
+}
+"""),
+        # ── words and shared prefixes ──
+        #
+        # word_count counts RUNS of non-whitespace, so repeated separators do
+        # not invent empty words — len(split(s, " ")) does, which is why this
+        # is not that. Same whitespace set as trim/is_space/title_case.
+        'word_count': ('__cryo_word_count', 'int', r"""
+fn __cryo_word_count(string s) -> int ={
+    int total = 0;
+    int i = 0;
+    int n = len(s);
+    bool in_word = false;
+    while (i < n) {
+        string c = s[i];
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") {
+            in_word = false;
+        } else {
+            if (!in_word) { total = total + 1; }
+            in_word = true;
+        }
+        i = i + 1;
+    }
+    return total;
+}
+"""),
+        # Character-wise, not word- or path-wise: a path-aware version would
+        # have to pick a separator, and that is a decision this does not need
+        # to make. substr(a, 0, i) rather than building the string up means
+        # the result is a slice of the first argument, so the two orders of
+        # the same pair give the same answer.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'common_prefix': ('__cryo_common_prefix', 'string', r"""
+fn __cryo_common_prefix(string a, string b) -> string ={
+    string[] ca = split(a, "");
+    string[] cb = split(b, "");
+    int n = len(ca);
+    if (len(cb) < n) { n = len(cb); }
+    string out = "";
+    int i = 0;
+    while (i < n) {
+        if (ca[i] != cb[i]) { break; }
+        out = out + ca[i];
+        i = i + 1;
+    }
+    return out;
+}
+"""),
+        # ── character classes (whole-string, like Python's str.isdigit) ──
+        #
+        # True when EVERY character qualifies and the string is non-empty.
+        # Per-character was the other candidate — it is what the self-hosted
+        # lexer hand-rolls, four times over — but a one-char rule surprises
+        # anyone who writes is_digit(field), and the whole-string rule still
+        # answers the one-char question correctly.
+        #
+        # Empty is FALSE for all four: "every character qualifies" is
+        # vacuously true of "", and true is not the answer a validator wants.
+        'is_digit': ('__cryo_is_digit', 'bool', r"""
+fn __cryo_is_digit(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        if (!contains("0123456789", s[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        'is_alpha': ('__cryo_is_alpha', 'bool', r"""
+fn __cryo_is_alpha(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        if (!contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", s[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        'is_alnum': ('__cryo_is_alnum', 'bool', r"""
+fn __cryo_is_alnum(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        bool ok = contains("0123456789", c);
+        if (!ok) { ok = contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c); }
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        # The characters trim() strips, so the two agree about whitespace.
+        'is_space': ('__cryo_is_space', 'bool', r"""
+fn __cryo_is_space(string s) -> bool ={
+    int n = len(s);
+    if (n == 0) { return false; }
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        bool ok = c == " ";
+        if (!ok) { ok = c == "	"; }
+        if (!ok) { ok = c == "
+"; }
+        if (!ok) { ok = c == "
+"; }
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+"""),
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'reverse_str': ('__cryo_reverse_str', 'string', r"""
+fn __cryo_reverse_str(string s) -> string ={
+    string[] cs = split(s, "");
+    string out = "";
+    int i = len(cs) - 1;
+    while (i >= 0) {
+        out = out + cs[i];
+        i = i - 1;
+    }
+    return out;
+}
+"""),
+        # replace() replaces every occurrence; this replaces the first only.
+        # An empty needle returns the string unchanged rather than looping —
+        # 11.26 is the standing reminder that the empty needle is exactly where
+        # the backends have disagreed before.
+        'replace_first': ('__cryo_replace_first', 'string', r"""
+fn __cryo_replace_first(string s, string old, string neu) -> string ={
+    int oldn = len(old);
+    if (oldn == 0) { return s; }
+    int i = find(s, old);
+    if (i < 0) { return s; }
+    return substr(s, 0, i) + neu + substr(s, i + oldn, len(s) - i - oldn);
+}
+"""),
+        # Non-overlapping, which is what "how many times does it occur" means
+        # to most readers: count_of("aaaa", "aa") is 2, not 3.
+        'count_of': ('__cryo_count_of', 'int', r"""
+fn __cryo_count_of(string s, string sub) -> int ={
+    int bn = len(sub);
+    if (bn == 0) { return 0; }
+    int total = 0;
+    int i = 0;
+    int n = len(s);
+    while (i + bn <= n) {
+        if (substr(s, i, bn) == sub) {
+            total = total + 1;
+            i = i + bn;
+        } else {
+            i = i + 1;
+        }
+    }
+    return total;
+}
+"""),
+        # find() gives the first occurrence; this gives the last, which is
+        # what splitting a path or a file extension actually needs.
+        'last_index_of': ('__cryo_last_index_of', 'int', r"""
+fn __cryo_last_index_of(string s, string sub) -> int ={
+    int bn = len(sub);
+    if (bn == 0) { return 0 - 1; }
+    int i = len(s) - bn;
+    while (i >= 0) {
+        if (substr(s, i, bn) == sub) { return i; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+"""),
+        # lines: split on "\n", tolerate CRLF, and do NOT hand back a phantom
+        # empty last line for text that ends with a newline — which is how
+        # every file read from disk ends.
+        'lines': ('__cryo_lines', 'string[]', r'''
+fn __cryo_lines(string s) -> string[] ={
+    string[] out = [];
+    string[] raw = split(s, "\n");
+    int n = len(raw);
+    if (n > 0) { if (raw[n - 1] == "") { n = n - 1; } }
+    int i = 0;
+    while (i < n) {
+        string ln = raw[i];
+        int m = len(ln);
+        if (m > 0) { if (ln[m - 1] == "\r") { ln = substr(ln, 0, m - 1); } }
+        out.push(ln);
+        i = i + 1;
+    }
+    return out;
+}
+'''),
+        'chars': ('__cryo_chars', 'string[]', r'''
+fn __cryo_chars(string s) -> string[] ={
+    return split(s, "");
+}
+'''),
+        # title_case follows Python's str.title(): the first letter of each word
+        # is upper, the REST of the word is lower, so "hELLO" becomes "Hello"
+        # rather than "HELLO". A word boundary is any whitespace, not only a
+        # space — otherwise a tab-separated line would title only its first cell.
+        # UTF-8: THIS WALKS CHARACTERS, NOT BYTES.
+        #
+        # It used to index the string with s[i], which is a BYTE, and the
+        # results were not merely wrong, they were invalid UTF-8:
+        # reverse_str("Ação") came out as "o£Ã§ÃA", capitalize("ótimo") as
+        # mojibake, and common_prefix("ação", "açúcar") as the bytes
+        # 61 C3 A7 C3 — a dangling lead byte, because ã and ú share one and
+        # the byte loop stopped between the two halves of a character.
+        #
+        # split(s, "") IS character-aware (it yields [A, ç, ã, o] for
+        # "Ação"), so the fix needs no native and no engine change: walk
+        # that instead. `len()` is still bytes, which is ISSUES/30 — these
+        # helpers no longer depend on it.
+        'title_case': ('__cryo_title_case', 'string', r"""
+fn __cryo_title_case(string s) -> string ={
+    string[] cs = split(s, "");
+    string out = "";
+    int n = len(cs);
+    int i = 0;
+    bool at_start = true;
+    while (i < n) {
+        string c = cs[i];
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") {
+            out = out + c;
+            at_start = true;
+        } else {
+            if (at_start) { out = out + upper(c); } else { out = out + lower(c); }
+            at_start = false;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+"""),
+        # The same character set trim() strips, so trim(s) and
+        # trim_start(trim_end(s)) agree — a difference there would be the worst
+        # kind, since nothing would ever report it.
+        'trim_start': ('__cryo_trim_start', 'string', r'''
+fn __cryo_trim_start(string s) -> string ={
+    int n = len(s);
+    int i = 0;
+    while (i < n) {
+        string c = s[i];
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") { break; }
+        i = i + 1;
+    }
+    return substr(s, i, n - i);
+}
+'''),
+        'trim_end': ('__cryo_trim_end', 'string', r'''
+fn __cryo_trim_end(string s) -> string ={
+    int n = len(s);
+    while (n > 0) {
+        string c = s[n - 1];
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") { break; }
+        n = n - 1;
+    }
+    return substr(s, 0, n);
+}
+'''),
+    }
+
+    def _desugar_str_builtin(self, name, args, line):
+        helper, _ret, source = self._STR_HELPERS[name]
+        # Most take just the string; the few that take more declare it in
+        # _STR_HELPER_ARITY, kept as an exceptions table so the entries above
+        # keep the shape they had.
+        want = self._STR_HELPER_ARITY.get(name, 1)
+        if len(args) != want:
+            noun = "argument" if want == 1 else "arguments"
+            raise ParseError(
+                f"[Syntax Error] Line {line}: {name} takes {want} {noun}, "
+                f"not {len(args)}")
+        if helper not in self.user_defined_fns:
+            self.user_defined_fns.add(helper)
+            from lexer import Lexer as _Lexer      # local import (no cycle)
+            sub = Parser(_Lexer(source).tokenize())
+            prog = sub.parse()
+            # The helper's own body may desugar further (the `while` does not,
+            # today — but adopting the sub-parser's synthetics is what keeps
+            # that from becoming a silent missing-function later).
+            for fn in sub.synthetic_fns:
+                if fn.name not in self.user_defined_fns:
+                    self.user_defined_fns.add(fn.name)
+                    self.synthetic_fns.append(fn)
+            for st in prog.statements:
+                if isinstance(st, FunctionDecl):
+                    self.synthetic_fns.append(st)
+        return CallExpr(helper, args, line=line)
 
     def _desugar_map(self, arr, f):
         elem_t, arr_t = self._extract_fn_info(f, 1)

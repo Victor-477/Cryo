@@ -1,0 +1,102 @@
+// ============================================================
+//  Cryo Test Suite — Phase 8 Features (8.1 - 8.8)
+//
+//  Tests first-class functions, enums with data, pattern matching,
+//  '?' error propagation, and traits.
+//  Run with:
+//      python Burnout/cryoc.py test Cryo/examples/test_phase8.cryo
+//      python Burnout/pyro.py test Cryo/examples/test_phase8.cryo
+// ============================================================
+
+// ── 8.1: First-class functions and lambdas ──────────────────
+fn apply_twice(fn(int)->int f, int x) -> int ={
+    return f(f(x));
+}
+
+fn make_multiplier(int factor) -> fn(int)->int ={
+    return (int n) => n * factor;
+}
+
+test fn test_lambdas_and_closures() ={
+    fn(int)->int add_three = (int x) => x + 3;
+    assert(add_three(7) == 10, "lambda add_three(7)");
+    assert(apply_twice(add_three, 1) == 7, "apply_twice(add_three, 1)");
+
+    fn(int)->int times_five = make_multiplier(5);
+    assert(times_five(4) == 20, "closure times_five(4)");
+}
+
+// ── 8.2: Enums with data and pattern matching ───────────────
+enum Result {
+    Ok(int),
+    Err(string),
+    None
+}
+
+fn unwrap_or(Result r, int fallback) -> int ={
+    match r {
+        Ok(val) => { return val; }
+        Err(msg) => { return fallback; }
+        None => { return fallback; }
+    }
+}
+
+test fn test_enums_and_pattern_matching() ={
+    Result r1 = Ok(42);
+    Result r2 = Err("failed");
+    Result r3 = None;
+
+    assert(unwrap_or(r1, 0) == 42, "unwrap Ok");
+    assert(unwrap_or(r2, -1) == -1, "unwrap Err");
+    assert(unwrap_or(r3, 99) == 99, "unwrap None");
+}
+
+// ── 8.3: Error propagation with '?' ─────────────────────────
+fn safe_divide(int a, int b) -> Result ={
+    if (b == 0) {
+        return Err("division by zero");
+    }
+    return Ok(a / b);
+}
+
+fn compute_ratio(int a, int b, int c) -> Result ={
+    int ab = safe_divide(a, b)?;
+    int abc = safe_divide(ab, c)?;
+    return Ok(abc);
+}
+
+test fn test_error_propagation_question_mark() ={
+    Result success = compute_ratio(100, 2, 5);
+    match success {
+        Ok(v) => { assert(v == 10, "100 / 2 / 5 == 10"); }
+        _ => { assert(false, "expected success"); }
+    }
+
+    Result fail_zero = compute_ratio(100, 0, 5);
+    match fail_zero {
+        Err(e) => { assert(e == "division by zero", "expected zero division err"); }
+        _ => { assert(false, "expected division error"); }
+    }
+}
+
+// ── 8.8: Traits and Interfaces ──────────────────────────────
+trait Measurable {
+    fn size() -> int;
+}
+
+struct Box {
+    int width;
+    int height;
+}
+
+impl Measurable for Box {
+    fn size() -> int ={
+        return this.width * this.height;
+    }
+}
+
+test fn test_traits_and_implementations() ={
+    Box b = Box { width: 6, height: 7 };
+    assert(b.size() == 42, "b.size() == 42");
+    assert(Measurable.size(b) == 42, "Measurable.size(b) == 42");
+}

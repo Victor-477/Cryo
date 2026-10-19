@@ -121,9 +121,12 @@ def verify_struct_params(program) -> None:
             continue
         for key, val in n.params:
             if val not in declared:
-                near = sorted(d for d in declared
-                              if d.lower().startswith(val.lower()[:3]))
-                hint = f" Did you mean: {', '.join(near[:3])}?" if near else ""
+                # 11.24 — was a three-character prefix match, which finds
+                # `total` from `totl` but not `length` from `lenght`. The
+                # shared helper is edit-distance based and catches both.
+                import diagnostics as _dx
+                h = _dx.hint(val, declared)
+                hint = f" {h[0].upper()}{h[1:]}" if h else ""
                 raise ForeignError(
                     f">{n.lang}( ... )<{key} = {val}> refers to '{val}', which "
                     f"is not declared in this program. A structure parameter "

@@ -1,0 +1,146 @@
+// ============================================================
+//  Cryo Test Suite — Phase 9 Standalone Pyro & Selfhost Mechanics
+//
+//  Tests language primitives that form the backbone of the
+//  self-hosted compiler (lexer, parser, codegen, bootstrap):
+//  - Token categorization and ASCII mapping
+//  - Little-endian byte packing & binary serialization
+//  - Array-based state cursors and symbol tables
+//  - Recursive expression evaluation
+//
+//  Run with:
+//      python Burnout/cryoc.py test Cryo/examples/test_phase9.cryo --backend pyro
+//      python Burnout/pyro.py test Cryo/examples/test_phase9.cryo
+// ============================================================
+
+// ── 9.3 Selfhost Lexer character & keyword classification ───
+fn is_digit(string c) -> bool ={
+    if (c == "") { return false; }
+    return contains("0123456789", c);
+}
+
+fn is_alpha(string c) -> bool ={
+    if (c == "") { return false; }
+    return contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c);
+}
+
+fn classify_word(string s) -> string ={
+    if (s == "fn")     { return "KW_FN"; }
+    if (s == "return") { return "KW_RETURN"; }
+    if (s == "if")     { return "KW_IF"; }
+    if (s == "else")   { return "KW_ELSE"; }
+    if (s == "while")  { return "KW_WHILE"; }
+    return "IDENT";
+}
+
+fn char_to_ascii(string c) -> int ={
+    if (c == "\t") { return 9; }
+    if (c == "\n") { return 10; }
+    string tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    int idx = find(tbl, c);
+    if (idx < 0) { return 63; }
+    return 32 + idx;
+}
+
+test fn test_lexer_character_classification() ={
+    assert(is_digit("0"), "0 is digit");
+    assert(is_digit("9"), "9 is digit");
+    assert(!is_digit("a"), "a is not digit");
+
+    assert(is_alpha("x"), "x is alpha");
+    assert(is_alpha("_"), "_ is alpha");
+    assert(!is_alpha("1"), "1 is not alpha");
+
+    assert(classify_word("fn") == "KW_FN", "classify fn");
+    assert(classify_word("return") == "KW_RETURN", "classify return");
+    assert(classify_word("myVar") == "IDENT", "classify ident");
+
+    assert(char_to_ascii("A") == 65, "A is 65");
+    assert(char_to_ascii(" ") == 32, "space is 32");
+    assert(char_to_ascii("\n") == 10, "newline is 10");
+}
+
+// ── 9.3 & 9.4 Bytecode Serialization (LE packing) ───────────
+fn pack_u16_le(int v) -> int[] ={
+    int b0 = v & 255;
+    int b1 = (v >> 8) & 255;
+    return [b0, b1];
+}
+
+fn unpack_u16_le(int b0, int b1) -> int ={
+    return b0 | (b1 << 8);
+}
+
+fn pack_u32_le(int v) -> int[] ={
+    int b0 = v & 255;
+    int b1 = (v >> 8) & 255;
+    int b2 = (v >> 16) & 255;
+    int b3 = (v >> 24) & 255;
+    return [b0, b1, b2, b3];
+}
+
+fn unpack_u32_le(int b0, int b1, int b2, int b3) -> int ={
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+test fn test_binary_bytecode_packing() ={
+    int[] u16_bytes = pack_u16_le(513);
+    assert(u16_bytes[0] == 1, "u16 byte 0");
+    assert(u16_bytes[1] == 2, "u16 byte 1");
+    assert(unpack_u16_le(u16_bytes[0], u16_bytes[1]) == 513, "u16 roundtrip");
+
+    int[] u32_bytes = pack_u32_le(305419896);
+    assert(u32_bytes[0] == 120, "u32 byte 0");
+    assert(u32_bytes[1] == 86,  "u32 byte 1");
+    assert(u32_bytes[2] == 52,  "u32 byte 2");
+    assert(u32_bytes[3] == 18,  "u32 byte 3");
+    assert(unpack_u32_le(u32_bytes[0], u32_bytes[1], u32_bytes[2], u32_bytes[3]) == 305419896, "u32 roundtrip");
+}
+
+// ── 9.3 Cursor stream navigation and Symbol Table ───────────
+fn symbol_lookup(string[] names, string target) -> int ={
+    int i = 0;
+    while (i < len(names)) {
+        if (names[i] == target) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+test fn test_symbol_table_and_cursor() ={
+    string[] symbols = ["print", "len", "write_bytes", "main"];
+    assert(symbol_lookup(symbols, "write_bytes") == 2, "lookup write_bytes");
+    assert(symbol_lookup(symbols, "absent") == -1, "lookup absent");
+
+    int[] cursor = [0];
+    while (cursor[0] < len(symbols)) {
+        cursor[0] = cursor[0] + 1;
+    }
+    assert(cursor[0] == 4, "cursor advanced to end");
+}
+
+// ── 9.3 & 9.4 Deterministic recursive expression evaluation ──
+fn eval_expr(int op, int left, int right) -> int ={
+    if (op == 1) { return left + right; }
+    if (op == 2) { return left - right; }
+    if (op == 3) { return left * right; }
+    if (op == 4) { return left / right; }
+    return 0;
+}
+
+fn compute_nested(int depth, int acc) -> int ={
+    if (depth <= 0) {
+        return acc;
+    }
+    return compute_nested(depth - 1, eval_expr(1, acc, depth));
+}
+
+test fn test_recursive_ast_evaluation() ={
+    int total = compute_nested(5, 0);
+    assert(total == 15, "recursive accumulator 1..5 == 15");
+
+    int expr = eval_expr(3, eval_expr(1, 10, 5), 2);
+    assert(expr == 30, "(10 + 5) * 2 == 30");
+}

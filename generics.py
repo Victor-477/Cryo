@@ -11,7 +11,7 @@ from ast_nodes import (
     Increment, Return, If, While, For, DoWhile, ForEach, Block,
     BinaryExpr, TernaryExpr, UnaryExpr,
     CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
-    ArrayLiteral, MapLiteral, StructInit, Lambda
+    ArrayLiteral, MapLiteral, StructInit, Lambda, carry_meta
 )
 
 
@@ -129,9 +129,24 @@ def monomorphize(program: Program) -> Program:
         return t_sub
 
     def transform_node(node: Node, subst: _TypeSubst) -> Node:
+        """_transform_raw, with the source position carried across.
+
+        The substitution below rebuilds nodes and passes `line=` on only a few
+        of them, so every statement in a function body reached the code
+        generator with no line and the .pyro debug section came out nearly
+        empty. See ast_nodes.carry_meta. Doing it in one wrapper rather than at
+        each of the ~25 constructor calls means a node type added later cannot
+        reintroduce it.
+        """
+        out = _transform_raw(node, subst)
+        if out is not node and isinstance(node, Node) and isinstance(out, Node):
+            carry_meta(node, out)
+        return out
+
+    def _transform_raw(node: Node, subst: _TypeSubst) -> Node:
         if node is None:
             return None
-        
+
         if isinstance(node, VarDecl):
             new_type = transform_type_str(node.var_type, subst)
             new_val = transform_node(node.value, subst)

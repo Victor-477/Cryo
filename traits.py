@@ -10,7 +10,8 @@ from ast_nodes import (
     Increment, Return, If, While, For, DoWhile, ForEach, Block,
     BinaryExpr, TernaryExpr, UnaryExpr,
     CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
-    ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier
+    ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier, carry_meta,
+    Assert, MatchStatement, MatchCase, TryCatch, Switch, SwitchCase
 )
 
 
@@ -143,6 +144,18 @@ def lower_traits(program: Program) -> Program:
 
     # 4. Transform AST to rewrite trait method calls
     def transform_node(node: Node) -> Node:
+        """_transform_raw, with the source position carried across.
+
+        See ast_nodes.carry_meta: the rebuilds below pass `line=` on only a few
+        node classes, which emptied the .pyro debug section that stack traces
+        and line breakpoints read.
+        """
+        out = _transform_raw(node)
+        if out is not node and isinstance(node, Node) and isinstance(out, Node):
+            carry_meta(node, out)
+        return out
+
+    def _transform_raw(node: Node) -> Node:
         if node is None:
             return None
 
@@ -254,6 +267,28 @@ def lower_traits(program: Program) -> Program:
 
         if isinstance(node, Lambda):
             return Lambda(node.params, node.return_type, [transform_node(s) for s in node.body], line=node.line)
+
+        if isinstance(node, Assert):
+            return Assert(transform_node(node.condition), transform_node(node.message) if node.message else None)
+
+        if isinstance(node, MatchStatement):
+            new_cases = []
+            for c in node.cases:
+                new_cases.append(MatchCase(c.pattern_name, c.pattern_vars, [transform_node(s) for s in c.body], line=c.line, guard=transform_node(c.guard) if getattr(c, 'guard', None) else None))
+            return MatchStatement(transform_node(node.subject), new_cases, line=node.line)
+
+        if isinstance(node, TryCatch):
+            return TryCatch([transform_node(s) for s in node.try_body],
+                            node.catch_type, node.catch_name,
+                            [transform_node(s) for s in node.catch_body] if node.catch_body else None,
+                            [transform_node(s) for s in node.finally_body] if node.finally_body else None)
+
+        if isinstance(node, Switch):
+            new_cases = []
+            for c in node.cases:
+                new_cases.append(SwitchCase([transform_node(v) for v in c.values], [transform_node(s) for s in c.body]))
+            new_default = [transform_node(s) for s in node.default_body] if node.default_body else None
+            return Switch(transform_node(node.subject), new_cases, new_default)
 
         return node
 

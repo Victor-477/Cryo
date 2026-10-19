@@ -17,6 +17,7 @@
 # ============================================================
 from typing import Dict, List, Set, Tuple
 
+import diagnostics as _dx          # 11.24 — suggestions and carets
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
     VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
@@ -66,12 +67,37 @@ BUILTINS: Set[str] = {
 class _Scope:
     def __init__(self):
         self.stack: List[Set[str]] = [set()]
+        # 11.34 — the DECLARED type of each name, when it has one. Not a type
+        # checker: just enough to answer "is this thing an enum" at the one
+        # place that has to refuse. Kept parallel to `stack` so it pushes and
+        # pops with it.
+        self.types: List[Dict[str, str]] = [{}]
 
-    def push(self): self.stack.append(set())
-    def pop(self):  self.stack.pop()
-    def declare(self, name: str): self.stack[-1].add(name)
+    def push(self):
+        self.stack.append(set()); self.types.append({})
+
+    def pop(self):
+        self.stack.pop(); self.types.pop()
+
+    def declare(self, name: str, var_type: str = None):
+        self.stack[-1].add(name)
+        if var_type:
+            self.types[-1][name] = var_type
+
+    def type_of(self, name: str):
+        for layer in reversed(self.types):
+            if name in layer:
+                return layer[name]
+        return None
     def has(self, name: str) -> bool:
         return any(name in s for s in self.stack)
+
+    def visible(self) -> Set[str]:
+        """Every name in scope — the candidate pool for a suggestion."""
+        out: Set[str] = set()
+        for layer in self.stack:
+            out |= layer
+        return out
 
 
 # Roadmap 11.12 — which permission each gated builtin requires. Mirrors the
@@ -89,8 +115,13 @@ GATED_BUILTINS = {
 
 
 class _Checker:
-    def __init__(self, program: Program):
+    def __init__(self, program: Program, source: str = None, path: str = None):
         self.program = program
+        # 11.24 — the source text, so an error can be shown against the line it
+        # is about instead of merely numbered. Optional: the checker still
+        # works when handed only an AST.
+        self.source = source
+        self.path = path
         self.errors: List[str] = []
         self.fn_arity: Dict[str, int] = {}
         self.enum_members: Set[str] = set()     # 'Nivel_ALTO'
@@ -101,13 +132,18 @@ class _Checker:
         # visible (and assignable) inside every function, not locals of
         # main. A function-local of the same name still shadows them.
         self.global_vars: Set[str] = set()
+        self.global_var_types: Dict[str, str] = {}
+        self.fn_ret_types: Dict[str, str] = {}
         # 11.12 — None until a `permissions` block is seen; opt-in
         self.declared_perms = None
         self.type_names: Set[str] = set()        # struct/enum/schema (usable in schema_of etc.)
         self.loop_depth = 0
 
-    def err(self, line: int, msg: str):
-        self.errors.append((int(line or 0), msg))
+    def err(self, line: int, msg: str, needle: str = None, note: str = ''):
+        # 11.24 — `needle` is the text to underline on that line, and `note`
+        # the suggestion. Both are optional so the dozens of existing call
+        # sites keep working unchanged.
+        self.errors.append((int(line or 0), msg, needle, note))
 
     # ── top-level declaration collection ───────────────────────
     def collect(self):
@@ -117,6 +153,8 @@ class _Checker:
             if isinstance(n, FunctionDecl):
                 name, kind = n.name, 'function'
                 self.fn_arity[n.name] = len(n.params)
+                if n.return_type:
+                    self.fn_ret_types[n.name] = n.return_type
             elif isinstance(n, StructDecl):
                 name, kind = n.name, 'struct'
                 self.type_names.add(n.name)
@@ -134,8 +172,12 @@ class _Checker:
                         self.fn_arity[f"{n.name}_{m.name}"] = len(m.fields)
             elif isinstance(n, ConstDecl):
                 self.global_consts.add(n.name)
+                if getattr(n, 'var_type', None):
+                    self.global_var_types[n.name] = n.var_type
             elif isinstance(n, VarDecl):
                 self.global_vars.add(n.name)
+                if getattr(n, 'var_type', None):
+                    self.global_var_types[n.name] = n.var_type
             elif isinstance(n, PermissionsDecl):
                 if self.declared_perms is None:
                     self.declared_perms = {}
@@ -162,19 +204,19 @@ class _Checker:
 
     def run(self):
         self.analyze()
-        if self.errors:
-            def fmt(e):
-                line, msg = e
-                return (f"Line {line}: " if line else "") + msg
-            raise SemanticError(
-                "semantic analysis found "
-                f"{len(self.errors)} problem(s):\n  - "
-                + "\n  - ".join(fmt(e) for e in self.errors))
+        if not self.errors:
+            return
+        # Every problem the pass found, each shown against its own line.
+        # Reporting one at a time costs a recompile per mistake.
+        n = len(self.errors)
+        head = f"semantic analysis found {n} problem{'s' if n != 1 else ''}:"
+        raise SemanticError(
+            head + "\n\n" + _dx.render_all(self.source, self.errors, self.path))
 
     def check_function(self, fn: FunctionDecl):
         scope = _Scope()
-        for _pt, pn in fn.params:
-            scope.declare(pn)
+        for pt, pn in fn.params:
+            scope.declare(pn, pt)
         self.check_block(fn.body, scope)
 
     def check_block(self, body: List[Node], scope: _Scope):
@@ -187,7 +229,7 @@ class _Checker:
         if isinstance(n, (VarDecl, ConstDecl)):
             if n.value is not None:
                 self.check_expr(n.value, scope)
-            scope.declare(n.name)
+            scope.declare(n.name, getattr(n, 'var_type', None))
         elif isinstance(n, Assignment):
             if not self._known_var(n.name, scope):
                 self.err(0, f"[Semantic Error] assignment to undeclared variable '{n.name}'")
@@ -200,6 +242,9 @@ class _Checker:
             if not self._known_var(n.name, scope):
                 self.err(0, f"'{n.op}' in undeclared variable '{n.name}'")
         elif isinstance(n, IndexAssignment):
+            if self._is_string_expr(n.obj, scope):
+                ln = getattr(n, 'line', 0) or getattr(n.obj, 'line', 0)
+                self.err(ln, "[Semantic Error] strings are immutable; cannot assign through an index")
             self.check_expr(n.obj, scope)
             self.check_expr(n.index, scope)
             self.check_expr(n.value, scope)
@@ -364,29 +409,121 @@ class _Checker:
                      f"it to the permissions block, e.g. "
                      f"permissions {{ {need} = \"...\"; }}")
 
+    def _var_candidates(self, scope: _Scope):
+        """Exactly what _known_var accepts — so a suggestion always names
+        something the reader can actually write here."""
+        return (list(scope.visible()) + list(self.global_consts)
+                + list(self.global_vars) + list(self.enum_members)
+                + list(self.type_names) + list(self.fn_arity))
+
     def _known_var(self, name: str, scope: _Scope) -> bool:
         return (scope.has(name) or name in self.global_consts
                 or name in self.global_vars
                 or name in self.enum_members or name in self.type_names
                 or name in self.fn_arity)   # function name = 1st class value
 
+    def _is_string_expr(self, n: Node, scope: _Scope) -> bool:
+        if isinstance(n, Identifier):
+            t = scope.type_of(n.name) or self.global_var_types.get(n.name)
+            return t == 'string'
+        if isinstance(n, Literal):
+            return n.kind == 'string'
+        if isinstance(n, CallExpr):
+            if n.callee in ('substr', 'trim', 'upper', 'lower', 'to_string', 'replace',
+                            'reverse_str', 'capitalize', 'title_case', 'common_prefix',
+                            'char_at', 'char_slice', 'pad_start', 'pad_end', 'repeat', 'input'):
+                return True
+            ret = self.fn_ret_types.get(n.callee)
+            return ret == 'string'
+        return False
+
+    def _data_enum_of(self, n: Node, scope: _Scope):
+        """The enum name, if `n` is a value of a data-carrying enum.
+
+        Only two shapes are recognised, and deliberately so: a variable with a
+        declared enum type, and a direct call to a variant constructor. This is
+        not a type checker and must not pretend to be one — guessing wrong here
+        would reject a correct program, which is far worse than missing a case.
+        """
+        if isinstance(n, Identifier):
+            t = scope.type_of(n.name)
+            # Data-carrying only. A payload-less enum compiles to an integer
+            # constant on every backend, so `??` on one is merely pointless
+            # rather than broken — and refusing it would reject code that
+            # works today for no gain.
+            if t and t in self.enum_defs and any(
+                    m.fields for m in self.enum_defs[t].members):
+                return t
+            return None
+        if isinstance(n, CallExpr):
+            enum = self.member_to_enum.get(n.callee)
+            if enum and any(m.fields for m in self.enum_defs[enum].members):
+                return enum
+        return None
+
+    def _check_coalesce(self, n: BinaryExpr, scope: _Scope):
+        """`a ?? b` where `a` is a data-carrying enum: refuse it (11.34).
+
+        `??` answers "is this null". An `Err("no")` is not null, so the
+        operator did the only thing it could and returned the value itself —
+        which on pyro and node meant printing the tagged map,
+        `{tag: Err, val0: no}`, leaking the representation into user output;
+        on go it did not compile at all.
+
+        It is tempting to make `r ?? 9` mean "the Ok payload, else 9". The
+        compiler cannot: `Result`, `Ok` and `Err` are ordinary user
+        declarations here — the language has no built-in Result and the parser
+        deliberately avoids those names (see _llm_outcome_enum) — so nothing
+        marks which variant is the successful one. Picking the first variant,
+        or the one called `Ok`, would be inventing a convention the language
+        does not otherwise have, and it would silently do the wrong thing for
+        an enum that happens to list its failure case first.
+
+        So this refuses, and names the construct that does work. `match` knows
+        which variant it has because the program says so.
+        """
+        enum = self._data_enum_of(n.left, scope)
+        if not enum:
+            return
+        line = getattr(n, 'line', 0) or getattr(n.left, 'line', 0)
+        self.err(line,
+                 f"[Semantic Error] '??' cannot be used on '{enum}', which is an "
+                 f"enum with data. '??' asks whether a value is null, and an "
+                 f"enum value never is — so it would just hand back the value "
+                 f"itself. Use `match` to say what each variant means:\n"
+                 f"    match (value) {{\n"
+                 f"        Ok(v)  => …\n"
+                 f"        Err(e) => …\n"
+                 f"    }}")
+
     def check_expr(self, n: Node, scope: _Scope):
         if n is None:
             return
         if isinstance(n, Identifier):
             if not self._known_var(n.name, scope):
-                self.err(n.line, f"[Semantic Error] undeclared variable '{n.name}'")
+                # 11.24 — the pool is what is actually reachable here: names
+                # in scope, module state, constants and enum members. A
+                # suggestion drawn from anything wider would point at
+                # something the reader still could not use.
+                self.err(n.line,
+                         f"[Semantic Error] undeclared variable '{n.name}'",
+                         needle=n.name,
+                         note=_dx.hint(n.name, self._var_candidates(scope)))
         elif isinstance(n, CallExpr):
             self.check_permission(n.callee, n.line)   # 11.12
             if n.callee in BUILTINS or scope.has(n.callee):
                 pass   # builtin or indirect call via function type variable
             elif n.callee not in self.fn_arity:
-                self.err(n.line, f"[Semantic Error] unknown function '{n.callee}'")
+                self.err(n.line,
+                         f"[Semantic Error] unknown function '{n.callee}'",
+                         needle=n.callee,
+                         note=_dx.hint(n.callee,
+                                       list(self.fn_arity) + sorted(BUILTINS)))
             elif len(n.args) != self.fn_arity[n.callee]:
                 self.err(n.line,
-                         f"function '{n.callee}' expects "
-                         f"{self.fn_arity[n.callee]} argumento(s), "
-                         f"recebeu {len(n.args)}")
+                         f"[Semantic Error] function '{n.callee}' expects "
+                         f"{self.fn_arity[n.callee]} argument(s), "
+                         f"got {len(n.args)}")
             for a in n.args:
                 self.check_expr(a, scope)
         elif isinstance(n, Lambda):
@@ -405,6 +542,8 @@ class _Checker:
             for a in n.args:
                 self.check_expr(a, scope)
         elif isinstance(n, BinaryExpr):
+            if n.op == '??':
+                self._check_coalesce(n, scope)
             self.check_expr(n.left, scope); self.check_expr(n.right, scope)
         elif isinstance(n, UnaryExpr):
             self.check_expr(n.operand, scope)
@@ -430,11 +569,25 @@ class _Checker:
         # Literal and others: nothing to check
 
 
-def check(program: Program) -> None:
-    """Runs semantic analysis; raises SemanticError if there are problems."""
-    _Checker(program).run()
+def check(program: Program, source: str = None, path: str = None) -> None:
+    """Runs semantic analysis; raises SemanticError if there are problems.
+
+    `source`/`path` are optional so every existing caller keeps working; when
+    they are given, each error is rendered against the line it is about.
+    """
+    _Checker(program, source, path).run()
 
 
 def findings(program: Program):
-    """Returns the list of (line, message) without raising — used by LSP."""
-    return _Checker(program).analyze()
+    """(line, message) pairs without raising — used by the LSP.
+
+    Errors carry an underline target and a hint since 11.24; this keeps the
+    two-field shape the LSP expects, with the hint folded into the message so
+    the suggestion still reaches the editor.
+    """
+    out = []
+    for e in _Checker(program).analyze():
+        line, msg = e[0], e[1]
+        note = e[3] if len(e) > 3 else ''
+        out.append((line, msg + (f" —{note}" if note else '')))
+    return out

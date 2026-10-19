@@ -1,0 +1,15 @@
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\bin\Debug\net8.0\embed_csharp.exe
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\bin\Debug\net8.0\embed_csharp.deps.json
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\bin\Debug\net8.0\embed_csharp.runtimeconfig.json
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\bin\Debug\net8.0\embed_csharp.dll
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\bin\Debug\net8.0\embed_csharp.pdb
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.AssemblyInfoInputs.cache
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.AssemblyInfo.cs
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.csproj.CoreCompileInputs.cache
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.sourcelink.json
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.dll
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\refint\embed_csharp.dll
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.pdb
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\embed_csharp.genruntimeconfig.cache
+C:\Users\senai\Desktop\Projetos\Pyro_Cryo\Cryo\examples\embedding\obj\Debug\net8.0\ref\embed_csharp.dll

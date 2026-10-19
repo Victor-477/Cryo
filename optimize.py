@@ -47,7 +47,7 @@ from ast_nodes import (
     MatchCase, BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, MethodCallExpr,
     CallValueExpr, FieldAccess, IndexAccess, ArrayLiteral, MapLiteral,
     StructInit, Lambda, Identifier, Literal, CastExpr, UnwrapExpr, TryExpr,
-    SpawnExpr, AwaitExpr, Assert, SafetyBlock, ForeignBlock,
+    SpawnExpr, AwaitExpr, Assert, SafetyBlock, ForeignBlock, carry_meta,
 )
 
 _I64_MIN = -(1 << 63)
@@ -281,6 +281,20 @@ class _Rewriter:
         return node
 
     def stmt(self, node):
+        """_stmt_raw, with the source position carried across.
+
+        See ast_nodes.carry_meta. Substitution rebuilds every statement it
+        touches and none of the constructors below pass `line=`, so an
+        optimized build reached the code generator with the positions stripped
+        and produced a .pyro whose debug section — the one stack traces and
+        line breakpoints read — was nearly empty.
+        """
+        out = self._stmt_raw(node)
+        if out is not node and isinstance(node, Node) and isinstance(out, Node):
+            carry_meta(node, out)
+        return out
+
+    def _stmt_raw(self, node):
         if node is None:
             return None
         if isinstance(node, VarDecl):
@@ -342,7 +356,23 @@ class _Rewriter:
                           self.expr(node.message) if node.message else None,
                           node.line)
         if isinstance(node, SafetyBlock):
-            return SafetyBlock(node.is_safe, [self.stmt(s) for s in node.body])
+            # `node.safe`, not `node.is_safe` — the field is `safe` (ast_nodes
+            # 246). This read raised AttributeError, which the CLI reports as
+            # "[Internal Error] 'SafetyBlock' object has no attribute
+            # 'is_safe'", so ANY program containing a `safe { }` or
+            # `unsafe { }` block crashed the compiler once the optimizer ran.
+            # Cryo/examples/example_v4.cryo is checked in and does exactly
+            # that.
+            #
+            # It hid behind a SILENT skip in test_c_vm.py: an example the pyro
+            # backend refused was skipped with no message, so a compiler crash
+            # and a documented backend gap looked identical from the summary
+            # line. Making that skip print its reason is what surfaced it.
+            #
+            # The parser's local variable is called is_safe and it constructs
+            # the node POSITIONALLY, which is why the two names never had to
+            # agree and nothing caught the drift.
+            return SafetyBlock(node.safe, [self.stmt(s) for s in node.body])
         # An expression used as a statement — `print(x);` is a bare CallExpr,
         # not a wrapper — still has an expression inside it to rewrite.
         return self.expr(node)
@@ -385,11 +415,23 @@ def _declared_counts(body) -> Dict[str, int]:
     return counts
 
 
+def _bound_names(body) -> Set[str]:
+    """Every name a body declares or binds: locals, loop and catch variables,
+    lambda parameters. A call to one of them is a call to a VALUE, so it must
+    not be mistaken for a call to a top-level function of the same name."""
+    return set(_declared_counts(body)) | _assigned_names(body)
+
+
 def _read_counts(body) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for n in _walk(body):
         if isinstance(n, Identifier):
             counts[n.name] = counts.get(n.name, 0) + 1
+        elif isinstance(n, CallExpr):
+            # `h(p)` where `h` is a local `fn(...)` value reads `h` — the
+            # callee is a plain name, not an Identifier child, so without this
+            # a function-typed local used only as a callee looked dead.
+            counts[n.callee] = counts.get(n.callee, 0) + 1
     return counts
 
 
@@ -459,6 +501,18 @@ def _prune_dead(body, reads, module_names):
 
 
 def _prune_inside(s, reads, module_names):
+    """_prune_inside_raw, with the source position carried across.
+
+    See ast_nodes.carry_meta — pruning a dead local out of a loop body must not
+    also drop the loop's own line number.
+    """
+    out = _prune_inside_raw(s, reads, module_names)
+    if out is not s and isinstance(s, Node) and isinstance(out, Node):
+        carry_meta(s, out)
+    return out
+
+
+def _prune_inside_raw(s, reads, module_names):
     if isinstance(s, If):
         return If(s.condition, _prune_dead(s.then_body, reads, module_names),
                   _prune_dead(s.else_body, reads, module_names)
@@ -619,8 +673,11 @@ def _optimize_once(program: Program) -> Program:
         if isinstance(n, FunctionDecl):
             body = n.body
             if table:
+                # Never into itself, and never over a name the function binds
+                # itself: `fn(int)->int dbl = tri; dbl(x)` calls the local.
+                bound = _bound_names(body) | {pn for _pt, pn in n.params}
                 inl = _Inliner({k: v for k, v in table.items()
-                                if k != n.name})   # never into itself
+                                if k != n.name and k not in bound})
                 body = [inl.stmt(s) for s in body]
             if global_subs:
                 # A parameter or local of the same name shadows the module one.
@@ -643,7 +700,8 @@ def _optimize_once(program: Program) -> Program:
     if idx:
         stmts = [out[i] for i in idx]
         if table:
-            inl = _Inliner(table)
+            bound = _bound_names(stmts)
+            inl = _Inliner({k: v for k, v in table.items() if k not in bound})
             stmts = [inl.stmt(s) for s in stmts]
         if global_subs:
             stmts = [_Rewriter(global_subs).stmt(s) for s in stmts]
