@@ -132,6 +132,8 @@ class _Checker:
         # visible (and assignable) inside every function, not locals of
         # main. A function-local of the same name still shadows them.
         self.global_vars: Set[str] = set()
+        self.global_var_types: Dict[str, str] = {}
+        self.fn_ret_types: Dict[str, str] = {}
         # 11.12 — None until a `permissions` block is seen; opt-in
         self.declared_perms = None
         self.type_names: Set[str] = set()        # struct/enum/schema (usable in schema_of etc.)
@@ -151,6 +153,8 @@ class _Checker:
             if isinstance(n, FunctionDecl):
                 name, kind = n.name, 'function'
                 self.fn_arity[n.name] = len(n.params)
+                if n.return_type:
+                    self.fn_ret_types[n.name] = n.return_type
             elif isinstance(n, StructDecl):
                 name, kind = n.name, 'struct'
                 self.type_names.add(n.name)
@@ -168,8 +172,12 @@ class _Checker:
                         self.fn_arity[f"{n.name}_{m.name}"] = len(m.fields)
             elif isinstance(n, ConstDecl):
                 self.global_consts.add(n.name)
+                if getattr(n, 'var_type', None):
+                    self.global_var_types[n.name] = n.var_type
             elif isinstance(n, VarDecl):
                 self.global_vars.add(n.name)
+                if getattr(n, 'var_type', None):
+                    self.global_var_types[n.name] = n.var_type
             elif isinstance(n, PermissionsDecl):
                 if self.declared_perms is None:
                     self.declared_perms = {}
@@ -207,8 +215,8 @@ class _Checker:
 
     def check_function(self, fn: FunctionDecl):
         scope = _Scope()
-        for _pt, pn in fn.params:
-            scope.declare(pn)
+        for pt, pn in fn.params:
+            scope.declare(pn, pt)
         self.check_block(fn.body, scope)
 
     def check_block(self, body: List[Node], scope: _Scope):
@@ -234,6 +242,9 @@ class _Checker:
             if not self._known_var(n.name, scope):
                 self.err(0, f"'{n.op}' in undeclared variable '{n.name}'")
         elif isinstance(n, IndexAssignment):
+            if self._is_string_expr(n.obj, scope):
+                ln = getattr(n, 'line', 0) or getattr(n.obj, 'line', 0)
+                self.err(ln, "[Semantic Error] strings are immutable; cannot assign through an index")
             self.check_expr(n.obj, scope)
             self.check_expr(n.index, scope)
             self.check_expr(n.value, scope)
@@ -410,6 +421,21 @@ class _Checker:
                 or name in self.global_vars
                 or name in self.enum_members or name in self.type_names
                 or name in self.fn_arity)   # function name = 1st class value
+
+    def _is_string_expr(self, n: Node, scope: _Scope) -> bool:
+        if isinstance(n, Identifier):
+            t = scope.type_of(n.name) or self.global_var_types.get(n.name)
+            return t == 'string'
+        if isinstance(n, Literal):
+            return n.kind == 'string'
+        if isinstance(n, CallExpr):
+            if n.callee in ('substr', 'trim', 'upper', 'lower', 'to_string', 'replace',
+                            'reverse_str', 'capitalize', 'title_case', 'common_prefix',
+                            'char_at', 'char_slice', 'pad_start', 'pad_end', 'repeat', 'input'):
+                return True
+            ret = self.fn_ret_types.get(n.callee)
+            return ret == 'string'
+        return False
 
     def _data_enum_of(self, n: Node, scope: _Scope):
         """The enum name, if `n` is a value of a data-carrying enum.
