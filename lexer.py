@@ -443,8 +443,6 @@ class Lexer:
                 self._advance()
                 if self._peek() == '=':
                     self._advance(); tokens.append(Token(TokenType.EQ, '==', sl, sc))
-                elif self._peek() == '{':
-                    self._advance(); tokens.append(Token(TokenType.BODY_ASSIGN, '={', sl, sc))
                 elif self._peek() == '>':
                     self._advance(); tokens.append(Token(TokenType.FAT_ARROW, '=>', sl, sc))
                 else:

@@ -56,6 +56,9 @@ _SUPPORTS = {
     'go':   {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
              'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
              'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
+    'llm':  {'float', 'string', 'array', 'map', 'struct', 'enum', 'optional',
+             'json', 'cast', 'trycatch', 'convfn', 'mathfn', 'mapremove', 'strfn',
+             'concurrency', 'llm', 'http', 'machine', 'input', 'firstclassfn'},
     # .NET brings containers, optionals and exceptions with it, so the C#
     # backend starts where the C one needed a hand-written runtime to get. What
     # it does NOT have is the Pyro layer (llm/http/machine) or first-class

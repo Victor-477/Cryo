@@ -845,7 +845,11 @@ class Parser:
         if self._match(TokenType.ARROW):
             self._advance()
             ret = self._parse_type()
-        self._expect(TokenType.BODY_ASSIGN)
+        if self._match(TokenType.BODY_ASSIGN):
+            self._advance()
+        else:
+            self._expect(TokenType.ASSIGN)
+            self._expect(TokenType.LBRACE)
         body = self._body()
         return FunctionDecl(name, params, ret, body, is_tool=is_tool, is_test=is_test, line=fn_line, type_params=type_params, type_bounds=type_bounds, is_pub=is_pub)
 

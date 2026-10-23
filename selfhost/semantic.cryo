@@ -216,6 +216,9 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
     int scopeN = 0;                 // live length of `scope`
     int[] mark = [];
     int markN = 0;                  // live length of `mark`
+    string[] strVars = [];
+    int strVarsN = 0;
+    int[] strMark = [];
     int loopDepth = 0;
     int[] loopMark = [];
     int loopN = 0;
@@ -227,6 +230,7 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
 
         if (t == "LBRACE") {
             if (markN < len(mark)) { mark[markN] = scopeN; } else { mark.push(scopeN); }
+            if (markN < len(strMark)) { strMark[markN] = strVarsN; } else { strMark.push(strVarsN); }
             markN = markN + 1;
             i = i + 1;
             continue;
@@ -235,6 +239,7 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
             if (markN > 0) {
                 markN = markN - 1;
                 scopeN = mark[markN];
+                strVarsN = strMark[markN];
             }
             if (loopN > 0 && loopMark[loopN - 1] == markN) {
                 loopN = loopN - 1;
@@ -261,6 +266,7 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
         // a function's parameters are declarations
         if (t == "FN" && i + 1 < len(tt) && tt[i + 1] == "IDENT") {
             scopeN = 0;              // a function body sees no outer locals
+            strVarsN = 0;
             markN = 0;
             int j = i + 2;
             if (j < len(tt) && tt[j] == "LPAREN") {
@@ -269,6 +275,9 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
                     if (tt[j] == "IDENT" && (j + 1 >= len(tt)
                         || tt[j + 1] == "COMMA" || tt[j + 1] == "RPAREN")) {
                         scopeN = pushAt(scope, scopeN, tv[j]);
+                        if (j > 0 && tt[j - 1] == "TYPE_STRING") {
+                            strVarsN = pushAt(strVars, strVarsN, tv[j]);
+                        }
                     }
                     j = j + 1;
                 }
@@ -398,22 +407,52 @@ fn analyze(string[] tt, string[] tv, string[] errs) -> bool ={
         // <type> <ident>  declares. Covers primitives, map<>, future<> and a
         // user type used as a type (`P p = ...`).
         if (isTypeTokS(t) || (t == "IDENT" && indexOfStr(typeNames, v) >= 0)) {
+            bool isStr = (t == "TYPE_STRING");
             int j = i + 1;
             // step over [] ? and <...> so the NAME is found
             while (j < len(tt) && (tt[j] == "LBRACKET" || tt[j] == "RBRACKET"
                    || tt[j] == "QUESTION" || tt[j] == "LT" || tt[j] == "GT"
                    || tt[j] == "COMMA" || isTypeTokS(tt[j])
                    || (tt[j] == "IDENT" && indexOfStr(typeNames, tv[j]) >= 0))) {
+                if (tt[j] == "LBRACKET") { isStr = false; }
                 j = j + 1;
             }
             if (j < len(tt) && tt[j] == "IDENT") {
                 scopeN = pushAt(scope, scopeN, tv[j]);
+                if (isStr) {
+                    strVarsN = pushAt(strVars, strVarsN, tv[j]);
+                }
                 i = j + 1;
                 continue;
             }
         }
 
+        if (t == "STR_LIT" && i + 1 < len(tt) && tt[i + 1] == "LBRACKET") {
+            int k = i + 2;
+            int bdepth = 1;
+            while (k < len(tt) && bdepth > 0) {
+                if (tt[k] == "LBRACKET") { bdepth = bdepth + 1; }
+                if (tt[k] == "RBRACKET") { bdepth = bdepth - 1; if (bdepth == 0) { break; } }
+                k = k + 1;
+            }
+            if (k + 1 < len(tt) && tt[k + 1] == "ASSIGN") {
+                errs.push("strings are immutable; cannot assign through an index");
+            }
+        }
+
         if (t == "IDENT") {
+            if (indexOfStrN(strVars, v, strVarsN) >= 0 && i + 1 < len(tt) && tt[i + 1] == "LBRACKET") {
+                int k = i + 2;
+                int bdepth = 1;
+                while (k < len(tt) && bdepth > 0) {
+                    if (tt[k] == "LBRACKET") { bdepth = bdepth + 1; }
+                    if (tt[k] == "RBRACKET") { bdepth = bdepth - 1; if (bdepth == 0) { break; } }
+                    k = k + 1;
+                }
+                if (k + 1 < len(tt) && tt[k + 1] == "ASSIGN") {
+                    errs.push("strings are immutable; cannot assign through an index");
+                }
+            }
             // `xs.push(1)` is a METHOD, not a function: the name after a
             // dot is never resolved against the function table.
             if (i > 0 && tt[i - 1] == "DOT") {

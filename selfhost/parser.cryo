@@ -733,7 +733,9 @@ fn pFn(string[] tt, string[] tv, int[] pos) -> string ={
     string ret = "void";
     if (pt(tt, pos) == "ARROW") { adv(pos); ret = pType(tt, tv, pos); }
     if (pt(tt, pos) == "BODY_ASSIGN") { adv(pos); }
-    string body = pStmtsUntilBrace(tt, tv, pos);   // '={' already consumed
+    if (pt(tt, pos) == "ASSIGN") { adv(pos); }
+    if (pt(tt, pos) == "LBRACE") { adv(pos); }
+    string body = pStmtsUntilBrace(tt, tv, pos);   // '={' or '= {' already consumed
     return "(fn " + name + tps + " (params" + params + ") " + ret + " (body" + body + "))";
 }
 // `for` is two statements sharing a keyword. The reference parser produces a

@@ -1235,6 +1235,8 @@ fn compileFunction(string[] tt, string[] tv, int[] pos, int[] fcode, string[] cp
     // as `-> fn(int)->int` is consumed whole (10.6 function values).
     if (cpt(tt, pos) == "ARROW") { cadv(pos); skipType(tt, pos); }
     if (cpt(tt, pos) == "BODY_ASSIGN") { cadv(pos); }
+    if (cpt(tt, pos) == "ASSIGN") { cadv(pos); }
+    if (cpt(tt, pos) == "LBRACE") { cadv(pos); }
     int[] fnBrk = [];                       // function top level: no enclosing loop
     int[] fnCont = [];
     while (cpt(tt, pos) != "RBRACE" && cpt(tt, pos) != "EOF") {
