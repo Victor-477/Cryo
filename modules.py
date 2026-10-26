@@ -213,9 +213,9 @@ def _parse_file(path: str) -> Program:
 
 
 def resolve_modules(program: Program, base_dir: str) -> Program:
-    loaded: Set[str] = set()            # abspaths already incorporated
-    loading: List[str] = []             # stack for cycle detection
-    origem: Dict[str, str] = {}         # declaration name -> file
+    loaded: Set[Tuple[str, Optional[str]]] = set()  # (abspath, alias) already incorporated
+    loading: List[str] = []                         # stack for cycle detection
+    origem: Dict[str, str] = {}                     # declaration name -> file
     decls: List[Node] = []
 
     # (alias, symbol_name) -> (mangled_name, is_pub)
@@ -237,7 +237,7 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
         if full is None:
             full = os.path.normpath(os.path.join(importer_dir, path))
             full = os.path.abspath(full)
-        if full in loaded:
+        if (full, alias) in loaded:
             return                       # dedup
         if full in loading:
             cadeia = ' -> '.join(os.path.basename(p) for p in loading + [full])
@@ -276,20 +276,21 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                         # rewrite this declaration's own references first, so a
                         # call to a sibling follows the mangling
                         n = _rename_refs(n, local_rename, local_types)
-                        if True:
-                            if isinstance(n, FunctionDecl):
-                                mangled_node = FunctionDecl(mangled, n.params, n.return_type, n.body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
-                            elif isinstance(n, StructDecl):
-                                mangled_node = StructDecl(mangled, n.fields, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
-                            elif isinstance(n, EnumDecl):
-                                mangled_node = EnumDecl(mangled, n.members, line=n.line, is_pub=n.is_pub)
-                            elif isinstance(n, ConstDecl):
-                                mangled_node = ConstDecl(n.var_type, mangled, n.value, is_pub=n.is_pub)
-                            elif isinstance(n, VarDecl):
-                                mangled_node = VarDecl(n.var_type, mangled, n.value)
-                            else:
-                                mangled_node = n
-                            decls.append(mangled_node)
+                        if isinstance(n, FunctionDecl):
+                            mangled_node = FunctionDecl(mangled, n.params, n.return_type, n.body, is_tool=n.is_tool, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+                        elif isinstance(n, StructDecl):
+                            mangled_node = StructDecl(mangled, n.fields, line=n.line, type_params=n.type_params, type_bounds=n.type_bounds, is_pub=n.is_pub)
+                        elif isinstance(n, EnumDecl):
+                            mangled_node = EnumDecl(mangled, n.members, line=n.line, is_pub=n.is_pub)
+                        elif isinstance(n, ConstDecl):
+                            mangled_node = ConstDecl(n.var_type, mangled, n.value, is_pub=n.is_pub)
+                        elif isinstance(n, VarDecl):
+                            mangled_node = VarDecl(n.var_type, mangled, n.value)
+                        elif isinstance(n, SkillDecl):
+                            mangled_node = SkillDecl(mangled, n.fields)
+                        else:
+                            mangled_node = n
+                        decls.append(mangled_node)
                     else:
                         if name in origem and origem[name] != full:
                             raise ModuleError(
@@ -297,9 +298,13 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
                                 f"{origem[name]} and in {full}")
                         origem.setdefault(name, full)
                         decls.append(n)
+                elif isinstance(n, (Import, Library)):
+                    # Preserve foreign imports and libraries declared within imported modules
+                    if not any(type(d) is type(n) and getattr(d, 'lang', None) == getattr(n, 'lang', None) and getattr(d, 'name', None) == getattr(n, 'name', None) for d in decls):
+                        decls.append(n)
 
         loading.pop()
-        loaded.add(full)
+        loaded.add((full, alias))
 
     # scan entry program
     rest: List[Node] = []
