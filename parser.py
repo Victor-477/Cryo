@@ -3178,6 +3178,158 @@ fn __cryo_parse_int(string s) -> int? ={
         # double range to reproduce. Narrower is the safe direction, and the
         # input this exists for is a quantity or a price typed into a form,
         # not scientific notation. to_number is still there for the rest.
+        # json_valid(s): true when `json_decode(s)` cannot abort. json_decode
+        # ABORTS on invalid JSON and the abort is not catchable, so a server
+        # decoding a request body died on the first malformed one (EMP ESCOPO
+        # L-05). Same shape as parse_int: a front-end desugaring, so every
+        # backend has it, and a SUBSET of the strictest engine's accept set
+        # (the Go VM's encoding/json), measured, not assumed:
+        #   - the standard grammar: no leading zeros, no `1.`, no `.5`, no
+        #     trailing commas, one top-level value, whitespace " \t\n\r";
+        #   - control characters must be escaped inside strings ("\x01" is
+        #     refused by Go); \uXXXX needs 4 hex digits (lone surrogates are
+        #     accepted by Go, so they pass here too);
+        #   - numbers: Go refuses a number that overflows float64 (1.8e308
+        #     and up) and accepts any underflow. Refused here when the
+        #     integer digits plus the exponent exceed 308 — which also refuses
+        #     1e308 itself: narrower than Go, the safe direction;
+        #   - nesting deeper than 1000 levels is refused (Go's limit is 10000;
+        #     this keeps the validator's own stack string small).
+        'json_valid': ('__cryo_json_valid', 'bool', r"""
+fn __cryo_json_valid(string s) -> bool ={
+    int n = len(s);
+    int i = 0;
+    string stack = "";
+    int state = 0;
+    bool can_close = false;
+    while (true) {
+        while (i < n && contains(" \t\n\r", s[i])) { i = i + 1; }
+        if (i >= n) { break; }
+        string c = s[i];
+        int top_i = len(stack) - 1;
+        string top = "";
+        if (top_i >= 0) { top = stack[top_i]; }
+        if (state == 1) {
+            if (c == "," && top == "[") { state = 0; can_close = false; i = i + 1; continue; }
+            if (c == "," && top == "{") { state = 2; can_close = false; i = i + 1; continue; }
+            if ((c == "]" && top == "[") || (c == "}" && top == "{")) {
+                stack = substr(stack, 0, top_i);
+                i = i + 1;
+                continue;
+            }
+            return false;
+        }
+        if (state == 3) {
+            if (c != ":") { return false; }
+            state = 0;
+            can_close = false;
+            i = i + 1;
+            continue;
+        }
+        if (state == 2) {
+            if (c == "}" && can_close) {
+                stack = substr(stack, 0, top_i);
+                state = 1;
+                i = i + 1;
+                continue;
+            }
+            if (c != "\"") { return false; }
+        }
+        if (state == 0) {
+            if (c == "]" && can_close && top == "[") {
+                stack = substr(stack, 0, top_i);
+                state = 1;
+                i = i + 1;
+                continue;
+            }
+            if (c == "[" || c == "{") {
+                if (len(stack) >= 1000) { return false; }
+                stack = stack + c;
+                can_close = true;
+                if (c == "{") { state = 2; }
+                i = i + 1;
+                continue;
+            }
+            if (c == "t" || c == "f" || c == "n") {
+                string w = "null";
+                if (c == "t") { w = "true"; }
+                if (c == "f") { w = "false"; }
+                if (i + len(w) > n) { return false; }
+                if (substr(s, i, len(w)) != w) { return false; }
+                i = i + len(w);
+                state = 1;
+                continue;
+            }
+            if (c == "-" || contains("0123456789", c)) {
+                if (c == "-") { i = i + 1; }
+                if (i >= n) { return false; }
+                if (!contains("0123456789", s[i])) { return false; }
+                int intdigits = 0;
+                if (s[i] == "0") {
+                    i = i + 1;
+                } else {
+                    while (i < n && contains("0123456789", s[i])) { i = i + 1; intdigits = intdigits + 1; }
+                }
+                if (i < n && s[i] == ".") {
+                    i = i + 1;
+                    if (i >= n) { return false; }
+                    if (!contains("0123456789", s[i])) { return false; }
+                    while (i < n && contains("0123456789", s[i])) { i = i + 1; }
+                }
+                int expo = 0;
+                if (i < n && (s[i] == "e" || s[i] == "E")) {
+                    i = i + 1;
+                    bool eneg = false;
+                    if (i < n && (s[i] == "+" || s[i] == "-")) {
+                        if (s[i] == "-") { eneg = true; }
+                        i = i + 1;
+                    }
+                    int e0 = i;
+                    while (i < n && contains("0123456789", s[i])) { i = i + 1; }
+                    if (i == e0) { return false; }
+                    while (e0 < i - 1 && s[e0] == "0") { e0 = e0 + 1; }
+                    if (i - e0 > 4) {
+                        if (!eneg) { return false; }
+                        expo = 0 - 99999;
+                    } else {
+                        expo = to_int(substr(s, e0, i - e0));
+                        if (eneg) { expo = 0 - expo; }
+                    }
+                }
+                if (intdigits + expo > 308) { return false; }
+                state = 1;
+                continue;
+            }
+            if (c != "\"") { return false; }
+        }
+        i = i + 1;
+        bool closed = false;
+        while (i < n) {
+            string d = s[i];
+            if (d == "\"") { closed = true; i = i + 1; break; }
+            if (d < " ") { return false; }
+            if (d == "\\") {
+                if (i + 1 >= n) { return false; }
+                string e = s[i + 1];
+                if (contains("\"\\/bfnrt", e)) { i = i + 2; continue; }
+                if (e != "u") { return false; }
+                if (i + 5 >= n) { return false; }
+                int h = i + 2;
+                while (h < i + 6) {
+                    if (!contains("0123456789abcdefABCDEF", s[h])) { return false; }
+                    h = h + 1;
+                }
+                i = i + 6;
+                continue;
+            }
+            i = i + 1;
+        }
+        if (!closed) { return false; }
+        if (state == 2) { state = 3; } else { state = 1; }
+    }
+    return state == 1 && len(stack) == 0;
+}
+"""),
         'parse_number': ('__cryo_parse_number', 'number?', r"""
 fn __cryo_parse_number(string s) -> number? ={
     string t = trim(s);
