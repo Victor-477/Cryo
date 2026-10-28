@@ -193,6 +193,19 @@ PACKAGE_MANIFEST = None
 
 
 def _parse_file(path: str) -> Program:
+    try:
+        return _parse_file_raw(path)
+    except Exception as e:
+        # A syntax/lexical error in an IMPORTED file was rendered against the
+        # importer: its name, its line, its caret (EMP ESCOPO L-15). Tag the
+        # error with the file it really came from; the innermost import wins,
+        # because only the first _parse_file the exception passes sets it.
+        if type(e).__name__ in ('ParseError', 'ParseErrors', 'LexerError')                 and getattr(e, 'path', None) is None:
+            e.path = path
+        raise
+
+
+def _parse_file_raw(path: str) -> Program:
     from lexer import Lexer
     from parser import Parser
     try:
