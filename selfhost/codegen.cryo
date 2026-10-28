@@ -529,6 +529,15 @@ fn cgPostfix(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
             string fld = cpv(tv, pos); cadv(pos);         // field/method name
             if (cpt(tt, pos) == "LPAREN") {               // method call
                 cadv(pos);
+                bool builtin = fld == "push" || fld == "length" || fld == "size";
+                if (!builtin) {
+                    // a.campo(args): a function-typed struct field. Read the
+                    // field BEFORE the args, then CALL_VALUE — like a local
+                    // function value. Before this every such call compiled
+                    // to OP_LEN (EMP ESCOPO L-16).
+                    emConst(code, addStr(cp, fld));
+                    code.push(98);                        // OP_INDEX
+                }
                 int margc = 0;
                 while (cpt(tt, pos) != "RPAREN" && cpt(tt, pos) != "EOF") {
                     cgExpr(tt, tv, pos, code, cp, sl, fns);
@@ -537,7 +546,11 @@ fn cgPostfix(string[] tt, string[] tv, int[] pos, int[] code, string[] cp, strin
                 }
                 if (cpt(tt, pos) == "RPAREN") { cadv(pos); }
                 if (fld == "push") { code.push(101); }    // OP_APPEND (obj + arg on stack)
-                else               { code.push(100); }    // .length()/.size() -> OP_LEN
+                else if (builtin)  { code.push(100); }    // .length()/.size() -> OP_LEN
+                else {
+                    code.push(67);                        // OP_CALL_VALUE
+                    code.push(margc & 255);
+                }
             } else if (fld == "length") {
                 code.push(100);                           // .length -> OP_LEN
             } else {
