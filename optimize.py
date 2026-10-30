@@ -196,8 +196,12 @@ def fold_expr(node):
 
     fx, fy = float(x), float(y)
     try:
-        r = {'+': fx + fy, '-': fx - fy, '*': fx * fy,
-             '/': fx / fy, '%': fx % fy}[op]
+        if op == '+': r = fx + fy
+        elif op == '-': r = fx - fy
+        elif op == '*': r = fx * fy
+        elif op == '/': r = fx / fy
+        else: r = fx % fy
+
     except (ZeroDivisionError, ValueError, OverflowError):
         return node
     return _lit('float', r)
