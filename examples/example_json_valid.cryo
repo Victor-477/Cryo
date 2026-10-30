@@ -1,0 +1,34 @@
+// ============================================================
+//  example_json_valid.cryo — validate JSON before decoding it
+//
+//  json_decode ABORTS on invalid JSON, and the abort cannot be caught
+//  with try/catch: a server that decodes a request body dies on the
+//  first malformed one. json_valid(s) answers whether json_decode(s)
+//  is safe, without aborting, on every backend (it is a front-end
+//  desugaring, like parse_int). Its accept set is a SUBSET of the
+//  strictest engine's (Go's encoding/json): what it approves, every
+//  json_decode accepts.
+// ============================================================
+
+struct Pedido { string produto; int quantidade; }
+
+fn ler(string corpo) -> string ={
+    if (!json_valid(corpo)) {
+        return "400 JSON inválido";
+    }
+    Pedido p = json_decode(corpo) as Pedido;
+    return "200 " + p.produto + " x " + to_string(p.quantidade);
+}
+
+print(ler("{\"produto\":\"ACO\",\"quantidade\":10}"));
+print(ler("{\"produto\":\"ACO\",\"quantidade\":10,}"));   // vírgula sobrando
+print(ler("nao e json"));
+print(ler(""));
+
+// The grammar, case by case (1 = valid).
+string[] casos = ["{}", "[]", " [1, 2.5, -3e2] ", "\"x\"", "true", "null",
+                  "01", "1.", ".5", "[1,]", "{a:1}", "\"abc", "1 2", "1e309"];
+for (string c in casos) {
+    print((json_valid(c) ? "1 " : "0 ") + c);
+}
+print("sobreviveu");

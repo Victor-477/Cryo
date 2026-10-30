@@ -474,6 +474,19 @@ fn pPrimary(string[] tt, string[] tv, int[] pos) -> string ={
             if (pt(tt, pos) == "RPAREN") { adv(pos); }
             return pPostfix(tt, tv, pos, "(call " + name + targs + args + ")");
         }
+        if (pt(tt, pos) == "LBRACE" && pt2(tt, pos) == "IDENT" && ptn(tt, pos, 2) == "COLON") {
+            adv(pos);
+            string fs = "";
+            while (pt(tt, pos) != "RBRACE" && pt(tt, pos) != "EOF") {
+                string fname = pv(tv, pos); adv(pos);
+                if (pt(tt, pos) == "COLON") { adv(pos); }
+                string fval = pExpr(tt, tv, pos);
+                fs = fs + " (fv " + fname + " " + fval + ")";
+                if (pt(tt, pos) == "COMMA") { adv(pos); }
+            }
+            if (pt(tt, pos) == "RBRACE") { adv(pos); }
+            return pPostfix(tt, tv, pos, "(new " + name + fs + ")");
+        }
         return pPostfix(tt, tv, pos, "(id " + name + ")");
     }
     // A token no rule claims must still CONSUME something. Returning without
@@ -1001,6 +1014,30 @@ fn pTrait(string[] tt, string[] tv, int[] pos) -> string ={
 fn pExprStmt(string[] tt, string[] tv, int[] pos) -> string ={
     // the reference parser returns the raw expression as a statement
     string e = pExpr(tt, tv, pos);
+    if (starts_with(e, "(field ")) {
+        string target = substr(e, 7, len(e) - 8);
+        string nt = pt(tt, pos);
+        if (nt == "ASSIGN") {
+            adv(pos);
+            string val = pExpr(tt, tv, pos);
+            if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+            return "(setfield " + target + " " + val + ")";
+        }
+        if (isCompoundAssign(nt)) {
+            string op = pv(tv, pos); adv(pos);
+            string binOp = substr(op, 0, 1);
+            string val = pExpr(tt, tv, pos);
+            if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+            return "(setfield " + target + " (bin " + binOp + " " + e + " " + val + "))";
+        }
+        if (nt == "PLUS_PLUS" || nt == "MINUS_MINUS") {
+            string binOp = "+";
+            if (nt == "MINUS_MINUS") { binOp = "-"; }
+            adv(pos);
+            if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
+            return "(setfield " + target + " (bin " + binOp + " " + e + " (int 1)))";
+        }
+    }
     if (pt(tt, pos) == "SEMICOLON") { adv(pos); }
     return e;
 }

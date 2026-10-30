@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ast_nodes import (
     Program, Node, FunctionDecl, VarDecl, ConstDecl, Assignment,
-    CompoundAssignment, IndexAssignment, Increment, Return, If, While, For,
+    CompoundAssignment, IndexAssignment, FieldAssignment, Increment, Return, If, While, For,
     DoWhile, ForEach, Block, TryCatch, Switch, SwitchCase, MatchStatement,
     MatchCase, BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, MethodCallExpr,
     CallValueExpr, FieldAccess, IndexAccess, ArrayLiteral, MapLiteral,
@@ -309,6 +309,9 @@ class _Rewriter:
         if isinstance(node, IndexAssignment):
             return IndexAssignment(self.expr(node.obj), self.expr(node.index),
                                    self.expr(node.value))
+        if isinstance(node, FieldAssignment):
+            return FieldAssignment(self.expr(node.obj), node.field,
+                                   self.expr(node.value), line=node.line)
         if isinstance(node, Return):
             return Return(self.expr(node.value))
         if isinstance(node, If):

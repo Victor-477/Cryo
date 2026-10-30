@@ -145,6 +145,13 @@ class IndexAssignment(Node):
     line:  int = 0
 
 @dataclass
+class FieldAssignment(Node):
+    obj:   Node
+    field: str
+    value: Node
+    line:  int = 0
+
+@dataclass
 class CompoundAssignment(Node):
     op:    str
     name:  str
