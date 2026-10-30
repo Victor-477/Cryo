@@ -19,8 +19,8 @@ from typing import Dict, List, Set, Tuple
 
 import diagnostics as _dx          # 11.24 — suggestions and carets
 from ast_nodes import (
-    Program, Node, FunctionDecl, StructDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
-    VarDecl, Assignment, IndexAssignment, CompoundAssignment, Increment,
+    Program, Node, FunctionDecl, StructDecl, ImplDecl, EnumMember, EnumDecl, ConstDecl, SkillDecl,
+    VarDecl, Assignment, IndexAssignment, FieldAssignment, CompoundAssignment, Increment,
     PermissionsDecl,
     Return, If, While, For, DoWhile, ForEach, Switch, TryCatch, Break,
     Continue, Assert, SafetyBlock, Block, ForeignBlock, Import, ModuleImport, Library,
@@ -126,6 +126,7 @@ class _Checker:
         self.fn_arity: Dict[str, int] = {}
         self.enum_members: Set[str] = set()     # 'Nivel_ALTO'
         self.enum_defs: Dict[str, EnumDecl] = {}
+        self.struct_defs: Dict[str, StructDecl] = {}
         self.member_to_enum: Dict[str, str] = {}
         self.global_consts: Set[str] = set()
         # Roadmap 11.1 — top-level `var` declarations are MODULE STATE:
@@ -158,6 +159,7 @@ class _Checker:
             elif isinstance(n, StructDecl):
                 name, kind = n.name, 'struct'
                 self.type_names.add(n.name)
+                self.struct_defs[n.name] = n
             elif isinstance(n, EnumDecl):
                 name, kind = n.name, 'enum'
                 self.type_names.add(n.name)
@@ -198,6 +200,13 @@ class _Checker:
         for n in self.program.statements:
             if isinstance(n, FunctionDecl):
                 self.check_function(n)
+            elif isinstance(n, ImplDecl):
+                for m in n.methods:
+                    m_scope = _Scope()
+                    m_scope.declare('this', n.target_type)
+                    for pt, pn in m.params:
+                        m_scope.declare(pn, pt)
+                    self.check_block(m.body, m_scope)
             else:
                 self.check_stmt(n, scope)
         return self.errors
@@ -248,6 +257,8 @@ class _Checker:
             self.check_expr(n.obj, scope)
             self.check_expr(n.index, scope)
             self.check_expr(n.value, scope)
+        elif isinstance(n, FieldAssignment):
+            self._check_field_assignment(n, scope)
         elif isinstance(n, Return):
             if n.value is not None:
                 self.check_expr(n.value, scope)
@@ -281,7 +292,7 @@ class _Checker:
         elif isinstance(n, ForEach):
             self.check_expr(n.iterable, scope)
             scope.push()
-            scope.declare(n.var_name)
+            scope.declare(n.var_name, getattr(n, 'var_type', None))
             self.loop_depth += 1
             self.check_block(n.body, scope)
             self.loop_depth -= 1
@@ -421,6 +432,60 @@ class _Checker:
                 or name in self.global_vars
                 or name in self.enum_members or name in self.type_names
                 or name in self.fn_arity)   # function name = 1st class value
+
+    def _expr_type_of(self, n: Node, scope: _Scope):
+        if isinstance(n, Identifier):
+            return scope.type_of(n.name) or self.global_var_types.get(n.name)
+        if isinstance(n, FieldAccess):
+            ot = self._expr_type_of(n.obj, scope)
+            if ot:
+                base = ot[:-1] if ot.endswith('?') else ot
+                sd = self.struct_defs.get(base)
+                if sd:
+                    for f in sd.fields:
+                        if f.name == n.field:
+                            return f.field_type
+        if isinstance(n, IndexAccess):
+            ot = self._expr_type_of(n.obj, scope)
+            if ot and ot.endswith('[]'):
+                return ot[:-2]
+        if isinstance(n, CallExpr):
+            return self.fn_ret_types.get(n.callee)
+        if isinstance(n, StructInit):
+            return n.struct_name
+        if isinstance(n, CastExpr):
+            return n.target_type
+        if isinstance(n, Literal):
+            return 'number' if n.kind == 'float' else n.kind
+        return None
+
+    def _check_field_assignment(self, n: FieldAssignment, scope: _Scope):
+        ln = getattr(n, 'line', 0) or getattr(n.obj, 'line', 0)
+        self.check_expr(n.obj, scope)
+        self.check_expr(n.value, scope)
+        if not isinstance(n.obj, (Identifier, FieldAccess, IndexAccess)):
+            self.err(ln,
+                     f"[Semantic Error] cannot assign to field '{n.field}' of a temporary expression")
+            return
+        ot = self._expr_type_of(n.obj, scope)
+        if ot is None:
+            return
+        base = ot[:-1] if ot.endswith('?') else ot
+        if base == 'any':
+            return
+        sd = self.struct_defs.get(base)
+        if sd is None:
+            needle = n.obj.name if isinstance(n.obj, Identifier) else n.field
+            self.err(ln,
+                     f"[Semantic Error] cannot assign to field '{n.field}' on non-struct type '{ot}'",
+                     needle=needle)
+            return
+        fnames = [f.name for f in sd.fields]
+        if n.field not in fnames:
+            self.err(ln,
+                     f"[Semantic Error] struct '{base}' has no field '{n.field}'",
+                     needle=n.field,
+                     note=_dx.hint(n.field, fnames))
 
     def _is_string_expr(self, n: Node, scope: _Scope) -> bool:
         if isinstance(n, Identifier):

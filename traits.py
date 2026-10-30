@@ -6,7 +6,7 @@ functions and direct call expressions before codegen.
 from typing import Dict, List, Optional, Set, Tuple
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, TraitDecl, ImplDecl, TraitMethodSig,
-    VarDecl, ConstDecl, Assignment, IndexAssignment, CompoundAssignment,
+    VarDecl, ConstDecl, Assignment, IndexAssignment, FieldAssignment, CompoundAssignment,
     Increment, Return, If, While, For, DoWhile, ForEach, Block,
     BinaryExpr, TernaryExpr, UnaryExpr,
     CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
@@ -217,6 +217,9 @@ def lower_traits(program: Program) -> Program:
 
         if isinstance(node, IndexAssignment):
             return IndexAssignment(transform_node(node.obj), transform_node(node.index), transform_node(node.value))
+
+        if isinstance(node, FieldAssignment):
+            return FieldAssignment(transform_node(node.obj), node.field, transform_node(node.value), line=node.line)
 
         if isinstance(node, Return):
             return Return(transform_node(node.value))

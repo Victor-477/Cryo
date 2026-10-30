@@ -7,7 +7,7 @@ into concrete, non-generic AST nodes before codegen.
 from typing import Dict, List, Set, Tuple
 from ast_nodes import (
     Program, Node, FunctionDecl, StructDecl, StructField,
-    VarDecl, ConstDecl, Assignment, IndexAssignment, CompoundAssignment,
+    VarDecl, ConstDecl, Assignment, IndexAssignment, FieldAssignment, CompoundAssignment,
     Increment, Return, If, While, For, DoWhile, ForEach, Block,
     BinaryExpr, TernaryExpr, UnaryExpr,
     CallExpr, MethodCallExpr, FieldAccess, IndexAccess,
@@ -190,6 +190,9 @@ def monomorphize(program: Program) -> Program:
 
         if isinstance(node, IndexAssignment):
             return IndexAssignment(transform_node(node.obj, subst), transform_node(node.index, subst), transform_node(node.value, subst))
+
+        if isinstance(node, FieldAssignment):
+            return FieldAssignment(transform_node(node.obj, subst), node.field, transform_node(node.value, subst), line=node.line)
 
         if isinstance(node, Return):
             return Return(transform_node(node.value, subst))

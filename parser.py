@@ -15,7 +15,7 @@ from ast_nodes import (
     Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     Import, ModuleImport, Library, ForeignBlock,
     PermissionsDecl,
-    Assignment, IndexAssignment,
+    Assignment, IndexAssignment, FieldAssignment,
     BinaryExpr, TernaryExpr, CastExpr, UnwrapExpr, TryExpr, UnaryExpr,
     SpawnExpr, AwaitExpr, CallExpr, CallValueExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit,
@@ -657,13 +657,31 @@ class Parser:
                 return self._compound()
             if nt.type in (TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
                 return self._increment()
-            # expression (possible target of indexed assignment: m[k] = v)
+            # expression (possible target of indexed or field assignment: m[k] = v, s.f = v)
             expr = self._postfix()
-            if self._match(TokenType.ASSIGN) and isinstance(expr, IndexAccess):
+            if isinstance(expr, IndexAccess) and self._match(TokenType.ASSIGN):
                 self._advance()
                 val = self._expr()
                 self._opt_semi()
                 return IndexAssignment(expr.obj, expr.index, val, line=tok.line)
+            if isinstance(expr, FieldAccess):
+                if self._match(TokenType.ASSIGN):
+                    self._advance()
+                    val = self._expr()
+                    self._opt_semi()
+                    return FieldAssignment(expr.obj, expr.field, val, line=tok.line)
+                if self._match(*COMPOUND_OPS):
+                    op_tok = self._advance()
+                    bin_op = op_tok.value[:-1]
+                    val = BinaryExpr(bin_op, expr, self._expr())
+                    self._opt_semi()
+                    return FieldAssignment(expr.obj, expr.field, val, line=tok.line)
+                if self._match(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
+                    op_tok = self._advance()
+                    bin_op = '+' if op_tok.type == TokenType.PLUS_PLUS else '-'
+                    val = BinaryExpr(bin_op, expr, Literal('int', 1))
+                    self._opt_semi()
+                    return FieldAssignment(expr.obj, expr.field, val, line=tok.line)
             self._opt_semi()
             return expr
 
@@ -1695,7 +1713,19 @@ class Parser:
             elif self._match(TokenType.IDENT) and self._peek().type == TokenType.ASSIGN:
                 init = self._assign(semi=False)
             else:
+                init_line = self._cur().line
                 init = self._expr()
+                if isinstance(init, FieldAccess):
+                    if self._match(TokenType.ASSIGN):
+                        self._advance()
+                        init = FieldAssignment(init.obj, init.field, self._expr(), line=init_line)
+                    elif self._match(*COMPOUND_OPS):
+                        op_tok = self._advance()
+                        init = FieldAssignment(init.obj, init.field, BinaryExpr(op_tok.value[:-1], init, self._expr()), line=init_line)
+                    elif self._match(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
+                        op_tok = self._advance()
+                        bin_op = '+' if op_tok.type == TokenType.PLUS_PLUS else '-'
+                        init = FieldAssignment(init.obj, init.field, BinaryExpr(bin_op, init, Literal('int', 1)), line=init_line)
         self._expect(TokenType.SEMICOLON)
 
         cond = None
@@ -1712,7 +1742,19 @@ class Parser:
             elif self._match(TokenType.IDENT) and self._peek().type == TokenType.ASSIGN:
                 update = self._assign(semi=False)
             else:
+                upd_line = self._cur().line
                 update = self._expr()
+                if isinstance(update, FieldAccess):
+                    if self._match(TokenType.ASSIGN):
+                        self._advance()
+                        update = FieldAssignment(update.obj, update.field, self._expr(), line=upd_line)
+                    elif self._match(*COMPOUND_OPS):
+                        op_tok = self._advance()
+                        update = FieldAssignment(update.obj, update.field, BinaryExpr(op_tok.value[:-1], update, self._expr()), line=upd_line)
+                    elif self._match(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS):
+                        op_tok = self._advance()
+                        bin_op = '+' if op_tok.type == TokenType.PLUS_PLUS else '-'
+                        update = FieldAssignment(update.obj, update.field, BinaryExpr(bin_op, update, Literal('int', 1)), line=upd_line)
 
         self._expect(TokenType.RPAREN)
         return For(init, cond, update, self._block())

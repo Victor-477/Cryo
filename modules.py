@@ -9,7 +9,7 @@ from dataclasses import fields
 from ast_nodes import (
     Program, Node, ModuleImport, Import, Library, QualifiedIdentifier,
     FunctionDecl, StructDecl, EnumDecl, ConstDecl, SkillDecl, VarDecl, Assignment,
-    CompoundAssignment, IndexAssignment, Increment, Return, If, While, For, DoWhile,
+    CompoundAssignment, IndexAssignment, FieldAssignment, Increment, Return, If, While, For, DoWhile,
     ForEach, TryCatch, Block, Break, Continue, Switch, SwitchCase, Assert, SafetyBlock,
     BinaryExpr, TernaryExpr, UnaryExpr, CallExpr, CallValueExpr, MethodCallExpr,
     FieldAccess, IndexAccess, ArrayLiteral, MapLiteral, StructInit, Lambda, Identifier,
@@ -435,6 +435,9 @@ def resolve_modules(program: Program, base_dir: str) -> Program:
 
         if isinstance(n, IndexAssignment):
             return IndexAssignment(transform_node(n.obj), transform_node(n.index), transform_node(n.value))
+
+        if isinstance(n, FieldAssignment):
+            return FieldAssignment(transform_node(n.obj), n.field, transform_node(n.value), line=n.line)
 
         if isinstance(n, Return):
             return Return(transform_node(n.value))
